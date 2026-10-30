@@ -1,9 +1,9 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 6),
+    "version": (0, 4, 7),
     "blender": (4, 0, 0),
-    "location": "View3D > Sidebar > CCTBX GN",
+    "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
     "category": "Import-Export",
 }
@@ -64,6 +64,7 @@ _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
+_DOCS_URL = "https://github.com/kalimeroo/BlenderCCTBX"
 
 
 class CGN_AddonPreferences(AddonPreferences):
@@ -1881,6 +1882,7 @@ class CGN_PT_panel(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "CCTBX GN"
+    bl_order = 0
 
     def draw(self, context):
         layout = self.layout
@@ -1890,47 +1892,59 @@ class CGN_PT_panel(Panel):
             layout.label(text="Import a CIF to begin.")
             return
 
-        layout.label(text=f"Space group: {root.get('cgn_space_group', 'unknown')}")
-        if root.get("cgn_instances", ""):
-            layout.label(text=f"Atoms: {_structure_atom_count(root)}")
-        else:
-            layout.label(text="Re-import this CIF (old structure format).")
-        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
-        grow_all = layout.operator(
-            "cgn.grow_further", text="Grow Structure", icon='ADD'
+        layout.label(
+            text=f"Space group: {root.get('cgn_space_group', 'unknown')}",
+            icon='INFO',
         )
-        grow_all.all_atoms = True
+        if root.get("cgn_instances", ""):
+            layout.label(
+                text=f"Atoms: {_structure_atom_count(root)}",
+                icon='MESH_UVSPHERE',
+            )
+        else:
+            layout.label(
+                text="Re-import this CIF (old structure format).",
+                icon='ERROR',
+            )
+
+
+class CGN_PT_build(Panel):
+    bl_label = "Build"
+    bl_idname = "CGN_PT_build"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_order = 1
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
+        layout.operator(
+            "cgn.grow_further", text="Grow Structure", icon='ADD'
+        ).all_atoms = True
         layout.operator(
             "cgn.select_growth_atoms",
             text="Grow Selected Atoms",
             icon='RESTRICT_SELECT_OFF',
         )
-        layout.operator(
-            "cgn.delete_atoms",
-            text="Delete Atoms",
-            icon='X',
-        )
-
         layout.separator()
-        settings = context.scene.cgn_unit_cell_settings
-        box = layout.box()
-        box.prop(settings, "show_unit_cell", text="Show Unit Cell", icon='MESH_CUBE')
-        if settings.show_unit_cell:
-            column = box.column(align=True)
-            column.prop(settings, "face_color", text="Face Color")
-            column.prop(settings, "face_transparency", text="Face Transparency")
-            column.prop(settings, "edge_color", text="Edge Color")
-            column.prop(settings, "edge_thickness", text="Edge Thickness")
+        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon='X')
 
 
 class CGN_PT_connectivity(Panel):
-    bl_label = "Connectivity by Atom-Species Pair (Å)"
+    bl_label = "Connectivity"
     bl_idname = "CGN_PT_connectivity"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "CCTBX GN"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
@@ -1940,7 +1954,9 @@ class CGN_PT_connectivity(Panel):
         layout = self.layout
         if _active_root(context.scene) is None:
             return
-        layout.label(text="Toggle pairs and set inclusive minimum/maximum distances.")
+        layout.label(
+            text="Distances in Å. Toggle pairs and set inclusive minimum/maximum."
+        )
         for item in context.scene.cgn_connectivity_pairs:
             row = layout.row(align=True)
             row.prop(item, "enabled", text="")
@@ -1948,6 +1964,94 @@ class CGN_PT_connectivity(Panel):
             row.prop(item, "min_distance", text="Min")
             row.prop(item, "max_distance", text="Max")
         layout.operator("cgn.rebuild_connectivity", icon='FILE_REFRESH')
+
+
+class CGN_PT_unit_cell(Panel):
+    bl_label = "Unit Cell"
+    bl_idname = "CGN_PT_unit_cell"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 3
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.cgn_unit_cell_settings
+        layout.prop(
+            settings, "show_unit_cell", text="Show Unit Cell", icon='MESH_CUBE'
+        )
+        if not settings.show_unit_cell:
+            return
+        column = layout.column(align=True)
+        column.prop(settings, "face_color", text="Face Color")
+        column.prop(settings, "face_transparency", text="Face Transparency")
+        column.prop(settings, "edge_color", text="Edge Color")
+        column.prop(settings, "edge_thickness", text="Edge Thickness")
+
+
+class CGN_PT_about(Panel):
+    bl_label = "About"
+    bl_idname = "CGN_PT_about"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 4
+
+    def draw(self, context):
+        layout = self.layout
+        version = ".".join(str(part) for part in bl_info["version"])
+        layout.label(text=f"Version {version}", icon='INFO')
+        preferences = context.preferences.addons.get(__package__)
+        if preferences is not None:
+            layout.label(
+                text=preferences.preferences.cctbx_python_path,
+                icon='PYTHON',
+            )
+        layout.operator(
+            "wm.url_open", text="Documentation", icon='URL'
+        ).url = _DOCS_URL
+
+
+class CGN_MT_viewport(Menu):
+    bl_idname = "CGN_MT_viewport"
+    bl_label = "CCTBX"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("cgn.import_cif", text="Import CIF...", icon='IMPORT')
+        if _active_root(context.scene) is None:
+            return
+        layout.separator()
+        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
+        layout.operator(
+            "cgn.grow_further", text="Grow Structure", icon='ADD'
+        ).all_atoms = True
+        layout.operator(
+            "cgn.select_growth_atoms",
+            text="Grow Selected Atoms",
+            icon='RESTRICT_SELECT_OFF',
+        )
+        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon='X')
+        layout.separator()
+        layout.operator(
+            "cgn.rebuild_connectivity", text="Rebuild Bonds", icon='FILE_REFRESH'
+        )
+
+
+def _draw_viewport_menu(self, context):
+    self.layout.menu("CGN_MT_viewport")
+
+
+def _draw_file_import(self, context):
+    self.layout.operator("cgn.import_cif", text="CCTBX CIF (.cif)", icon='IMPORT')
 
 
 _CLASSES = (
@@ -1963,8 +2067,12 @@ _CLASSES = (
     CGN_OT_delete_atoms,
     CGN_OT_grow_further,
     CGN_MT_fill,
+    CGN_MT_viewport,
     CGN_PT_panel,
+    CGN_PT_build,
     CGN_PT_connectivity,
+    CGN_PT_unit_cell,
+    CGN_PT_about,
 )
 
 
@@ -1978,9 +2086,13 @@ def register():
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(
         type=CGN_UnitCellSettings
     )
+    bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_menu)
+    bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
+    bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_unit_cell_settings
     del bpy.types.Scene.cgn_active_structure
     del bpy.types.Scene.cgn_connectivity_pairs

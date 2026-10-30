@@ -13,21 +13,26 @@ scene is set to centimeters with **1 Å = 1 cm**: 1 Blender unit = 10 Å = 10 cm
 (Unit Scale `0.1`). A 20 Å cell therefore reads 20 cm and spans 2 Blender units.
 
 Each unordered element pair gets an independent connectivity checkbox and
-inclusive minimum/maximum distance in Å, inside the collapsible **Connectivity
-by Atom-Species Pair** section. After changing those settings, use **Rebuild
-Bonds**. Initial maximum distances are inferred from the cctbx covalent radii
-plus 0.4 Å.
+inclusive minimum/maximum distance in Å, inside the collapsible **Connectivity**
+sub-panel. After changing those settings, use **Rebuild Bonds**. Initial maximum
+distances are inferred from the cctbx covalent radii plus 0.4 Å.
+
+The **CCTBX GN** sidebar tab is split into collapsible sections: the main panel
+shows the import button, space group and atom count; **Build** holds Fill, Grow
+and Delete; **Connectivity**, **Unit Cell** and **About** are collapsed by
+default. The same build actions are available from the **CCTBX** menu in the 3D
+Viewport header, and CIF import is also registered under **File > Import**.
 
 Use the **Fill** menu to choose what the structure displays: **Asymmetric
 Unit-cell** (the CIF asymmetric unit), **Unit-Cell** (every atom in one unit
 cell), or **Pack Unit-cells...**, which asks for the number of unit cells
 along a, b and c. Unit-cell and packed fills keep bonded molecules whole:
 atoms split across a cell boundary are moved just outside the cell so each
-molecule stays connected. The main panel has a **Show Unit Cell** toggle; while
-it is on, the unit cell is drawn with adjustable face color, face transparency,
-edge color and edge thickness. Turning it off hides the box. Fill replaces the
-displayed atoms, clears any growth selection, and rebuilds bonds. Packing is
-limited to 200,000 atoms.
+molecule stays connected. The **Unit Cell** sub-panel has a **Show Unit Cell**
+toggle; while it is on, the unit cell is drawn with adjustable face color, face
+transparency, edge color and edge thickness. Turning it off hides the box. Fill
+replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
+Packing is limited to 200,000 atoms.
 
 Use **Grow Structure** to add one shell around all atoms. Use **Grow Selected
 Atoms** to enter viewport selection mode; click or box-select atoms, and use

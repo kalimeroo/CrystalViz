@@ -1,11 +1,31 @@
-# CCTBX Geometry Nodes add-on prototype
+# CCTBX Geometry Nodes add-on prototype (gemmi branch)
 
 This is a separate experimental Blender add-on; it does not replace or modify
 the existing CCTBX Crystal Structures add-on.
 
-Install the `cctbx_geometry_nodes_addon` folder as a Blender add-on, enable it,
-and set **cctbx Python Executable** in its preferences to a Python interpreter
-with `cctbx-base` installed. The add-on imports CIF asymmetric-unit atoms and
+This branch replaces the external `cctbx-base` interpreter with
+[gemmi](https://github.com/project-gemmi/gemmi), imported directly inside
+Blender's own Python. There is no subprocess, no `worker.py`, and no
+"cctbx Python Executable" preference. The `main` branch keeps the cctbx build.
+
+## Installing gemmi
+
+Blender ignores Python's user site-packages, so install gemmi into Blender's
+local wheel directory (one command, one 2 MB wheel, no dependencies):
+
+```
+"<Blender>/5.2/python/bin/python.exe" -m pip install --target \
+  "<user>/AppData/Roaming/Blender Foundation/Blender/5.2/extensions/.local/lib/python3.13/site-packages" \
+  gemmi
+```
+
+The add-on preferences and the **About** sub-panel show the exact command if
+gemmi is missing, and display the detected gemmi version otherwise.
+
+## Installing the add-on
+
+Install the `cctbx_geometry_nodes_addon` folder as a Blender add-on, enable it.
+The add-on imports CIF asymmetric-unit atoms and
 renders atom spheres and bond tubes through Geometry Nodes. Atom spheres use a
 quarter of the element's van der Waals radius, and bond tubes use 0.1× the mean
 van der Waals radius of the bonded pair, both with smooth shading. On import the
@@ -39,7 +59,7 @@ Atoms** to enter viewport selection mode; click or box-select atoms, and use
 Shift-click or Shift-drag to add to the selection. Selected atoms are
 highlighted in orange. Press Enter or right-click to grow immediately around
 the selection, or press Esc to cancel. The worker expands the CIF to P1 with
-cctbx and searches symmetry-equivalent sites and integer unit-cell translations
+gemmi and searches symmetry-equivalent sites and integer unit-cell translations
 around the chosen seeds, while avoiding every atom already in the finite
 cluster. Selection highlights are cleared after growth so new atoms keep their
 normal element colors and sizes. Growth does not alter the source CIF or its
@@ -55,6 +75,26 @@ The prototype does not yet support ORTEP or coordination-polyhedron tools
 from the original add-on.
 The source unit-cell parameters, space-group symbol and symmetry operators are
 retained on the generated structure collection.
+
+## cctbx parity
+
+`gemmi_worker.py` reproduces the cctbx results exactly on the bundled example
+CIFs: same P1 site tables, same atom order, same ASU instances, occupancies and
+radii (worst position difference 7·10⁻¹⁵ Å). To match cctbx:
+
+- sites within 0.5 Å of a special position are projected onto it before
+  symmetry expansion (`min_distance_sym_equiv`), which reproduces cctbx atom
+  counts for special positions;
+- element symbols come from the CIF type symbol, so a water labelled `W` stays
+  `W` as in cctbx;
+- van der Waals and covalent radii are copied from `cctbx.eltbx`, so default
+  connectivity windows are identical;
+- CIFs with duplicate block names are read with `check_level=0`; the last block
+  with a given name wins, as in cctbx.
+
+Stored symmetry-operator strings may use equivalent translation representatives
+(e.g. `-x+1/2,y+1/2,z` instead of `-x-1/2,y-1/2,z`); the groups are identical
+and the strings are informational only.
 
 Structures imported by an earlier version of this add-on store per-atom data
 instead of the compact site table used now. Re-import the CIF to grow or

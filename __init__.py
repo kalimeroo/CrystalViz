@@ -1,10 +1,13 @@
 bl_info = {
-    "name": "CCTBX Geometry Nodes",
+    "name": "CCTBX Geometry Nodes (gemmi)",
     "author": "OpenAI",
-    "version": (0, 4, 7),
+    "version": (0, 5, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
-    "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
+    "description": (
+        "Import CIF atoms and render editable connectivity with Geometry "
+        "Nodes (gemmi backend, no external Python)"
+    ),
     "category": "Import-Export",
 }
 
@@ -12,9 +15,7 @@ import bpy
 import json
 import math
 import os
-import subprocess
-import tempfile
-import time
+import sys
 import traceback
 import uuid
 import gpu
@@ -55,7 +56,6 @@ _DEFAULT_BOND_RADIUS = (
     _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
 )
 _BOND_TOLERANCE = 0.4
-_WORKER_TIMEOUT = 120.0
 _MAX_FILL_REPEATS = 20
 _MAX_FILL_ATOMS = 200000
 _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
@@ -67,18 +67,57 @@ _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _DOCS_URL = "https://github.com/kalimeroo/BlenderCCTBX"
 
 
+def _gemmi_status():
+    """Return (version, error) for the gemmi module in Blender's Python."""
+    try:
+        import gemmi
+    except Exception as exc:  # ImportError, or a broken wheel
+        return None, str(exc)
+    return getattr(gemmi, "__version__", "unknown"), None
+
+
+def _gemmi_install_hint():
+    """Command that installs gemmi where Blender's Python can import it."""
+    target = os.path.join(
+        bpy.utils.user_resource('EXTENSIONS'),
+        ".local",
+        "lib",
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+        "site-packages",
+    )
+    return f'"{sys.executable}" -m pip install --target "{target}" gemmi'
+
+
+def _gemmi_worker():
+    """Import the in-process gemmi worker, with an install hint if missing."""
+    try:
+        from . import gemmi_worker
+    except ImportError as exc:
+        raise RuntimeError(
+            "gemmi is not installed in Blender's Python.\n"
+            "Install it with:\n" + _gemmi_install_hint()
+        ) from exc
+    return gemmi_worker
+
+
 class CGN_AddonPreferences(AddonPreferences):
     bl_idname = __package__
 
-    cctbx_python_path: StringProperty(
-        name="cctbx Python Executable",
-        description="Python interpreter with cctbx-base installed",
-        subtype="FILE_PATH",
-        default=r"C:\Users\Erwann Jeanneau\.conda\envs\crystal_env\python.exe",
-    )
-
     def draw(self, context):
-        self.layout.prop(self, "cctbx_python_path")
+        layout = self.layout
+        version, error = _gemmi_status()
+        if error:
+            layout.label(
+                text="gemmi is not available in Blender's Python.",
+                icon='ERROR',
+            )
+            layout.label(text="Install it with:")
+            layout.label(text=_gemmi_install_hint())
+        else:
+            layout.label(
+                text=f"gemmi {version} (in-process, no external interpreter)",
+                icon='CHECKMARK',
+            )
 
 
 class CGN_ConnectivityPair(PropertyGroup):
@@ -305,16 +344,6 @@ def _clear_collection(collection):
         bpy.data.collections.remove(child, do_unlink=True)
     for obj in list(collection.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
-
-
-def _stop_worker(process):
-    if process.poll() is None:
-        process.terminate()
-    try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
 
 
 _LEGACY_STRUCTURE_ERROR = (
@@ -765,7 +794,7 @@ def _import_result(scene, result, cif_path):
     instances = result.get("instances", [])
     cell_matrix = result.get("cell_matrix", [])
     if len(cell_matrix) != 9:
-        raise ValueError("The cctbx worker returned an invalid cell matrix.")
+        raise ValueError("The CIF reader returned an invalid cell matrix.")
     initial_count = len(instances) // 4
     atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
     if not atoms:
@@ -838,29 +867,6 @@ def _import_result(scene, result, cif_path):
             item.max_distance = maximum
         raise
     return root
-
-
-def _read_worker_response(worker):
-    process = worker["process"]
-    stdout_file = worker["stdout"]
-    stderr_file = worker["stderr"]
-    try:
-        stdout_file.seek(0)
-        stderr_file.seek(0)
-        stdout = stdout_file.read()
-        stderr = stderr_file.read()
-    finally:
-        stdout_file.close()
-        stderr_file.close()
-    if process.returncode != 0 and not stdout:
-        raise RuntimeError(f"cctbx worker failed:\n{stderr}")
-    try:
-        response = json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid cctbx worker output:\n{stdout}\n{stderr}") from exc
-    if not response.get("ok"):
-        raise RuntimeError(response.get("error", "CIF import failed."))
-    return response["result"]
 
 
 def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
@@ -1153,89 +1159,29 @@ class CGN_OT_import_cif(Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        prefs = context.preferences.addons[__package__].preferences
-        python_path = bpy.path.abspath(prefs.cctbx_python_path)
-        if not os.path.isfile(python_path):
-            self.report({'ERROR'}, "Set a valid cctbx Python executable in add-on preferences.")
-            return {'CANCELLED'}
         if not os.path.isfile(self.filepath):
             self.report({'ERROR'}, "The selected CIF file does not exist.")
             return {'CANCELLED'}
-
-        stdout_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
-        stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         try:
-            process = subprocess.Popen(
-                [python_path, os.path.join(os.path.dirname(__file__), "worker.py")],
-                stdin=subprocess.PIPE,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                text=True,
-            )
-            process.stdin.write(json.dumps({
-                "cif_path": bpy.path.abspath(self.filepath),
-                "block_name": self.block_name,
-            }))
-            process.stdin.close()
-        except Exception:
-            if "process" in locals():
-                _stop_worker(process)
-            stdout_file.close()
-            stderr_file.close()
-            raise
-
-        self._worker = {
-            "process": process,
-            "stdout": stdout_file,
-            "stderr": stderr_file,
-            "deadline": time.monotonic() + _WORKER_TIMEOUT,
-        }
-        self._timer = context.window_manager.event_timer_add(
-            0.2, window=context.window
-        )
-        context.window_manager.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
-
-    def _finish_worker(self, context):
-        timer = getattr(self, "_timer", None)
-        if timer is not None:
-            context.window_manager.event_timer_remove(timer)
-            self._timer = None
-
-    def modal(self, context, event):
-        if event.type in {'ESC', 'RIGHTMOUSE'}:
-            _stop_worker(self._worker["process"])
-            self._finish_worker(context)
-            self._worker["stdout"].close()
-            self._worker["stderr"].close()
+            worker = _gemmi_worker()
+        except RuntimeError as exc:
+            self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
-        if event.type != 'TIMER':
-            return {'PASS_THROUGH'}
-        process = self._worker["process"]
-        if process.poll() is None:
-            if time.monotonic() >= self._worker["deadline"]:
-                _stop_worker(process)
-                self._finish_worker(context)
-                self._worker["stdout"].close()
-                self._worker["stderr"].close()
-                self.report({'ERROR'}, "cctbx worker timed out.")
-                return {'CANCELLED'}
-            return {'RUNNING_MODAL'}
-
-        self._finish_worker(context)
         try:
-            result = _read_worker_response(self._worker)
-            root = _import_result(context.scene, result, self.filepath)
-            self.report(
-                {'INFO'},
-                f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
-                f"({root.get('cgn_space_group')}).",
+            result = worker.load_structure(
+                bpy.path.abspath(self.filepath), self.block_name or None
             )
-            return {'FINISHED'}
+            root = _import_result(context.scene, result, self.filepath)
         except Exception as exc:
             traceback.print_exc()
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+        self.report(
+            {'INFO'},
+            f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
+            f"({root.get('cgn_space_group')}).",
+        )
+        return {'FINISHED'}
 
 
 class CGN_OT_rebuild_connectivity(Operator):
@@ -1741,38 +1687,22 @@ class CGN_OT_grow_further(Operator):
         for index in selected_indices:
             offset = index * 4
             seed_instances.extend(instances[offset:offset + 4])
-        self._tables = (sites, instances, cell_matrix, initial_count)
 
-        prefs = context.preferences.addons[__package__].preferences
-        python_path = bpy.path.abspath(prefs.cctbx_python_path)
-        worker_path = os.path.join(os.path.dirname(__file__), "worker.py")
-        if not os.path.isfile(python_path):
-            self.report({'ERROR'}, "Set a valid cctbx Python executable in add-on preferences.")
-            return {'CANCELLED'}
-        if not os.path.isfile(worker_path):
-            self.report({'ERROR'}, "The bundled cctbx worker.py file is missing.")
-            return {'CANCELLED'}
-
-        stdout_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
-        stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         try:
-            process = subprocess.Popen(
-                [python_path, worker_path],
-                stdin=subprocess.PIPE,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                text=True,
-            )
-            process.stdin.write(json.dumps({
-                "op": "grow_connectivity_shell",
-                "unit_cell": json.loads(root.get("cgn_unit_cell", "[]")),
-                "sites": [
+            worker = _gemmi_worker()
+        except RuntimeError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        try:
+            result = worker.grow_connectivity_shell(
+                json.loads(root.get("cgn_unit_cell", "[]")),
+                [
                     {"element": site["element"], "frac": site["frac"]}
                     for site in sites
                 ],
-                "current_instances": instances,
-                "seed_instances": seed_instances,
-                "pair_settings": [
+                instances,
+                seed_instances,
+                [
                     {
                         "element_a": item.element_a,
                         "element_b": item.element_b,
@@ -1782,75 +1712,26 @@ class CGN_OT_grow_further(Operator):
                     }
                     for item in context.scene.cgn_connectivity_pairs
                 ],
-            }))
-            process.stdin.close()
+            )
         except Exception as exc:
-            if "process" in locals():
-                _stop_worker(process)
-            stdout_file.close()
-            stderr_file.close()
-            self.report({'ERROR'}, f"Could not start the cctbx worker: {exc}")
+            traceback.print_exc()
+            self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
-        self._worker = {
-            "process": process,
-            "stdout": stdout_file,
-            "stderr": stderr_file,
-            "deadline": time.monotonic() + _WORKER_TIMEOUT,
-            "root_name": root.name,
-            "root_id": root.get("cgn_instance_id"),
-        }
-        self._timer = context.window_manager.event_timer_add(
-            0.2, window=context.window
-        )
-        context.window_manager.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
-
-    def _finish_worker(self, context):
-        timer = getattr(self, "_timer", None)
-        if timer is not None:
-            context.window_manager.event_timer_remove(timer)
-            self._timer = None
-
-    def modal(self, context, event):
-        if event.type in {'ESC', 'RIGHTMOUSE'}:
-            _stop_worker(self._worker["process"])
-            self._finish_worker(context)
-            self._worker["stdout"].close()
-            self._worker["stderr"].close()
+        grew_by = int(result.get("grew_by", 0))
+        if grew_by == 0:
+            self.report(
+                {'INFO'},
+                "No additional atoms match the current connectivity settings.",
+            )
+            return {'FINISHED'}
+        new_instances = result.get("new_instances", [])
+        if len(new_instances) < grew_by * 4:
+            self.report(
+                {'ERROR'}, "The gemmi worker returned an invalid growth result."
+            )
             return {'CANCELLED'}
-        if event.type != 'TIMER':
-            return {'PASS_THROUGH'}
-
-        process = self._worker["process"]
-        if process.poll() is None:
-            if time.monotonic() >= self._worker["deadline"]:
-                _stop_worker(process)
-                self._finish_worker(context)
-                self._worker["stdout"].close()
-                self._worker["stderr"].close()
-                self.report({'ERROR'}, "cctbx grow worker timed out.")
-                return {'CANCELLED'}
-            return {'RUNNING_MODAL'}
-
-        self._finish_worker(context)
         try:
-            result = _read_worker_response(self._worker)
-            root = bpy.data.collections.get(self._worker["root_name"])
-            if (
-                root is None
-                or root.get("cgn_role") != "structure"
-                or root.get("cgn_instance_id") != self._worker["root_id"]
-            ):
-                raise RuntimeError("The active structure was removed during growth.")
-            grew_by = int(result.get("grew_by", 0))
-            if grew_by == 0:
-                self.report({'INFO'}, "No additional atoms match the current connectivity settings.")
-                return {'FINISHED'}
-            new_instances = result.get("new_instances", [])
-            if len(new_instances) < grew_by * 4:
-                raise RuntimeError("The cctbx worker returned an invalid growth result.")
-            sites, instances, cell_matrix, initial_count = self._tables
             instances = instances + new_instances
             atoms = _materialize_atoms(
                 sites, cell_matrix, instances, initial_count
@@ -1864,16 +1745,16 @@ class CGN_OT_grow_further(Operator):
             root["cgn_growth_shells"] = int(
                 root.get("cgn_growth_shells", 0)
             ) + 1
-            self.report(
-                {'INFO'},
-                f"Added {grew_by} atoms; structure now contains "
-                f"{len(atoms)} atoms.",
-            )
-            return {'FINISHED'}
         except Exception as exc:
             traceback.print_exc()
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+        self.report(
+            {'INFO'},
+            f"Added {grew_by} atoms; structure now contains "
+            f"{len(atoms)} atoms.",
+        )
+        return {'FINISHED'}
 
 
 class CGN_PT_panel(Panel):
@@ -2009,12 +1890,11 @@ class CGN_PT_about(Panel):
         layout = self.layout
         version = ".".join(str(part) for part in bl_info["version"])
         layout.label(text=f"Version {version}", icon='INFO')
-        preferences = context.preferences.addons.get(__package__)
-        if preferences is not None:
-            layout.label(
-                text=preferences.preferences.cctbx_python_path,
-                icon='PYTHON',
-            )
+        gemmi_version, error = _gemmi_status()
+        if error:
+            layout.label(text="gemmi not available", icon='ERROR')
+        else:
+            layout.label(text=f"gemmi {gemmi_version}", icon='PYTHON')
         layout.operator(
             "wm.url_open", text="Documentation", icon='URL'
         ).url = _DOCS_URL
@@ -2051,7 +1931,7 @@ def _draw_viewport_menu(self, context):
 
 
 def _draw_file_import(self, context):
-    self.layout.operator("cgn.import_cif", text="CCTBX CIF (.cif)", icon='IMPORT')
+    self.layout.operator("cgn.import_cif", text="CIF (.cif)", icon='IMPORT')
 
 
 _CLASSES = (

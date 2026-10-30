@@ -1,39 +1,296 @@
-#!/usr/bin/env python
-"""cctbx worker: read a CIF, expose its P1 cell, grow coordination shells.
+"""gemmi worker: read a CIF, expose its P1 cell, grow coordination shells.
 
-The worker is stateless and runs in the cctbx interpreter. A structure is sent
-back and forth as a small site table (the P1 cell contents) plus instances,
-where an instance is the quadruple (site index, tx, ty, tz). One atom therefore
-costs four small integers instead of a full dictionary.
+This is the gemmi port of ``worker.py``. It runs inside Blender's own Python
+(no subprocess, no external interpreter) and returns exactly the same
+dictionaries the JSON worker used to return, so the Blender side is unchanged.
+
+Symmetry follows cctbx: sites closer than 0.5 A to a special position are
+projected onto it before expansion, which reproduces cctbx's atom counts and
+coordinates. Radius tables are copied from cctbx so atom sizes and the default
+connectivity windows stay identical.
 """
 
-import json
 import math
-import sys
-import traceback
+import re
 
-from cctbx import uctbx
-from cctbx.eltbx import covalent_radii, van_der_waals_radii
-from iotbx import cif
+import gemmi
+
+# --------------------------------------------------------------------------
+# cctbx-compatible radius tables (cctbx.eltbx.van_der_waals_radii and
+# cctbx.eltbx.covalent_radii). Kept verbatim so the default bond windows
+# (r_a + r_b + 0.4 A) match the cctbx build exactly.
+# --------------------------------------------------------------------------
+
+_VDW_RADII = {
+    "Ac": 2.12, "Ag": 1.72, "Al": 1.5, "Am": 1.66, "Ar": 1.88, "As": 0.83,
+    "At": 1.12, "Au": 1.66, "B": 1.75, "Ba": 2.41, "Be": 0.63, "Bi": 1.73,
+    "Bk": 1.64, "Br": 1.85, "C": 1.775, "Ca": 1.95, "Cd": 1.58, "Ce": 1.86,
+    "Cf": 1.63, "Cl": 1.75, "Cm": 1.65, "Co": 1.13, "Cr": 1.13, "Cs": 3.01,
+    "Cu": 1.4, "D": 1.2, "Dy": 1.63, "Er": 1.59, "Es": 1.62, "Eu": 1.96,
+    "F": 1.47, "Fe": 1.26, "Fm": 1.61, "Fr": 3.24, "Ga": 1.87, "Gd": 1.69,
+    "Ge": 1.48, "H": 1.2, "He": 1.4, "Hf": 1.4, "Hg": 1.55, "Ho": 1.61,
+    "I": 1.98, "In": 1.93, "Ir": 1.22, "K": 2.75, "Kr": 2.02, "La": 1.83,
+    "Li": 1.82, "Lr": 1.58, "Lu": 1.53, "Md": 1.6, "Mg": 1.73, "Mn": 1.19,
+    "Mo": 1.75, "N": 1.5, "Na": 2.27, "Nb": 1.33, "Nd": 1.79, "Ne": 1.54,
+    "Ni": 1.63, "No": 1.59, "Np": 1.71, "O": 1.45, "Os": 1.58, "P": 1.9,
+    "Pa": 1.6, "Pb": 2.02, "Pd": 1.63, "Pm": 1.76, "Po": 1.21, "Pr": 1.62,
+    "Pt": 1.72, "Pu": 1.67, "Ra": 2.57, "Rb": 2.65, "Re": 1.3, "Rh": 1.22,
+    "Rn": 2.3, "Ru": 1.2, "S": 1.8, "Sb": 1.12, "Sc": 1.32, "Se": 1.9,
+    "Si": 2.1, "Sm": 1.74, "Sn": 2.17, "Sr": 2.02, "Ta": 1.22, "Tb": 1.66,
+    "Tc": 2.0, "Te": 1.26, "Th": 1.84, "Ti": 1.95, "Tl": 1.96, "Tm": 1.57,
+    "U": 1.75, "V": 1.06, "W": 1.26, "Xe": 2.16, "Y": 1.61, "Yb": 1.54,
+    "Zn": 1.39, "Zr": 1.42,
+}
+
+_COVALENT_RADII = {
+    "Ac": 2.15, "Ag": 1.45, "Al": 1.21, "Am": 1.8, "Ar": 1.06, "As": 1.19,
+    "At": 1.5, "Au": 1.36, "B": 0.84, "Ba": 2.15, "Be": 0.96, "Bi": 1.48,
+    "Bk": 0.84, "Br": 1.2, "C": 0.76, "Ca": 1.76, "Cd": 1.44, "Ce": 2.04,
+    "Cf": 0.76, "Cl": 1.02, "Cm": 1.69, "Co": 1.26, "Cr": 1.39, "Cs": 2.44,
+    "Cu": 1.32, "D": 0.31, "Dy": 1.92, "Er": 1.89, "Eu": 1.98, "F": 0.57,
+    "Fe": 1.32, "Fm": 0.57, "Fr": 2.6, "Ga": 1.22, "Gd": 1.96, "Ge": 1.2,
+    "H": 0.31, "He": 0.28, "Hf": 1.75, "Hg": 1.32, "Ho": 1.92, "I": 1.39,
+    "In": 1.42, "Ir": 1.41, "K": 2.03, "Kr": 1.16, "La": 2.07, "Li": 1.28,
+    "Lu": 1.87, "Mg": 1.41, "Mn": 1.39, "Mo": 1.54, "N": 0.71, "Na": 1.66,
+    "Nb": 1.64, "Nd": 2.01, "Ne": 0.58, "Ni": 1.24, "No": 0.71, "Np": 1.9,
+    "O": 0.66, "Os": 1.44, "P": 1.07, "Pa": 2.0, "Pb": 1.46, "Pd": 1.39,
+    "Pm": 1.99, "Po": 1.4, "Pr": 2.03, "Pt": 1.36, "Pu": 1.87, "Ra": 2.21,
+    "Rb": 2.2, "Re": 1.51, "Rh": 1.42, "Rn": 1.5, "Ru": 1.46, "S": 1.05,
+    "Sb": 1.39, "Sc": 1.7, "Se": 1.2, "Si": 1.11, "Sm": 1.98, "Sn": 1.39,
+    "Sr": 1.95, "Ta": 1.7, "Tb": 1.94, "Tc": 1.47, "Te": 1.38, "Th": 2.06,
+    "Ti": 1.6, "Tl": 1.45, "Tm": 1.9, "U": 1.96, "V": 1.53, "W": 1.62,
+    "Xe": 1.4, "Y": 1.9, "Yb": 1.87, "Zn": 1.22, "Zr": 1.75,
+}
+
+_DEFAULT_VDW_RADIUS = 1.70
+_DEFAULT_COVALENT_RADIUS = 0.75
+# cctbx.crystal.special_position_settings default: snap sites onto a special
+# position when the deviation is below this many Angstrom.
+_SNAP_DISTANCE = 0.5
+_CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
+_LABEL_ELEMENT = re.compile(r"([A-Za-z]{1,2})")
 
 
-def _radius_tables(element, label):
+# --------------------------------------------------------------------------
+# Elements and radii
+# --------------------------------------------------------------------------
+
+def _is_element(symbol):
     try:
-        vdw = van_der_waals_radii.vdw.table[element]
-    except KeyError:
-        vdw = 1.70
-    try:
-        covalent = covalent_radii.table(label or element).radius()
+        return gemmi.Element(symbol).atomic_number > 0
     except Exception:
-        try:
-            covalent = covalent_radii.table(element).radius()
-        except Exception:
-            covalent = 0.75
+        return False
+
+
+def _element_from_text(text):
+    """Parse a CIF label or type symbol into a title-case element symbol."""
+    if not text:
+        return None
+    match = _LABEL_ELEMENT.match(str(text).strip())
+    if match is None:
+        return None
+    letters = match.group(1)
+    for candidate in (letters[:2].title(), letters[:1].upper()):
+        if _is_element(candidate):
+            return candidate
+    return None
+
+
+def _site_element(site):
+    """Element symbol of a gemmi small-structure site, CIF-first like cctbx."""
+    for text in (site.type_symbol, site.label):
+        symbol = _element_from_text(text)
+        if symbol is not None:
+            return symbol
+    name = getattr(site.element, "name", None)
+    if name and name != "X":
+        return name
+    return "X"
+
+
+def _radius_tables(element):
+    symbol = str(element or "").title()
+    vdw = _VDW_RADII.get(symbol, _DEFAULT_VDW_RADIUS)
+    covalent = _COVALENT_RADII.get(symbol, _DEFAULT_COVALENT_RADIUS)
     return float(vdw), float(covalent)
 
 
+# --------------------------------------------------------------------------
+# Cell helpers
+# --------------------------------------------------------------------------
+
+def _cell_columns(unit_cell):
+    """Orthogonalized basis vectors: cart = sum(frac[i] * columns[i])."""
+    columns = []
+    for axis in range(3):
+        basis = [0.0, 0.0, 0.0]
+        basis[axis] = 1.0
+        position = unit_cell.orthogonalize(gemmi.Fractional(*basis))
+        columns.extend((float(position.x), float(position.y), float(position.z)))
+    return columns
+
+
+def _inverse_3x3(columns):
+    """Inverse of the orthogonalization matrix, row-major."""
+    a, b, c, d, e, f, g, h, i = [float(value) for value in columns]
+    # columns = [a d g; b e h; c f i] (basis vectors as columns)
+    det = (
+        a * (e * i - f * h)
+        - d * (b * i - c * h)
+        + g * (b * f - c * e)
+    )
+    if abs(det) < 1e-12:
+        raise ValueError("The unit cell is degenerate.")
+    return [
+        (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
+        (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
+        (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det,
+    ]
+
+
+class _UnitCell:
+    """Minimal ``uctbx.unit_cell`` look-alike backed by ``gemmi.UnitCell``."""
+
+    def __init__(self, parameters):
+        self.cell = gemmi.UnitCell(*[float(value) for value in parameters])
+        self._columns = _cell_columns(self.cell)
+        self._fractionalization = _inverse_3x3(self._columns)
+
+    def orthogonalize(self, frac):
+        position = self.cell.orthogonalize(
+            gemmi.Fractional(float(frac[0]), float(frac[1]), float(frac[2]))
+        )
+        return [float(position.x), float(position.y), float(position.z)]
+
+    def fractionalize(self, cart):
+        frac = self.cell.fractionalize(
+            gemmi.Position(float(cart[0]), float(cart[1]), float(cart[2]))
+        )
+        return [float(frac.x), float(frac.y), float(frac.z)]
+
+    def fractionalization_matrix(self):
+        return list(self._fractionalization)
+
+    def parameters(self):
+        return [float(value) for value in self.cell.parameters]
+
+
+def _cart_distance(unit_cell, frac_a, frac_b):
+    delta = [float(frac_a[axis]) - float(frac_b[axis]) for axis in range(3)]
+    delta = [value - round(value) for value in delta]
+    cart = unit_cell.orthogonalize(delta)
+    return math.sqrt(sum(value * value for value in cart))
+
+
+# --------------------------------------------------------------------------
+# Symmetry
+# --------------------------------------------------------------------------
+
+def _space_group_ops(structure):
+    space_group = structure.spacegroup
+    if space_group is None:
+        raise ValueError(
+            "The CIF does not define a space group that gemmi recognises."
+        )
+    return list(space_group.operations())
+
+
+def _op_key(operation):
+    rotation = []
+    for row in operation.rot:
+        if isinstance(row, (list, tuple)):
+            rotation.extend(int(value) for value in row)
+        else:
+            rotation.append(int(row))
+    return (tuple(rotation),
+            tuple(int(value) for value in operation.tran))
+
+
+def _site_symmetry_group(ops, unit_cell, frac):
+    """Subgroup of ops that keep ``frac`` fixed within the snap distance."""
+    near = [
+        operation for operation in ops
+        if _cart_distance(unit_cell, operation.apply_to_xyz(frac), frac)
+        <= _SNAP_DISTANCE
+    ]
+    if len(near) <= 1:
+        return list(near)
+    subgroup = {}
+    for operation in near:
+        subgroup[_op_key(operation)] = operation
+    pending = list(subgroup.values())
+    while pending:
+        left = pending.pop()
+        for right in list(subgroup.values()):
+            product = left.combine(right)
+            key = _op_key(product)
+            if key not in subgroup:
+                subgroup[key] = product
+                pending.append(product)
+    return list(subgroup.values())
+
+
+def _special_position(ops, unit_cell, frac):
+    """Project a site onto the special position of its site-symmetry group."""
+    subgroup = _site_symmetry_group(ops, unit_cell, frac)
+    if len(subgroup) <= 1:
+        return list(frac)
+    total = [0.0, 0.0, 0.0]
+    for operation in subgroup:
+        moved = operation.apply_to_xyz(frac)
+        for axis in range(3):
+            delta = float(moved[axis]) - float(frac[axis])
+            total[axis] += float(frac[axis]) + (delta - round(delta))
+    count = float(len(subgroup))
+    return [value / count for value in total]
+
+
+def _expand_site(ops, unit_cell, frac):
+    """Distinct symmetry images of a site, wrapped into [0, 1)."""
+    images = []
+    for operation in ops:
+        image = _wrapped_fractional(operation.apply_to_xyz(frac))
+        if any(
+            _cart_distance(unit_cell, image, other) <= _CART_TOLERANCE
+            for other in images
+        ):
+            continue
+        images.append(image)
+    return images
+
+
+def _wrapped_fractional(frac):
+    """Wrap fractional coordinates into [0, 1)."""
+    wrapped = []
+    for value in frac:
+        value = float(value) % 1.0
+        wrapped.append(0.0 if value >= 1.0 else value)
+    return wrapped
+
+
+# --------------------------------------------------------------------------
+# CIF reading
+# --------------------------------------------------------------------------
+
 def _read_structure(cif_path, block_name=None):
-    structures = cif.reader(file_path=cif_path).build_crystal_structures()
+    """Return (gemmi.SmallStructure, block name) for one CIF block."""
+    with open(cif_path, encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    # check_level=0 tolerates duplicate block names (some AMCSD files have two
+    # data_global blocks); like cctbx, the last block with a given name wins.
+    try:
+        document = gemmi.cif.read_string(text, check_level=0)
+    except Exception as exc:
+        raise ValueError(f"This file could not be parsed as a CIF: {exc}") from exc
+    structures = {}
+    for block in document:
+        try:
+            structure = gemmi.make_small_structure_from_block(block)
+        except Exception:
+            continue
+        if not structure.sites or not structure.cell.a > 0.0:
+            continue
+        structures[block.name] = structure
     if not structures:
         raise ValueError("No crystal structures were found in this CIF.")
     if block_name:
@@ -53,35 +310,64 @@ def _read_structure(cif_path, block_name=None):
     return structures[key], key
 
 
-def _p1_sites(structure):
+def _p1_sites(structure, unit_cell):
     """Cell contents in P1 as a small table of sites."""
+    ops = _space_group_ops(structure)
     sites = []
-    p1_structure = structure.expand_to_p1(sites_mod_positive=True)
-    for scatterer in p1_structure.scatterers():
-        symbol = scatterer.element_symbol()
-        element = symbol.upper()
-        vdw_radius, covalent_radius = _radius_tables(symbol, scatterer.label)
-        sites.append({
-            "label": scatterer.label,
-            "source_label": scatterer.label,
-            "element": element,
-            "frac": list(scatterer.site),
-            "occupancy": float(scatterer.occupancy),
-            "vdw_radius": vdw_radius,
-            "covalent_radius": covalent_radius,
-        })
+    for site in structure.sites:
+        element = _site_element(site)
+        vdw_radius, covalent_radius = _radius_tables(element)
+        frac = _special_position(ops, unit_cell, [float(v) for v in site.fract])
+        for image in _expand_site(ops, unit_cell, frac):
+            sites.append({
+                "label": site.label,
+                "source_label": site.label,
+                "element": element.upper(),
+                "frac": image,
+                "occupancy": float(site.occ),
+                "vdw_radius": vdw_radius,
+                "covalent_radius": covalent_radius,
+            })
     return sites
 
 
-def _cell_columns(unit_cell):
-    """Orthogonalized basis vectors: cart = sum(frac[i] * columns[i])."""
-    columns = []
-    for axis in range(3):
-        basis = [0.0, 0.0, 0.0]
-        basis[axis] = 1.0
-        columns.extend(float(value) for value in unit_cell.orthogonalize(basis))
-    return columns
+def load_structure(cif_path, block_name=None):
+    """Return the P1 site table and the instances that make up the ASU."""
+    structure, key = _read_structure(cif_path, block_name)
+    unit_cell = _UnitCell(structure.cell.parameters)
+    ops = _space_group_ops(structure)
+    sites = _p1_sites(structure, unit_cell)
+    base_atoms = _base_atoms(unit_cell, sites)
+    lookup = _base_atom_lookup(unit_cell, base_atoms)
+    asu_atoms = []
+    for site in structure.sites:
+        frac = _special_position(
+            ops, unit_cell, [float(value) for value in site.fract]
+        )
+        asu_atoms.append({
+            "label": site.label,
+            "element": _site_element(site).upper(),
+            "frac": frac,
+            "cart": unit_cell.orthogonalize(frac),
+        })
+    instances = _instances_from_atoms(unit_cell, base_atoms, lookup, asu_atoms)
+    if not instances:
+        raise ValueError("The CIF atoms could not be placed in the unit cell.")
+    space_group = structure.spacegroup
+    return {
+        "label": key,
+        "space_group": f"{space_group.xhm()} (No. {space_group.number})",
+        "space_group_ops": [op.triplet() for op in ops],
+        "unit_cell": unit_cell.parameters(),
+        "cell_matrix": list(unit_cell._columns),
+        "sites": sites,
+        "instances": instances,
+    }
 
+
+# --------------------------------------------------------------------------
+# Growth (ported from the cctbx worker)
+# --------------------------------------------------------------------------
 
 def _enabled_windows(pair_settings):
     """Return {sorted element pair: (min_distance, max_distance)}."""
@@ -94,15 +380,6 @@ def _enabled_windows(pair_settings):
         if setting.get("enabled", False) and 0.0 <= minimum <= maximum:
             windows[tuple(sorted((element_a, element_b)))] = (minimum, maximum)
     return windows
-
-
-def _wrapped_fractional(frac):
-    """Wrap fractional coordinates into [0, 1)."""
-    wrapped = []
-    for value in frac:
-        value = float(value) % 1.0
-        wrapped.append(0.0 if value >= 1.0 else value)
-    return wrapped
 
 
 def _fractional_reach(unit_cell, max_distance):
@@ -121,9 +398,6 @@ def _fractional_reach(unit_cell, max_distance):
         )
     cells = [max(1, int(math.ceil(value))) for value in reach]
     return reach, cells
-
-
-_CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
 
 
 def _fractional_tolerance(unit_cell, cart_tolerance):
@@ -269,7 +543,7 @@ def _base_atoms(unit_cell, sites):
             "label": site.get("label"),
             "element": str(site.get("element", "X")).upper(),
             "frac": frac,
-            "cart": list(unit_cell.orthogonalize(frac)),
+            "cart": unit_cell.orthogonalize(frac),
         })
     return atoms
 
@@ -294,39 +568,6 @@ def _instances_from_atoms(unit_cell, base_atoms, lookup, atoms):
             match[0], match[1][0], match[1][1], match[1][2],
         ))
     return instances
-
-
-def load_structure(cif_path, block_name=None):
-    """Return the P1 site table and the instances that make up the ASU."""
-    structure, key = _read_structure(cif_path, block_name)
-    unit_cell = structure.unit_cell()
-    sites = _p1_sites(structure)
-    base_atoms = _base_atoms(unit_cell, sites)
-    lookup = _base_atom_lookup(unit_cell, base_atoms)
-    asu_atoms = []
-    for scatterer in structure.scatterers():
-        frac = list(scatterer.site)
-        asu_atoms.append({
-            "label": scatterer.label,
-            "element": scatterer.element_symbol().upper(),
-            "frac": frac,
-            "cart": list(unit_cell.orthogonalize(frac)),
-        })
-    instances = _instances_from_atoms(unit_cell, base_atoms, lookup, asu_atoms)
-    if not instances:
-        raise ValueError("The CIF atoms could not be placed in the unit cell.")
-    return {
-        "label": key,
-        "space_group": structure.space_group().info().symbol_and_number(),
-        "space_group_ops": [
-            operation.as_xyz()
-            for operation in structure.space_group().all_ops()
-        ],
-        "unit_cell": list(unit_cell.parameters()),
-        "cell_matrix": _cell_columns(unit_cell),
-        "sites": sites,
-        "instances": instances,
-    }
 
 
 def _instance_keys(instances, canonical):
@@ -363,7 +604,7 @@ def _build_image_bank(unit_cell, base_atoms, base_elements, active_elements,
             for tb in range(-cells[1], cells[1] + 1):
                 for tc in range(-cells[2], cells[2] + 1):
                     relative = (frac[0] + ta, frac[1] + tb, frac[2] + tc)
-                    cart = tuple(unit_cell.orthogonalize(relative))
+                    cart = unit_cell.orthogonalize(relative)
                     cell = tuple(
                         int(math.floor(relative[axis] / bucket_width[axis]))
                         for axis in range(3)
@@ -495,9 +736,7 @@ def grow_connectivity_shell(
     if not seed_instances:
         raise ValueError("Select at least one atom to grow from.")
 
-    unit_cell = uctbx.unit_cell(
-        [float(value) for value in unit_cell_parameters]
-    )
+    unit_cell = _UnitCell([float(value) for value in unit_cell_parameters])
     base_atoms = _base_atoms(unit_cell, sites)
     if not base_atoms:
         raise ValueError("The site table is empty.")
@@ -519,31 +758,3 @@ def grow_connectivity_shell(
             site_index, translation[0], translation[1], translation[2],
         ))
     return {"new_instances": new_instances, "grew_by": len(new_keys)}
-
-
-def main():
-    try:
-        request = json.loads(sys.stdin.read())
-        if request.get("op") == "grow_connectivity_shell":
-            result = grow_connectivity_shell(
-                request["unit_cell"],
-                request.get("sites", []),
-                request.get("current_instances", []),
-                request.get("seed_instances", []),
-                request.get("pair_settings", []),
-            )
-        else:
-            result = load_structure(
-                request["cif_path"], request.get("block_name") or None
-            )
-        sys.stdout.write(json.dumps({"ok": True, "result": result}))
-    except Exception as exc:
-        sys.stdout.write(json.dumps({
-            "ok": False,
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
-        }))
-
-
-if __name__ == "__main__":
-    main()

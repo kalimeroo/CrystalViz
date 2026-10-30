@@ -1,0 +1,1992 @@
+bl_info = {
+    "name": "CCTBX Geometry Nodes",
+    "author": "OpenAI",
+    "version": (0, 4, 6),
+    "blender": (4, 0, 0),
+    "location": "View3D > Sidebar > CCTBX GN",
+    "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
+    "category": "Import-Export",
+}
+
+import bpy
+import json
+import math
+import os
+import subprocess
+import tempfile
+import time
+import traceback
+import uuid
+import gpu
+from bpy_extras import view3d_utils
+from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
+from gpu_extras.batch import batch_for_shader
+from mathutils import Matrix, Vector
+
+
+_ELEMENT_COLORS = {
+    "H": (0.92, 0.92, 0.92, 1.0),
+    "C": (0.20, 0.20, 0.20, 1.0),
+    "N": (0.12, 0.25, 0.90, 1.0),
+    "O": (0.90, 0.08, 0.08, 1.0),
+    "F": (0.35, 0.82, 0.32, 1.0),
+    "CL": (0.20, 0.75, 0.20, 1.0),
+    "S": (0.95, 0.78, 0.08, 1.0),
+    "P": (1.0, 0.48, 0.08, 1.0),
+    "TI": (0.50, 0.52, 0.55, 1.0),
+    "FE": (0.78, 0.36, 0.12, 1.0),
+    "CU": (0.78, 0.42, 0.18, 1.0),
+    "ZN": (0.48, 0.52, 0.70, 1.0),
+}
+_DEFAULT_COLOR = (0.48, 0.52, 0.56, 1.0)
+_DISPLAY_SCALE = 0.1
+_BOND_VDW_FACTOR = 0.1
+_DEFAULT_VDW_RADIUS = 1.5
+_DEFAULT_BOND_RADIUS = (
+    _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
+)
+_BOND_TOLERANCE = 0.4
+_WORKER_TIMEOUT = 120.0
+_MAX_FILL_REPEATS = 20
+_MAX_FILL_ATOMS = 200000
+_UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
+_UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
+_UNIT_CELL_FACE_ALPHA = 0.08
+_UNIT_CELL_EDGE_THICKNESS = 0.05
+_NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
+_NODE_GROUP_BONDS = "CGN_GN_BondTubes"
+
+
+class CGN_AddonPreferences(AddonPreferences):
+    bl_idname = __package__
+
+    cctbx_python_path: StringProperty(
+        name="cctbx Python Executable",
+        description="Python interpreter with cctbx-base installed",
+        subtype="FILE_PATH",
+        default=r"C:\Users\Erwann Jeanneau\.conda\envs\crystal_env\python.exe",
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "cctbx_python_path")
+
+
+class CGN_ConnectivityPair(PropertyGroup):
+    element_a: StringProperty(options={'HIDDEN'})
+    element_b: StringProperty(options={'HIDDEN'})
+    enabled: BoolProperty(name="Connect", default=True)
+    min_distance: FloatProperty(
+        name="Min (Å)", default=0.1, min=0.0, max=20.0, precision=3,
+    )
+    max_distance: FloatProperty(
+        name="Max (Å)", default=3.0, min=0.0, max=20.0, precision=3,
+    )
+
+
+def _unit_cell_settings_updated(self, context):
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    try:
+        _apply_unit_cell_settings(scene)
+    except Exception:
+        traceback.print_exc()
+
+
+class CGN_UnitCellSettings(PropertyGroup):
+    show_unit_cell: BoolProperty(
+        name="Show Unit Cell",
+        description="Display the unit-cell box around the structure",
+        default=True,
+        update=_unit_cell_settings_updated,
+    )
+    face_color: FloatVectorProperty(
+        name="Face Color",
+        description="Unit-cell face color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_UNIT_CELL_FACE_COLOR,
+        update=_unit_cell_settings_updated,
+    )
+    face_transparency: FloatProperty(
+        name="Transparency",
+        description="Unit-cell face transparency (1 is fully transparent)",
+        default=1.0 - _UNIT_CELL_FACE_ALPHA,
+        min=0.0,
+        max=1.0,
+        precision=2,
+        update=_unit_cell_settings_updated,
+    )
+    edge_color: FloatVectorProperty(
+        name="Edge Color",
+        description="Unit-cell edge color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_UNIT_CELL_EDGE_COLOR,
+        update=_unit_cell_settings_updated,
+    )
+    edge_thickness: FloatProperty(
+        name="Edge Thickness",
+        description="Unit-cell edge thickness",
+        default=_UNIT_CELL_EDGE_THICKNESS,
+        min=0.0,
+        max=1.0,
+        precision=3,
+        update=_unit_cell_settings_updated,
+    )
+
+
+def _active_root(scene):
+    name = scene.cgn_active_structure
+    root = bpy.data.collections.get(name) if name else None
+    if root is not None and root.get("cgn_role") == "structure":
+        return root
+    return None
+
+
+def _socket_identifier(node_group, name, in_out='INPUT'):
+    for item in node_group.interface.items_tree:
+        if (
+            item.item_type == 'SOCKET'
+            and item.in_out == in_out
+            and item.name == name
+        ):
+            return item.identifier
+    raise RuntimeError(f"Geometry Nodes socket '{name}' was not created.")
+
+
+def _ensure_shade_smooth(node_group):
+    """Add a Set Shade Smooth node to an atom node group if it is missing."""
+    for node in node_group.nodes:
+        if node.bl_idname == "GeometryNodeSetShadeSmooth":
+            return
+    instance = next(
+        (
+            node for node in node_group.nodes
+            if node.bl_idname == "GeometryNodeInstanceOnPoints"
+        ),
+        None,
+    )
+    if instance is None:
+        return
+    link = next(
+        (
+            link for link in node_group.links
+            if link.to_node == instance and link.to_socket.name == "Instance"
+        ),
+        None,
+    )
+    if link is None:
+        return
+    try:
+        smooth = node_group.nodes.new("GeometryNodeSetShadeSmooth")
+    except RuntimeError:
+        return
+    smooth.location = (0, -150)
+    source_socket = link.from_socket
+    node_group.links.remove(link)
+    node_group.links.new(source_socket, smooth.inputs["Geometry"])
+    node_group.links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
+
+
+def _make_node_group(name, is_bond_group):
+    node_group = bpy.data.node_groups.get(name)
+    if node_group is not None:
+        if not is_bond_group:
+            _ensure_shade_smooth(node_group)
+        return node_group
+
+    node_group = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    geometry_in = node_group.interface.new_socket(
+        name="Geometry", in_out='INPUT', socket_type="NodeSocketGeometry"
+    )
+    radius_in = node_group.interface.new_socket(
+        name="Radius", in_out='INPUT', socket_type="NodeSocketFloat"
+    )
+    radius_in.default_value = (
+        _DEFAULT_BOND_RADIUS if is_bond_group else 0.5 * _DISPLAY_SCALE
+    )
+    material_in = node_group.interface.new_socket(
+        name="Material", in_out='INPUT', socket_type="NodeSocketMaterial"
+    )
+    geometry_out = node_group.interface.new_socket(
+        name="Geometry", in_out='OUTPUT', socket_type="NodeSocketGeometry"
+    )
+
+    nodes = node_group.nodes
+    links = node_group.links
+    group_in = nodes.new("NodeGroupInput")
+    group_out = nodes.new("NodeGroupOutput")
+    group_in.location = (-600, 0)
+    group_out.location = (500, 0)
+    if is_bond_group:
+        mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
+        profile = nodes.new("GeometryNodeCurvePrimitiveCircle")
+        curve_to_mesh = nodes.new("GeometryNodeCurveToMesh")
+        set_material = nodes.new("GeometryNodeSetMaterial")
+        mesh_to_curve.location = (-350, 100)
+        profile.location = (-350, -150)
+        curve_to_mesh.location = (-100, 100)
+        set_material.location = (150, 100)
+        profile.inputs["Resolution"].default_value = 8
+        links.new(group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"])
+        links.new(mesh_to_curve.outputs["Curve"], curve_to_mesh.inputs["Curve"])
+        links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
+        links.new(group_in.outputs[radius_in.identifier], profile.inputs["Radius"])
+        links.new(curve_to_mesh.outputs["Mesh"], set_material.inputs["Geometry"])
+        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
+        links.new(set_material.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
+    else:
+        ico = nodes.new("GeometryNodeMeshIcoSphere")
+        set_material = nodes.new("GeometryNodeSetMaterial")
+        smooth = nodes.new("GeometryNodeSetShadeSmooth")
+        instance = nodes.new("GeometryNodeInstanceOnPoints")
+        ico.location = (-350, -150)
+        set_material.location = (-100, -150)
+        smooth.location = (0, -150)
+        instance.location = (150, 100)
+        ico.inputs["Subdivisions"].default_value = 2
+        links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
+        links.new(group_in.outputs[radius_in.identifier], ico.inputs["Radius"])
+        links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
+        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
+        links.new(set_material.outputs["Geometry"], smooth.inputs["Geometry"])
+        links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
+        links.new(instance.outputs["Instances"], group_out.inputs[geometry_out.identifier])
+    return node_group
+
+
+def _make_material(name, color):
+    material = bpy.data.materials.get(name)
+    if material is None:
+        material = bpy.data.materials.new(name)
+        material.diffuse_color = color
+        material.use_nodes = True
+        shader = material.node_tree.nodes.get("Principled BSDF")
+        if shader is not None:
+            shader.inputs["Base Color"].default_value = color
+            shader.inputs["Roughness"].default_value = 0.35
+    return material
+
+
+def _add_geometry_nodes_modifier(obj, node_group, radius, material):
+    modifier = obj.modifiers.new("Geometry Nodes", 'NODES')
+    modifier.node_group = node_group
+    for socket_name, value in (("Radius", radius), ("Material", material)):
+        identifier = _socket_identifier(node_group, socket_name)
+        try:
+            modifier[identifier] = value
+        except TypeError:
+            input_value = getattr(modifier.properties.inputs, identifier, None)
+            if input_value is None:
+                raise RuntimeError(
+                    f"Geometry Nodes modifier input '{socket_name}' is unavailable."
+                )
+            input_value.value = value
+
+
+def _clear_collection(collection):
+    for child in list(collection.children):
+        _clear_collection(child)
+        bpy.data.collections.remove(child, do_unlink=True)
+    for obj in list(collection.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def _stop_worker(process):
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+_LEGACY_STRUCTURE_ERROR = (
+    "This structure was imported by an older version of the add-on and has no "
+    "site table. Re-import the CIF to grow or rebuild it."
+)
+
+
+def _materialize_atoms(sites, cell_matrix, instances, initial_count=0):
+    """Expand the site table and instance quadruples into atom dictionaries.
+
+    An instance is (site index, tx, ty, tz): the atom sits at the site's
+    fractional position translated by that integer cell offset. Atom order
+    follows the instance order, so selection indices stay valid. Only the
+    atoms actually needed are built; nothing full-size is stored.
+    """
+    atoms = []
+    count = len(instances) - len(instances) % 4
+    for index, offset in enumerate(range(0, count, 4)):
+        site_index = int(instances[offset])
+        if not 0 <= site_index < len(sites):
+            continue
+        site = sites[site_index]
+        translation = (
+            int(instances[offset + 1]),
+            int(instances[offset + 2]),
+            int(instances[offset + 3]),
+        )
+        frac = [
+            float(site["frac"][axis]) + translation[axis] for axis in range(3)
+        ]
+        cart = [
+            frac[0] * cell_matrix[axis]
+            + frac[1] * cell_matrix[3 + axis]
+            + frac[2] * cell_matrix[6 + axis]
+            for axis in range(3)
+        ]
+        atom = dict(site)
+        atom.update({
+            "frac": frac,
+            "cart": cart,
+            "p1_index": site_index,
+            "growth_translation": list(translation),
+        })
+        if index >= initial_count:
+            atom["label"] = (
+                f"{site.get('source_label', site.get('label', 'X'))} "
+                f"[P1:{site_index}; {translation[0]},"
+                f"{translation[1]},{translation[2]}]"
+            )
+        atoms.append(atom)
+    return atoms
+
+
+def _structure_tables(root):
+    """Return (sites, instances, cell_matrix, initial_count) for a structure."""
+    sites_json = root.get("cgn_sites", "")
+    instances_json = root.get("cgn_instances", "")
+    matrix_json = root.get("cgn_cell_matrix", "")
+    if not sites_json or not instances_json or not matrix_json:
+        raise ValueError(_LEGACY_STRUCTURE_ERROR)
+    sites = json.loads(sites_json)
+    instances = json.loads(instances_json)
+    cell_matrix = json.loads(matrix_json)
+    if len(cell_matrix) != 9:
+        raise ValueError("The stored unit-cell matrix is invalid.")
+    initial_count = int(root.get("cgn_initial_count", 0))
+    return sites, instances, cell_matrix, initial_count
+
+
+def _structure_atoms(root):
+    sites, instances, cell_matrix, initial_count = _structure_tables(root)
+    return _materialize_atoms(sites, cell_matrix, instances, initial_count)
+
+
+def _structure_atom_count(root):
+    instances_json = root.get("cgn_instances", "")
+    if not instances_json:
+        return 0
+    return len(json.loads(instances_json)) // 4
+
+
+def _display_point(cart):
+    """Convert an Ångström-space position to Blender display units."""
+    return tuple(float(value) * _DISPLAY_SCALE for value in cart)
+
+
+def _make_atom_objects(root, atoms):
+    by_element = {}
+    for atom in atoms:
+        element = str(atom.get("element", "X")).upper()
+        by_element.setdefault(element, []).append(atom)
+
+    node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
+    for element, element_atoms in sorted(by_element.items()):
+        mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
+        mesh.from_pydata(
+            [_display_point(atom["cart"]) for atom in element_atoms], [], []
+        )
+        mesh.update()
+        obj = bpy.data.objects.new(f"CGN_Atoms_{element}", mesh)
+        obj["cgn_role"] = "atoms"
+        obj["cgn_element"] = element
+        root.objects.link(obj)
+        material = _make_material(
+            f"CGN_Mat_{element}", _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
+        )
+        radius = (
+            float(element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS))
+            / 4.0
+            * _DISPLAY_SCALE
+        )
+        _add_geometry_nodes_modifier(obj, node_group, radius, material)
+
+
+def _rebuild_atom_objects(root, atoms):
+    for obj in list(root.objects):
+        if obj.get("cgn_role") == "atoms":
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+    _make_atom_objects(root, atoms)
+
+
+def _update_growth_selection(root, atoms, indices):
+    root["cgn_selected_indices"] = json.dumps(sorted(set(indices)))
+    for obj in list(root.objects):
+        if obj.get("cgn_role") == "growth_selection":
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+    selected_atoms = [
+        atoms[index] for index in sorted(set(indices))
+        if 0 <= index < len(atoms)
+    ]
+    if not selected_atoms:
+        return
+
+    mesh = bpy.data.meshes.new("CGN_GrowthSelection_Points")
+    mesh.from_pydata(
+        [_display_point(atom["cart"]) for atom in selected_atoms], [], []
+    )
+    mesh.update()
+    obj = bpy.data.objects.new("CGN_GrowthSelection", mesh)
+    obj["cgn_role"] = "growth_selection"
+    root.objects.link(obj)
+    material = _make_material("CGN_GrowthSelection_Material", (1.0, 0.48, 0.02, 1.0))
+    _add_geometry_nodes_modifier(
+        obj, _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False),
+        0.9 * _DISPLAY_SCALE, material,
+    )
+
+
+def _unit_cell_values(settings=None):
+    """Return (face_rgba, face_alpha, edge_rgba, edge_thickness)."""
+    if settings is None:
+        return (
+            tuple(_UNIT_CELL_FACE_COLOR),
+            _UNIT_CELL_FACE_ALPHA,
+            tuple(_UNIT_CELL_EDGE_COLOR),
+            _UNIT_CELL_EDGE_THICKNESS,
+        )
+    face = tuple(float(channel) for channel in settings.face_color)
+    alpha = max(0.0, min(1.0, 1.0 - float(settings.face_transparency)))
+    edge = tuple(float(channel) for channel in settings.edge_color)
+    thickness = max(0.0, min(1.0, float(settings.edge_thickness)))
+    return face, alpha, edge, thickness
+
+
+def _make_unit_cell_face_material(settings=None):
+    material = bpy.data.materials.get("CGN_UnitCell_Face_Material")
+    if material is None:
+        material = bpy.data.materials.new("CGN_UnitCell_Face_Material")
+    material.use_nodes = True
+    color, alpha, _edge, _thickness = _unit_cell_values(settings)
+    material.diffuse_color = (color[0], color[1], color[2], alpha)
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = (
+            color[0], color[1], color[2], 1.0,
+        )
+        shader.inputs["Roughness"].default_value = 0.5
+        if "Alpha" in shader.inputs:
+            shader.inputs["Alpha"].default_value = alpha
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = 'BLENDED'
+    elif hasattr(material, "blend_method"):
+        material.blend_method = 'BLEND'
+    if hasattr(material, "show_transparent_back"):
+        material.show_transparent_back = True
+    material.use_backface_culling = False
+    return material
+
+
+def _make_unit_cell_edge_material(settings=None):
+    material = bpy.data.materials.get("CGN_UnitCell_Edge_Material")
+    if material is None:
+        material = bpy.data.materials.new("CGN_UnitCell_Edge_Material")
+    material.use_nodes = True
+    _face, _alpha, color, _thickness = _unit_cell_values(settings)
+    material.diffuse_color = color
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = color
+        shader.inputs["Roughness"].default_value = 0.5
+    return material
+
+
+def _cell_corner(cell_matrix, fx, fy, fz):
+    return tuple(
+        fx * cell_matrix[axis]
+        + fy * cell_matrix[3 + axis]
+        + fz * cell_matrix[6 + axis]
+        for axis in range(3)
+    )
+
+
+def _clear_unit_cell(root):
+    for obj in list(root.objects):
+        if obj.get("cgn_role") not in {"unit_cell_edge", "unit_cell_face"}:
+            continue
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is None or data.users != 0:
+            continue
+        if isinstance(data, bpy.types.Curve):
+            bpy.data.curves.remove(data)
+        elif isinstance(data, bpy.types.Mesh):
+            bpy.data.meshes.remove(data)
+
+
+def _stored_cell_matrix(root):
+    raw = root.get("cgn_cell_matrix", "")
+    if not raw:
+        return None
+    try:
+        matrix = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(matrix, (list, tuple)) or len(matrix) != 9:
+        return None
+    return matrix
+
+
+def _show_unit_cell(root, cell_matrix, settings=None):
+    """Draw the original unit cell: transparent faces and solid black edges."""
+    _clear_unit_cell(root)
+    _face, _alpha, _edge, thickness = _unit_cell_values(settings)
+    corners = [
+        _display_point(_cell_corner(cell_matrix, i, j, k))
+        for i in range(2)
+        for j in range(2)
+        for k in range(2)
+    ]
+    edges = [
+        (index, index ^ (1 << bit))
+        for index in range(8)
+        for bit in range(3)
+        if index < (index ^ (1 << bit))
+    ]
+
+    curve = bpy.data.curves.new("CGN_UnitCell_Edges", 'CURVE')
+    curve.dimensions = '3D'
+    curve.resolution_u = 1
+    curve.bevel_resolution = 2
+    curve.bevel_depth = thickness * _DISPLAY_SCALE
+    for first, second in edges:
+        spline = curve.splines.new('POLY')
+        spline.points.add(1)
+        spline.points[0].co = (*corners[first], 1.0)
+        spline.points[1].co = (*corners[second], 1.0)
+    curve.materials.append(_make_unit_cell_edge_material(settings))
+    edge_obj = bpy.data.objects.new("CGN_UnitCell_Edges", curve)
+    edge_obj["cgn_role"] = "unit_cell_edge"
+    root.objects.link(edge_obj)
+
+    faces = [
+        (0, 1, 3, 2), (4, 6, 7, 5),
+        (0, 4, 5, 1), (2, 3, 7, 6),
+        (0, 2, 6, 4), (1, 5, 7, 3),
+    ]
+    mesh = bpy.data.meshes.new("CGN_UnitCell_Faces")
+    mesh.from_pydata(corners, [], faces)
+    mesh.update()
+    mesh.materials.append(_make_unit_cell_face_material(settings))
+    face_obj = bpy.data.objects.new("CGN_UnitCell_Faces", mesh)
+    face_obj["cgn_role"] = "unit_cell_face"
+    root.objects.link(face_obj)
+
+
+def _update_unit_cell_objects(edge_obj, face_obj, settings):
+    _face, _alpha, _edge, thickness = _unit_cell_values(settings)
+    if isinstance(edge_obj.data, bpy.types.Curve):
+        edge_obj.data.bevel_depth = thickness * _DISPLAY_SCALE
+    for obj, material in (
+        (edge_obj, _make_unit_cell_edge_material(settings)),
+        (face_obj, _make_unit_cell_face_material(settings)),
+    ):
+        if obj.data.materials:
+            obj.data.materials[0] = material
+        else:
+            obj.data.materials.append(material)
+
+
+def _apply_unit_cell_settings(scene):
+    """Show, hide, or restyle the active structure's unit-cell box."""
+    root = _active_root(scene)
+    if root is None:
+        return
+    settings = getattr(scene, "cgn_unit_cell_settings", None)
+    if settings is not None and not settings.show_unit_cell:
+        _clear_unit_cell(root)
+        return
+    cell_matrix = _stored_cell_matrix(root)
+    if not cell_matrix:
+        _clear_unit_cell(root)
+        return
+    edge_obj = next(
+        (
+            obj for obj in root.objects
+            if obj.get("cgn_role") == "unit_cell_edge"
+        ),
+        None,
+    )
+    face_obj = next(
+        (
+            obj for obj in root.objects
+            if obj.get("cgn_role") == "unit_cell_face"
+        ),
+        None,
+    )
+    if edge_obj is None or face_obj is None:
+        _show_unit_cell(root, cell_matrix, settings)
+        return
+    _update_unit_cell_objects(edge_obj, face_obj, settings)
+
+
+def _pair_key(element_a, element_b):
+    return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
+
+
+def _bond_objects(root, atoms, pair_settings):
+    for obj in list(root.objects):
+        if obj.get("cgn_role") == "bonds":
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+    enabled = {}
+    for setting in pair_settings:
+        key = _pair_key(setting.element_a, setting.element_b)
+        if setting.enabled and setting.max_distance >= setting.min_distance:
+            enabled[key] = (setting.min_distance, setting.max_distance)
+    if not enabled or len(atoms) < 2:
+        return 0
+
+    max_distance = max(pair[1] for pair in enabled.values())
+    if max_distance <= 0:
+        return 0
+    cell_width = max(max_distance, 1e-6)
+    buckets = {}
+    by_pair = {}
+    vdw_by_element = {}
+    for atom in atoms:
+        element = str(atom.get("element", "X")).upper()
+        vdw_by_element.setdefault(
+            element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
+        )
+    for index, atom in enumerate(atoms):
+        x, y, z = atom["cart"]
+        cell = (
+            math.floor(x / cell_width),
+            math.floor(y / cell_width),
+            math.floor(z / cell_width),
+        )
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    neighbor_cell = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
+                    for other_index in buckets.get(neighbor_cell, ()):
+                        other = atoms[other_index]
+                        key = _pair_key(atom.get("element"), other.get("element"))
+                        bounds = enabled.get(key)
+                        if bounds is None:
+                            continue
+                        delta = (
+                            x - other["cart"][0],
+                            y - other["cart"][1],
+                            z - other["cart"][2],
+                        )
+                        distance_sq = sum(component * component for component in delta)
+                        if distance_sq <= 1e-12:
+                            continue
+                        distance = math.sqrt(distance_sq)
+                        if bounds[0] <= distance <= bounds[1]:
+                            by_pair.setdefault(key, []).append(
+                                (other["cart"], atom["cart"])
+                            )
+        buckets.setdefault(cell, []).append(index)
+
+    node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
+    bond_count = 0
+    for key, segments in sorted(by_pair.items()):
+        vertices = []
+        edges = []
+        for first, second in segments:
+            start = len(vertices)
+            vertices.extend((_display_point(first), _display_point(second)))
+            edges.append((start, start + 1))
+        if not edges:
+            continue
+        pair_name = "_".join(key)
+        mesh = bpy.data.meshes.new(f"CGN_Bonds_{pair_name}_Edges")
+        mesh.from_pydata(vertices, edges, [])
+        mesh.update()
+        obj = bpy.data.objects.new(f"CGN_Bonds_{pair_name}", mesh)
+        obj["cgn_role"] = "bonds"
+        obj["cgn_pair"] = "|".join(key)
+        root.objects.link(obj)
+        material = _make_material(
+            f"CGN_Bond_Mat_{pair_name}", (0.16, 0.16, 0.18, 1.0)
+        )
+        vdw_a = vdw_by_element.get(key[0], _DEFAULT_VDW_RADIUS)
+        vdw_b = vdw_by_element.get(key[1], _DEFAULT_VDW_RADIUS)
+        bond_radius = (
+            _BOND_VDW_FACTOR * 0.5 * (vdw_a + vdw_b) * _DISPLAY_SCALE
+        )
+        _add_geometry_nodes_modifier(
+            obj, node_group, bond_radius, material
+        )
+        bond_count += len(edges)
+    return bond_count
+
+
+def _set_scene_units(scene):
+    """Display the scene at 1 Å = 1 cm (1 Blender unit = 10 Å)."""
+    units = scene.unit_settings
+    units.system = 'METRIC'
+    units.scale_length = 0.1
+    units.length_unit = 'CENTIMETERS'
+
+
+def _import_result(scene, result, cif_path):
+    sites = result.get("sites", [])
+    instances = result.get("instances", [])
+    cell_matrix = result.get("cell_matrix", [])
+    if len(cell_matrix) != 9:
+        raise ValueError("The cctbx worker returned an invalid cell matrix.")
+    initial_count = len(instances) // 4
+    atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
+    if not atoms:
+        raise ValueError("The selected CIF contains no atoms.")
+
+    old_root = _active_root(scene)
+    root = bpy.data.collections.new("CCTBX_GN_Structure")
+    root["cgn_role"] = "structure"
+    root["cgn_instance_id"] = uuid.uuid4().hex
+    root["cgn_space_group"] = result.get("space_group", "unknown")
+    root["cgn_space_group_ops"] = json.dumps(
+        result.get("space_group_ops", [])
+    )
+    root["cgn_unit_cell"] = json.dumps(result.get("unit_cell", []))
+    root["cgn_cif_block"] = result.get("label", "")
+    root["cgn_cif_path"] = cif_path
+    root["cgn_sites"] = json.dumps(sites)
+    root["cgn_instances"] = json.dumps(instances)
+    root["cgn_asu_instances"] = json.dumps(instances)
+    root["cgn_cell_matrix"] = json.dumps(cell_matrix)
+    root["cgn_initial_count"] = initial_count
+    root["cgn_selected_indices"] = "[]"
+    root["cgn_growth_shells"] = 0
+    root["cgn_fill_mode"] = "ASU"
+    root["cgn_fill_repeats"] = json.dumps([2, 2, 2])
+    scene.collection.children.link(root)
+    old_pairs = [
+        (
+            pair.element_a, pair.element_b, pair.enabled,
+            pair.min_distance, pair.max_distance,
+        )
+        for pair in scene.cgn_connectivity_pairs
+    ]
+    try:
+        _make_atom_objects(root, atoms)
+        scene.cgn_connectivity_pairs.clear()
+        elements = sorted({str(a.get("element", "X")).upper() for a in atoms})
+        radii = {}
+        for atom in atoms:
+            element = str(atom.get("element", "X")).upper()
+            radii[element] = float(atom.get("covalent_radius", 0.75))
+        for index, element_a in enumerate(elements):
+            for element_b in elements[index:]:
+                item = scene.cgn_connectivity_pairs.add()
+                item.element_a = element_a
+                item.element_b = element_b
+                item.enabled = True
+                item.min_distance = 0.1
+                item.max_distance = min(
+                    20.0, radii[element_a] + radii[element_b] + _BOND_TOLERANCE
+                )
+        _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+        if old_root is not None:
+            _clear_collection(old_root)
+            bpy.data.collections.remove(old_root, do_unlink=True)
+        scene.cgn_active_structure = root.name
+        _set_scene_units(scene)
+        _apply_unit_cell_settings(scene)
+    except Exception:
+        if bpy.data.collections.get(root.name) == root:
+            _clear_collection(root)
+            bpy.data.collections.remove(root, do_unlink=True)
+        scene.cgn_connectivity_pairs.clear()
+        for element_a, element_b, enabled, minimum, maximum in old_pairs:
+            item = scene.cgn_connectivity_pairs.add()
+            item.element_a = element_a
+            item.element_b = element_b
+            item.enabled = enabled
+            item.min_distance = minimum
+            item.max_distance = maximum
+        raise
+    return root
+
+
+def _read_worker_response(worker):
+    process = worker["process"]
+    stdout_file = worker["stdout"]
+    stderr_file = worker["stderr"]
+    try:
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        stdout = stdout_file.read()
+        stderr = stderr_file.read()
+    finally:
+        stdout_file.close()
+        stderr_file.close()
+    if process.returncode != 0 and not stdout:
+        raise RuntimeError(f"cctbx worker failed:\n{stderr}")
+    try:
+        response = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid cctbx worker output:\n{stdout}\n{stderr}") from exc
+    if not response.get("ok"):
+        raise RuntimeError(response.get("error", "CIF import failed."))
+    return response["result"]
+
+
+def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
+    """Return one instance per site with translations that keep molecules whole.
+
+    The P1 site table stores every atom inside the cell, so a molecule that
+    crosses a cell boundary is split into fragments. This walks the periodic
+    bond graph and assigns each atom an integer cell translation so bonded
+    atoms stay together; each molecule is then shifted as a whole so its
+    centroid lies in the cell. Some atoms therefore end up just outside it.
+    """
+    windows = {}
+    for setting in pair_settings:
+        if setting.enabled and setting.max_distance >= setting.min_distance:
+            windows[_pair_key(setting.element_a, setting.element_b)] = (
+                setting.min_distance, setting.max_distance,
+            )
+    if not windows:
+        return None
+    max_distance = max(bound[1] for bound in windows.values())
+    if max_distance <= 0.0:
+        return None
+
+    try:
+        matrix = Matrix((
+            (cell_matrix[0], cell_matrix[3], cell_matrix[6]),
+            (cell_matrix[1], cell_matrix[4], cell_matrix[7]),
+            (cell_matrix[2], cell_matrix[5], cell_matrix[8]),
+        ))
+        inverse = matrix.inverted()
+    except (ValueError, ZeroDivisionError):
+        return None
+
+    # A Cartesian move of max_distance cannot change a fractional coordinate
+    # by more than max_distance times the length of that row of the inverse.
+    reach = [
+        max_distance * inverse.row[axis].length for axis in range(3)
+    ]
+    cells = [max(1, int(math.ceil(value))) for value in reach]
+
+    fracs = [Vector(site["frac"]) for site in sites]
+    carts = [matrix @ frac for frac in fracs]
+    elements = [str(site.get("element", "X")).upper() for site in sites]
+    width = max(max_distance, 1e-6)
+
+    bank = {}
+    for index, frac in enumerate(fracs):
+        for tx in range(-cells[0], cells[0] + 1):
+            for ty in range(-cells[1], cells[1] + 1):
+                for tz in range(-cells[2], cells[2] + 1):
+                    image_frac = Vector((
+                        frac.x + tx, frac.y + ty, frac.z + tz,
+                    ))
+                    image_cart = matrix @ image_frac
+                    key = (
+                        math.floor(image_cart.x / width),
+                        math.floor(image_cart.y / width),
+                        math.floor(image_cart.z / width),
+                    )
+                    bank.setdefault(key, []).append(
+                        (index, (tx, ty, tz), image_cart)
+                    )
+
+    adjacency = [[] for _ in sites]
+    seen = set()
+    for index, cart in enumerate(carts):
+        key = (
+            math.floor(cart.x / width),
+            math.floor(cart.y / width),
+            math.floor(cart.z / width),
+        )
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    neighbour = (key[0] + dx, key[1] + dy, key[2] + dz)
+                    for other_index, translation, image_cart in bank.get(
+                        neighbour, ()
+                    ):
+                        if other_index == index:
+                            continue
+                        bounds = windows.get(
+                            _pair_key(elements[index], elements[other_index])
+                        )
+                        if bounds is None:
+                            continue
+                        distance = (image_cart - cart).length
+                        if not (bounds[0] <= distance <= bounds[1]):
+                            continue
+                        edge = (index, other_index, translation)
+                        if edge in seen:
+                            continue
+                        reverse = (
+                            other_index, index,
+                            (-translation[0], -translation[1],
+                             -translation[2]),
+                        )
+                        seen.add(edge)
+                        seen.add(reverse)
+                        adjacency[index].append((other_index, translation))
+                        adjacency[other_index].append((index, reverse[2]))
+
+    translations = [None] * len(sites)
+    components = []
+    periodic = []
+    for start in range(len(sites)):
+        if translations[start] is not None:
+            continue
+        translations[start] = (0, 0, 0)
+        component = []
+        is_periodic = False
+        queue = [start]
+        while queue:
+            current = queue.pop()
+            component.append(current)
+            current_t = translations[current]
+            for other, translation in adjacency[current]:
+                expected = (
+                    current_t[0] + translation[0],
+                    current_t[1] + translation[1],
+                    current_t[2] + translation[2],
+                )
+                if translations[other] is None:
+                    translations[other] = expected
+                    queue.append(other)
+                elif translations[other] != expected:
+                    # A cycle whose net translation is not zero means the
+                    # component runs through the cell in every direction (a
+                    # framework). Such a structure cannot be unwrapped into a
+                    # finite molecule, so it keeps its plain cell contents.
+                    is_periodic = True
+        components.append(component)
+        if is_periodic:
+            periodic.append(len(components) - 1)
+
+    for component_index, component in enumerate(components):
+        if component_index in periodic:
+            for index in component:
+                translations[index] = (0, 0, 0)
+            continue
+        center = Vector((0.0, 0.0, 0.0))
+        for index in component:
+            center += fracs[index] + Vector(translations[index])
+        center /= len(component)
+        shift = (
+            -math.floor(center.x),
+            -math.floor(center.y),
+            -math.floor(center.z),
+        )
+        if shift == (0, 0, 0):
+            continue
+        for index in component:
+            translation = translations[index]
+            translations[index] = (
+                translation[0] + shift[0],
+                translation[1] + shift[1],
+                translation[2] + shift[2],
+            )
+
+    instances = []
+    for index, translation in enumerate(translations):
+        instances.extend((
+            index, translation[0], translation[1], translation[2],
+        ))
+    return instances
+
+
+def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
+    """Replace the displayed atoms with the ASU, one cell, or packed cells."""
+    root = _active_root(context.scene)
+    if root is None:
+        operator.report({'ERROR'}, "Import a CIF before filling the structure.")
+        return {'CANCELLED'}
+    try:
+        sites, _instances, cell_matrix, _initial_count = _structure_tables(root)
+    except (ValueError, TypeError) as exc:
+        operator.report({'ERROR'}, str(exc))
+        return {'CANCELLED'}
+    if not sites:
+        operator.report({'ERROR'}, "The stored site table is empty.")
+        return {'CANCELLED'}
+
+    if mode == 'ASU':
+        baseline = root.get("cgn_asu_instances", "")
+        if not baseline:
+            operator.report(
+                {'ERROR'},
+                "Re-import this CIF once to enable the Fill menu.",
+            )
+            return {'CANCELLED'}
+        try:
+            new_instances = json.loads(baseline)
+        except (ValueError, TypeError) as exc:
+            operator.report(
+                {'ERROR'}, f"Stored asymmetric-unit table is invalid: {exc}"
+            )
+            return {'CANCELLED'}
+        if not new_instances:
+            operator.report(
+                {'ERROR'},
+                "Re-import this CIF once to enable the Fill menu.",
+            )
+            return {'CANCELLED'}
+        repeats = (1, 1, 1)
+        description = "asymmetric unit"
+    else:
+        if mode == 'PACK':
+            repeats = tuple(
+                max(1, min(_MAX_FILL_REPEATS, int(value)))
+                for value in repeats
+            )
+            description = (
+                f"{repeats[0]}×{repeats[1]}×{repeats[2]} unit cells"
+            )
+        else:
+            repeats = (1, 1, 1)
+            description = "one unit cell"
+
+        atom_count = len(sites) * repeats[0] * repeats[1] * repeats[2]
+        if atom_count > _MAX_FILL_ATOMS:
+            operator.report(
+                {'ERROR'},
+                f"This fill would create {atom_count} atoms; reduce the "
+                f"repeats (limit {_MAX_FILL_ATOMS}).",
+            )
+            return {'CANCELLED'}
+
+        cell_instances = _unwrapped_cell_instances(
+            sites, cell_matrix, context.scene.cgn_connectivity_pairs
+        )
+        if not cell_instances:
+            cell_instances = [
+                value
+                for site_index in range(len(sites))
+                for value in (site_index, 0, 0, 0)
+            ]
+
+        new_instances = []
+        for tx in range(repeats[0]):
+            for ty in range(repeats[1]):
+                for tz in range(repeats[2]):
+                    for offset in range(0, len(cell_instances), 4):
+                        new_instances.extend((
+                            cell_instances[offset],
+                            cell_instances[offset + 1] + tx,
+                            cell_instances[offset + 2] + ty,
+                            cell_instances[offset + 3] + tz,
+                        ))
+
+    atoms = _materialize_atoms(
+        sites, cell_matrix, new_instances, len(new_instances) // 4
+    )
+    if not atoms:
+        operator.report({'ERROR'}, "The fill produced no atoms.")
+        return {'CANCELLED'}
+    try:
+        _rebuild_atom_objects(root, atoms)
+        _update_growth_selection(root, atoms, [])
+        _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+        _apply_unit_cell_settings(context.scene)
+    except Exception as exc:
+        traceback.print_exc()
+        operator.report({'ERROR'}, str(exc))
+        return {'CANCELLED'}
+
+    root["cgn_instances"] = json.dumps(new_instances)
+    root["cgn_initial_count"] = len(atoms)
+    root["cgn_fill_mode"] = mode
+    if mode == 'PACK':
+        root["cgn_fill_repeats"] = json.dumps(list(repeats))
+    root["cgn_growth_shells"] = 0
+    operator.report(
+        {'INFO'}, f"Filled {len(atoms)} atoms ({description})."
+    )
+    return {'FINISHED'}
+
+
+class CGN_OT_import_cif(Operator):
+    bl_idname = "cgn.import_cif"
+    bl_label = "Import CIF"
+    bl_options = {'REGISTER'}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    block_name: StringProperty(
+        name="CIF Block",
+        description="Optional exact data-block name for multi-structure CIF files",
+    )
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        prefs = context.preferences.addons[__package__].preferences
+        python_path = bpy.path.abspath(prefs.cctbx_python_path)
+        if not os.path.isfile(python_path):
+            self.report({'ERROR'}, "Set a valid cctbx Python executable in add-on preferences.")
+            return {'CANCELLED'}
+        if not os.path.isfile(self.filepath):
+            self.report({'ERROR'}, "The selected CIF file does not exist.")
+            return {'CANCELLED'}
+
+        stdout_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                [python_path, os.path.join(os.path.dirname(__file__), "worker.py")],
+                stdin=subprocess.PIPE,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+            )
+            process.stdin.write(json.dumps({
+                "cif_path": bpy.path.abspath(self.filepath),
+                "block_name": self.block_name,
+            }))
+            process.stdin.close()
+        except Exception:
+            if "process" in locals():
+                _stop_worker(process)
+            stdout_file.close()
+            stderr_file.close()
+            raise
+
+        self._worker = {
+            "process": process,
+            "stdout": stdout_file,
+            "stderr": stderr_file,
+            "deadline": time.monotonic() + _WORKER_TIMEOUT,
+        }
+        self._timer = context.window_manager.event_timer_add(
+            0.2, window=context.window
+        )
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _finish_worker(self, context):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            context.window_manager.event_timer_remove(timer)
+            self._timer = None
+
+    def modal(self, context, event):
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            _stop_worker(self._worker["process"])
+            self._finish_worker(context)
+            self._worker["stdout"].close()
+            self._worker["stderr"].close()
+            return {'CANCELLED'}
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        process = self._worker["process"]
+        if process.poll() is None:
+            if time.monotonic() >= self._worker["deadline"]:
+                _stop_worker(process)
+                self._finish_worker(context)
+                self._worker["stdout"].close()
+                self._worker["stderr"].close()
+                self.report({'ERROR'}, "cctbx worker timed out.")
+                return {'CANCELLED'}
+            return {'RUNNING_MODAL'}
+
+        self._finish_worker(context)
+        try:
+            result = _read_worker_response(self._worker)
+            root = _import_result(context.scene, result, self.filepath)
+            self.report(
+                {'INFO'},
+                f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
+                f"({root.get('cgn_space_group')}).",
+            )
+            return {'FINISHED'}
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class CGN_OT_rebuild_connectivity(Operator):
+    bl_idname = "cgn.rebuild_connectivity"
+    bl_label = "Rebuild Bonds"
+    bl_description = "Apply enabled element-pair distance windows to the imported atoms"
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({'ERROR'}, "Import a CIF before rebuilding connectivity.")
+            return {'CANCELLED'}
+        try:
+            atoms = _structure_atoms(root)
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        count = _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+        self.report({'INFO'}, f"Built {count} bonds using the current distance windows.")
+        return {'FINISHED'}
+
+
+class CGN_OT_fill_asu(Operator):
+    bl_idname = "cgn.fill_asu"
+    bl_label = "Fill Asymmetric Unit-cell"
+    bl_description = "Show only the atoms of the CIF asymmetric unit"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        return _fill_structure(self, context, 'ASU')
+
+
+class CGN_OT_fill_cell(Operator):
+    bl_idname = "cgn.fill_cell"
+    bl_label = "Fill Unit-Cell"
+    bl_description = "Show every atom in one unit cell"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        return _fill_structure(self, context, 'CELL')
+
+
+class CGN_OT_fill_pack(Operator):
+    bl_idname = "cgn.fill_pack"
+    bl_label = "Pack Unit-cells"
+    bl_description = "Show a block of repeated unit cells"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    repeat_a: IntProperty(
+        name="a",
+        description="Number of unit cells along a",
+        default=2,
+        min=1,
+        max=_MAX_FILL_REPEATS,
+    )
+    repeat_b: IntProperty(
+        name="b",
+        description="Number of unit cells along b",
+        default=2,
+        min=1,
+        max=_MAX_FILL_REPEATS,
+    )
+    repeat_c: IntProperty(
+        name="c",
+        description="Number of unit cells along c",
+        default=2,
+        min=1,
+        max=_MAX_FILL_REPEATS,
+    )
+
+    def invoke(self, context, event):
+        root = _active_root(context.scene)
+        if root is not None:
+            try:
+                repeats = [
+                    int(value) for value in json.loads(
+                        root.get("cgn_fill_repeats", "[]")
+                    )
+                ]
+            except (ValueError, TypeError):
+                repeats = []
+            if len(repeats) == 3:
+                self.repeat_a = max(
+                    1, min(_MAX_FILL_REPEATS, repeats[0])
+                )
+                self.repeat_b = max(
+                    1, min(_MAX_FILL_REPEATS, repeats[1])
+                )
+                self.repeat_c = max(
+                    1, min(_MAX_FILL_REPEATS, repeats[2])
+                )
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Number of unit cells along each axis:")
+        row = layout.row(align=True)
+        row.prop(self, "repeat_a")
+        row.prop(self, "repeat_b")
+        row.prop(self, "repeat_c")
+        root = _active_root(context.scene)
+        if root is not None:
+            try:
+                sites = json.loads(root.get("cgn_sites", "[]"))
+            except (ValueError, TypeError):
+                sites = []
+            if sites:
+                count = (
+                    len(sites) * self.repeat_a * self.repeat_b
+                    * self.repeat_c
+                )
+                layout.label(text=f"Atoms: {count}")
+
+    def execute(self, context):
+        return _fill_structure(
+            self, context, 'PACK',
+            (self.repeat_a, self.repeat_b, self.repeat_c),
+        )
+
+
+class CGN_MT_fill(Menu):
+    bl_idname = "CGN_MT_fill"
+    bl_label = "Fill"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("cgn.fill_asu", text="Asymmetric Unit-cell")
+        layout.operator("cgn.fill_cell", text="Unit-Cell")
+        layout.operator("cgn.fill_pack", text="Pack Unit-cells...")
+
+
+class _CGN_OT_select_atoms(Operator):
+    """Shared click/box atom selection modal for the grow and delete tools."""
+
+    max_pixel_distance = 20.0
+    box_drag_threshold = 6.0
+    select_error = "Import a CIF before selecting atoms."
+    status_text = ""
+    keep_stored_selection = True
+
+    def invoke(self, context, event):
+        if context.area is None or context.area.type != 'VIEW_3D':
+            self.report({'ERROR'}, "Run atom selection from the 3D Viewport.")
+            return {'CANCELLED'}
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({'ERROR'}, self.select_error)
+            return {'CANCELLED'}
+        self._region = next(
+            (region for region in context.area.regions if region.type == 'WINDOW'),
+            None,
+        )
+        if self._region is None:
+            self.report({'ERROR'}, "The 3D Viewport window region is unavailable.")
+            return {'CANCELLED'}
+
+        self._root_name = root.name
+        self._root_id = root.get("cgn_instance_id")
+        try:
+            self._atoms = _structure_atoms(root)
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        try:
+            self._initial_selection = set(json.loads(
+                root.get("cgn_selected_indices", "[]")
+            ))
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, f"Stored atom selection is invalid: {exc}")
+            return {'CANCELLED'}
+        self._selected = (
+            set(self._initial_selection) if self.keep_stored_selection else set()
+        )
+        self._drag_start = None
+        self._drag_end = None
+        self._drag_additive = False
+        self._dragging = False
+        _update_growth_selection(root, self._atoms, self._selected)
+        self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw_box, (), 'WINDOW', 'POST_PIXEL'
+        )
+        context.workspace.status_text_set(self.status_text)
+        context.window.cursor_set('CROSSHAIR')
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _finish(self, context, cancel=False):
+        if cancel:
+            self._selected = set(self._initial_selection)
+            root = bpy.data.collections.get(self._root_name)
+            if (
+                root is not None
+                and root.get("cgn_instance_id") == self._root_id
+            ):
+                _update_growth_selection(
+                    root, self._atoms, self._selected
+                )
+        if getattr(self, "_draw_handle", None) is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(
+                self._draw_handle, 'WINDOW'
+            )
+            self._draw_handle = None
+        context.workspace.status_text_set(None)
+        context.window.cursor_set('DEFAULT')
+        if context.area is not None:
+            context.area.tag_redraw()
+
+    def _region_mouse(self, event, clamp=False):
+        point = Vector((
+            event.mouse_x - self._region.x,
+            event.mouse_y - self._region.y,
+        ))
+        if clamp:
+            point.x = min(max(point.x, 0), self._region.width - 1)
+            point.y = min(max(point.y, 0), self._region.height - 1)
+            return point
+        if (
+            0 <= point.x < self._region.width
+            and 0 <= point.y < self._region.height
+        ):
+            return point
+        return None
+
+    def _project_atoms(self, context):
+        region_3d = context.area.spaces.active.region_3d
+        points = []
+        for index, atom in enumerate(self._atoms):
+            point = view3d_utils.location_3d_to_region_2d(
+                self._region, region_3d, Vector(_display_point(atom["cart"]))
+            )
+            if (
+                point is not None
+                and 0 <= point.x < self._region.width
+                and 0 <= point.y < self._region.height
+            ):
+                points.append((index, point))
+        return points
+
+    def _draw_box(self):
+        if not self._dragging or self._drag_start is None or self._drag_end is None:
+            return
+        x_min, x_max = sorted((self._drag_start.x, self._drag_end.x))
+        y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
+        points = (
+            (x_min, y_min),
+            (x_max, y_min),
+            (x_max, y_max),
+            (x_min, y_max),
+            (x_min, y_min),
+        )
+        shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": points})
+        gpu.state.blend_set('ALPHA')
+        gpu.state.line_width_set(2.0)
+        try:
+            shader.bind()
+            shader.uniform_float("color", (1.0, 0.55, 0.05, 0.9))
+            batch.draw(shader)
+        finally:
+            gpu.state.line_width_set(1.0)
+            gpu.state.blend_set('NONE')
+
+    def _apply_selection(self, context):
+        if self._drag_start is None or self._drag_end is None:
+            return
+        root = bpy.data.collections.get(self._root_name)
+        if (
+            root is None
+            or root.get("cgn_instance_id") != self._root_id
+        ):
+            self.report({'ERROR'}, "The active structure changed during selection.")
+            return
+
+        if not self._drag_additive:
+            self._selected.clear()
+        if self._dragging:
+            x_min, x_max = sorted((self._drag_start.x, self._drag_end.x))
+            y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
+            self._selected.update(
+                index for index, point in self._project_atoms(context)
+                if x_min <= point.x <= x_max and y_min <= point.y <= y_max
+            )
+        else:
+            candidates = [
+                (index, (point - self._drag_start).length)
+                for index, point in self._project_atoms(context)
+                if (point - self._drag_start).length <= self.max_pixel_distance
+            ]
+            if candidates:
+                self._selected.add(min(candidates, key=lambda item: item[1])[0])
+
+        _update_growth_selection(root, self._atoms, self._selected)
+        context.area.tag_redraw()
+
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            self._finish(context, cancel=True)
+            return {'CANCELLED'}
+        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            return self._confirm(context)
+        if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
+            return self._confirm(context)
+
+        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+            point = self._region_mouse(event)
+            if point is not None:
+                self._drag_start = point
+                self._drag_end = point.copy()
+                self._drag_additive = event.shift
+                self._dragging = False
+            return {'RUNNING_MODAL'}
+        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'} and self._drag_start is not None:
+            point = self._region_mouse(event, clamp=True)
+            self._drag_end = point
+            if (self._drag_end - self._drag_start).length >= self.box_drag_threshold:
+                self._dragging = True
+            if context.area is not None:
+                context.area.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            if self._drag_start is not None:
+                point = self._region_mouse(event, clamp=True)
+                if point is not None:
+                    self._drag_end = point
+                self._apply_selection(context)
+                self._drag_start = None
+                self._drag_end = None
+                self._dragging = False
+            return {'RUNNING_MODAL'}
+        return {'PASS_THROUGH'}
+
+
+class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
+    bl_idname = "cgn.select_growth_atoms"
+    bl_label = "Grow Selected Atoms"
+    bl_description = (
+        "Select atoms in the viewport, then confirm to grow around them; "
+        "Shift adds to the selection"
+    )
+
+    select_error = "Import a CIF before selecting growth atoms."
+    status_text = (
+        "Click or drag to select atoms; Shift adds. "
+        "Enter/right-click grows around them, Esc cancels."
+    )
+
+    def _confirm(self, context):
+        if not self._selected:
+            self._finish(context)
+            self.report({'ERROR'}, "Select one or more atoms before growing.")
+            return {'CANCELLED'}
+        self._finish(context)
+        result = bpy.ops.cgn.grow_further(
+            'INVOKE_DEFAULT', all_atoms=False
+        )
+        return {'CANCELLED'} if 'CANCELLED' in result else {'FINISHED'}
+
+
+class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
+    bl_idname = "cgn.delete_atoms"
+    bl_label = "Delete Atoms"
+    bl_description = (
+        "Click atoms or drag a box around them, then confirm to delete; "
+        "Shift adds to the selection"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    select_error = "Import a CIF before deleting atoms."
+    status_text = (
+        "Click or drag to select atoms to delete; Shift adds. "
+        "Enter/right-click deletes them, Esc cancels."
+    )
+    keep_stored_selection = False
+
+    def _confirm(self, context):
+        if not self._selected:
+            self._finish(context)
+            self.report({'ERROR'}, "Select one or more atoms before deleting.")
+            return {'CANCELLED'}
+        root = bpy.data.collections.get(self._root_name)
+        if root is None or root.get("cgn_instance_id") != self._root_id:
+            self._finish(context)
+            self.report({'ERROR'}, "The active structure changed during selection.")
+            return {'CANCELLED'}
+        try:
+            sites, instances, cell_matrix, initial_count = _structure_tables(root)
+        except (ValueError, TypeError) as exc:
+            self._finish(context)
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        atom_count = len(instances) // 4
+        removed = sorted({
+            index for index in self._selected
+            if isinstance(index, int) and 0 <= index < atom_count
+        })
+        if not removed:
+            self._finish(context)
+            self.report({'ERROR'}, "Select one or more atoms before deleting.")
+            return {'CANCELLED'}
+        if len(removed) >= atom_count:
+            self._finish(context)
+            self.report(
+                {'ERROR'},
+                "Deleting every atom is not supported; re-import the CIF instead.",
+            )
+            return {'CANCELLED'}
+
+        removed_offsets = {index * 4 for index in removed}
+        new_instances = [
+            value for offset, value in enumerate(instances)
+            if (offset - offset % 4) not in removed_offsets
+        ]
+        removed_below_initial = sum(
+            1 for index in removed if index < initial_count
+        )
+        new_initial_count = max(0, initial_count - removed_below_initial)
+        atoms = _materialize_atoms(
+            sites, cell_matrix, new_instances, new_initial_count
+        )
+
+        self._finish(context)
+        root["cgn_instances"] = json.dumps(new_instances)
+        root["cgn_initial_count"] = new_initial_count
+        try:
+            _rebuild_atom_objects(root, atoms)
+            _update_growth_selection(root, atoms, [])
+            _bond_objects(
+                root, atoms, context.scene.cgn_connectivity_pairs
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        try:
+            bpy.ops.ed.undo_push(message="Delete Atoms")
+        except RuntimeError:
+            pass
+        self.report(
+            {'INFO'},
+            f"Deleted {len(removed)} atoms; structure now contains "
+            f"{len(atoms)} atoms.",
+        )
+        return {'FINISHED'}
+
+
+class CGN_OT_grow_further(Operator):
+    bl_idname = "cgn.grow_further"
+    bl_label = "Grow Structure"
+    bl_description = (
+        "Add one shell around all atoms or the selected growth atoms"
+    )
+
+    all_atoms: BoolProperty(
+        name="Grow from all atoms",
+        description="Use every atom as a growth seed",
+        default=True,
+        options={'HIDDEN'},
+    )
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({'ERROR'}, "Import a CIF before growing the structure.")
+            return {'CANCELLED'}
+        enabled_pairs = [
+            item for item in context.scene.cgn_connectivity_pairs
+            if item.enabled and item.max_distance >= item.min_distance
+        ]
+        if not enabled_pairs:
+            self.report({'ERROR'}, "Enable at least one valid connectivity pair.")
+            return {'CANCELLED'}
+        try:
+            sites, instances, cell_matrix, initial_count = _structure_tables(root)
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        try:
+            selected_indices = json.loads(
+                root.get("cgn_selected_indices", "[]")
+            )
+        except (ValueError, TypeError) as exc:
+            self.report({'ERROR'}, f"Stored growth selection is invalid: {exc}")
+            return {'CANCELLED'}
+        atom_count = len(instances) // 4
+        if not atom_count:
+            self.report({'ERROR'}, "The active structure contains no atoms.")
+            return {'CANCELLED'}
+        if self.all_atoms:
+            selected_indices = list(range(atom_count))
+        else:
+            selected_indices = sorted({
+                index for index in selected_indices
+                if isinstance(index, int) and 0 <= index < atom_count
+            })
+        if not selected_indices:
+            self.report(
+                {'ERROR'},
+                "Select one or more atoms before growing the structure.",
+            )
+            return {'CANCELLED'}
+        seed_instances = []
+        for index in selected_indices:
+            offset = index * 4
+            seed_instances.extend(instances[offset:offset + 4])
+        self._tables = (sites, instances, cell_matrix, initial_count)
+
+        prefs = context.preferences.addons[__package__].preferences
+        python_path = bpy.path.abspath(prefs.cctbx_python_path)
+        worker_path = os.path.join(os.path.dirname(__file__), "worker.py")
+        if not os.path.isfile(python_path):
+            self.report({'ERROR'}, "Set a valid cctbx Python executable in add-on preferences.")
+            return {'CANCELLED'}
+        if not os.path.isfile(worker_path):
+            self.report({'ERROR'}, "The bundled cctbx worker.py file is missing.")
+            return {'CANCELLED'}
+
+        stdout_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        stderr_file = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                [python_path, worker_path],
+                stdin=subprocess.PIPE,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+            )
+            process.stdin.write(json.dumps({
+                "op": "grow_connectivity_shell",
+                "unit_cell": json.loads(root.get("cgn_unit_cell", "[]")),
+                "sites": [
+                    {"element": site["element"], "frac": site["frac"]}
+                    for site in sites
+                ],
+                "current_instances": instances,
+                "seed_instances": seed_instances,
+                "pair_settings": [
+                    {
+                        "element_a": item.element_a,
+                        "element_b": item.element_b,
+                        "enabled": item.enabled,
+                        "min_distance": item.min_distance,
+                        "max_distance": item.max_distance,
+                    }
+                    for item in context.scene.cgn_connectivity_pairs
+                ],
+            }))
+            process.stdin.close()
+        except Exception as exc:
+            if "process" in locals():
+                _stop_worker(process)
+            stdout_file.close()
+            stderr_file.close()
+            self.report({'ERROR'}, f"Could not start the cctbx worker: {exc}")
+            return {'CANCELLED'}
+
+        self._worker = {
+            "process": process,
+            "stdout": stdout_file,
+            "stderr": stderr_file,
+            "deadline": time.monotonic() + _WORKER_TIMEOUT,
+            "root_name": root.name,
+            "root_id": root.get("cgn_instance_id"),
+        }
+        self._timer = context.window_manager.event_timer_add(
+            0.2, window=context.window
+        )
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _finish_worker(self, context):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            context.window_manager.event_timer_remove(timer)
+            self._timer = None
+
+    def modal(self, context, event):
+        if event.type in {'ESC', 'RIGHTMOUSE'}:
+            _stop_worker(self._worker["process"])
+            self._finish_worker(context)
+            self._worker["stdout"].close()
+            self._worker["stderr"].close()
+            return {'CANCELLED'}
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+
+        process = self._worker["process"]
+        if process.poll() is None:
+            if time.monotonic() >= self._worker["deadline"]:
+                _stop_worker(process)
+                self._finish_worker(context)
+                self._worker["stdout"].close()
+                self._worker["stderr"].close()
+                self.report({'ERROR'}, "cctbx grow worker timed out.")
+                return {'CANCELLED'}
+            return {'RUNNING_MODAL'}
+
+        self._finish_worker(context)
+        try:
+            result = _read_worker_response(self._worker)
+            root = bpy.data.collections.get(self._worker["root_name"])
+            if (
+                root is None
+                or root.get("cgn_role") != "structure"
+                or root.get("cgn_instance_id") != self._worker["root_id"]
+            ):
+                raise RuntimeError("The active structure was removed during growth.")
+            grew_by = int(result.get("grew_by", 0))
+            if grew_by == 0:
+                self.report({'INFO'}, "No additional atoms match the current connectivity settings.")
+                return {'FINISHED'}
+            new_instances = result.get("new_instances", [])
+            if len(new_instances) < grew_by * 4:
+                raise RuntimeError("The cctbx worker returned an invalid growth result.")
+            sites, instances, cell_matrix, initial_count = self._tables
+            instances = instances + new_instances
+            atoms = _materialize_atoms(
+                sites, cell_matrix, instances, initial_count
+            )
+            _rebuild_atom_objects(root, atoms)
+            _update_growth_selection(root, atoms, [])
+            _bond_objects(
+                root, atoms, context.scene.cgn_connectivity_pairs
+            )
+            root["cgn_instances"] = json.dumps(instances)
+            root["cgn_growth_shells"] = int(
+                root.get("cgn_growth_shells", 0)
+            ) + 1
+            self.report(
+                {'INFO'},
+                f"Added {grew_by} atoms; structure now contains "
+                f"{len(atoms)} atoms.",
+            )
+            return {'FINISHED'}
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+
+class CGN_PT_panel(Panel):
+    bl_label = "CCTBX Geometry Nodes"
+    bl_idname = "CGN_PT_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("cgn.import_cif", icon='IMPORT')
+        root = _active_root(context.scene)
+        if root is None:
+            layout.label(text="Import a CIF to begin.")
+            return
+
+        layout.label(text=f"Space group: {root.get('cgn_space_group', 'unknown')}")
+        if root.get("cgn_instances", ""):
+            layout.label(text=f"Atoms: {_structure_atom_count(root)}")
+        else:
+            layout.label(text="Re-import this CIF (old structure format).")
+        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
+        grow_all = layout.operator(
+            "cgn.grow_further", text="Grow Structure", icon='ADD'
+        )
+        grow_all.all_atoms = True
+        layout.operator(
+            "cgn.select_growth_atoms",
+            text="Grow Selected Atoms",
+            icon='RESTRICT_SELECT_OFF',
+        )
+        layout.operator(
+            "cgn.delete_atoms",
+            text="Delete Atoms",
+            icon='X',
+        )
+
+        layout.separator()
+        settings = context.scene.cgn_unit_cell_settings
+        box = layout.box()
+        box.prop(settings, "show_unit_cell", text="Show Unit Cell", icon='MESH_CUBE')
+        if settings.show_unit_cell:
+            column = box.column(align=True)
+            column.prop(settings, "face_color", text="Face Color")
+            column.prop(settings, "face_transparency", text="Face Transparency")
+            column.prop(settings, "edge_color", text="Edge Color")
+            column.prop(settings, "edge_thickness", text="Edge Thickness")
+
+
+class CGN_PT_connectivity(Panel):
+    bl_label = "Connectivity by Atom-Species Pair (Å)"
+    bl_idname = "CGN_PT_connectivity"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        if _active_root(context.scene) is None:
+            return
+        layout.label(text="Toggle pairs and set inclusive minimum/maximum distances.")
+        for item in context.scene.cgn_connectivity_pairs:
+            row = layout.row(align=True)
+            row.prop(item, "enabled", text="")
+            row.label(text=f"{item.element_a} — {item.element_b}")
+            row.prop(item, "min_distance", text="Min")
+            row.prop(item, "max_distance", text="Max")
+        layout.operator("cgn.rebuild_connectivity", icon='FILE_REFRESH')
+
+
+_CLASSES = (
+    CGN_AddonPreferences,
+    CGN_ConnectivityPair,
+    CGN_UnitCellSettings,
+    CGN_OT_import_cif,
+    CGN_OT_rebuild_connectivity,
+    CGN_OT_fill_asu,
+    CGN_OT_fill_cell,
+    CGN_OT_fill_pack,
+    CGN_OT_select_growth_atoms,
+    CGN_OT_delete_atoms,
+    CGN_OT_grow_further,
+    CGN_MT_fill,
+    CGN_PT_panel,
+    CGN_PT_connectivity,
+)
+
+
+def register():
+    for cls in _CLASSES:
+        bpy.utils.register_class(cls)
+    bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(
+        type=CGN_ConnectivityPair
+    )
+    bpy.types.Scene.cgn_active_structure = StringProperty(options={'HIDDEN'})
+    bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(
+        type=CGN_UnitCellSettings
+    )
+
+
+def unregister():
+    del bpy.types.Scene.cgn_unit_cell_settings
+    del bpy.types.Scene.cgn_active_structure
+    del bpy.types.Scene.cgn_connectivity_pairs
+    for cls in reversed(_CLASSES):
+        bpy.utils.unregister_class(cls)
+
+
+if __name__ == "__main__":
+    register()

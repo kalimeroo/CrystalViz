@@ -149,6 +149,37 @@ class CGN_ConnectivityPair(PropertyGroup):
     )
 
 
+def _update_atom_style(self, context):
+    material = bpy.data.materials.get(f"CGN_Mat_{self.element}")
+    if material is None:
+        return
+    material.diffuse_color = self.color
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = self.color
+        shader.inputs["Roughness"].default_value = self.roughness
+
+
+class CGN_AtomStyle(PropertyGroup):
+    element: StringProperty(options={'HIDDEN'})
+    color: FloatVectorProperty(
+        name="Color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        update=_update_atom_style,
+    )
+    roughness: FloatProperty(
+        name="Roughness",
+        default=0.35,
+        min=0.0,
+        max=1.0,
+        precision=2,
+        update=_update_atom_style,
+    )
+
+
 def _unit_cell_settings_updated(self, context):
     scene = getattr(context, "scene", None)
     if scene is None:
@@ -387,7 +418,7 @@ def _ellipsoid_probability_factor(probability):
     return math.sqrt(0.5 * (lower + upper) / _ELLIPSOID_CHI2_50)
 
 
-def _ellipsoid_base_components(atom):
+def _ellipsoid_base_components(atom, size_scale=1.0):
     """Return (semi-axes in BU, Euler XYZ rotation) at 50 % probability.
 
     The axes come from the Cartesian ADP tensor when present. Atoms without
@@ -417,7 +448,9 @@ def _ellipsoid_base_components(atom):
                 eigenvalues, eigenvectors = numpy.linalg.eigh(tensor)
                 eigenvalues = numpy.clip(eigenvalues, 0.0, None)
                 axes = numpy.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
-                axes = numpy.maximum(axes * _DISPLAY_SCALE, 1e-4)
+                axes = numpy.maximum(
+                    axes * _DISPLAY_SCALE * size_scale, 1e-4
+                )
                 if numpy.linalg.det(eigenvectors) < 0.0:
                     eigenvectors[:, 2] *= -1.0
                 rotation = Matrix(eigenvectors.tolist()).to_euler('XYZ')
@@ -431,6 +464,7 @@ def _ellipsoid_base_components(atom):
     radius = _atom_radius(
         atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), 'BALL_STICK'
     )
+    radius *= size_scale
     return (radius, radius, radius), (0.0, 0.0, 0.0)
 
 
@@ -502,12 +536,21 @@ def _make_ellipsoid_node_group():
 
 def _add_ellipsoid_attributes(mesh, atoms):
     """Store per-point semi-axes and rotations on an atom point mesh."""
+    scene = getattr(bpy.context, "scene", None)
+    hydrogen_scale = (
+        scene.cgn_hydrogen_scale if scene is not None else 1.0
+    )
     scale_attribute = mesh.attributes.new("cgn_scale", 'FLOAT_VECTOR', 'POINT')
     rotation_attribute = mesh.attributes.new(
         "cgn_rotation", 'FLOAT_VECTOR', 'POINT'
     )
     for index, atom in enumerate(atoms):
-        axes, rotation = _ellipsoid_base_components(atom)
+        size_scale = (
+            hydrogen_scale
+            if str(atom.get("element", "")).upper() == "H"
+            else 1.0
+        )
+        axes, rotation = _ellipsoid_base_components(atom, size_scale)
         scale_attribute.data[index].vector = axes
         rotation_attribute.data[index].vector = rotation
 
@@ -529,7 +572,7 @@ def _set_modifier_input(modifier, node_group, socket_name, value):
         input_value.value = value
 
 
-def _make_material(name, color):
+def _make_material(name, color, roughness=0.35):
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
@@ -538,8 +581,19 @@ def _make_material(name, color):
     shader = material.node_tree.nodes.get("Principled BSDF")
     if shader is not None:
         shader.inputs["Base Color"].default_value = color
-        shader.inputs["Roughness"].default_value = 0.35
+        shader.inputs["Roughness"].default_value = roughness
     return material
+
+
+def _atom_style(scene, element):
+    for style in scene.cgn_atom_styles:
+        if style.element == element:
+            return style
+    style = scene.cgn_atom_styles.add()
+    style.element = element
+    style.color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
+    style.roughness = 0.35
+    return style
 
 
 def _add_geometry_nodes_modifier(
@@ -708,6 +762,10 @@ def _update_model(scene, context):
         traceback.print_exc()
 
 
+def _update_hydrogen_scale(scene, context):
+    _update_model(scene, context)
+
+
 def _update_ellipsoid_probability(scene, context):
     """Rescale existing ellipsoids without rebuilding geometry."""
     root = _active_root(scene)
@@ -719,6 +777,8 @@ def _update_ellipsoid_probability(scene, context):
     for obj in root.objects:
         if obj.get("cgn_role") != "atoms":
             continue
+        is_hydrogen = str(obj.get("cgn_element", "")).upper() == "H"
+        atom_factor = 1.0 if is_hydrogen else factor
         updated = False
         for modifier in obj.modifiers:
             if (
@@ -729,7 +789,7 @@ def _update_ellipsoid_probability(scene, context):
                 try:
                     _set_modifier_input(
                         modifier, modifier.node_group,
-                        "Probability Scale", factor,
+                        "Probability Scale", atom_factor,
                     )
                     updated = True
                 except Exception:
@@ -760,6 +820,11 @@ def _make_atom_objects(root, atoms):
         node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
         probability = None
     for element, element_atoms in sorted(by_element.items()):
+        scene = bpy.context.scene
+        style = _atom_style(scene, element)
+        size_scale = (
+            scene.cgn_hydrogen_scale if element == "H" else 1.0
+        )
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
             [_display_point(atom["cart"]) for atom in element_atoms], [], []
@@ -775,11 +840,14 @@ def _make_atom_objects(root, atoms):
             obj.hide_viewport = True
             obj.hide_render = True
         material = _make_material(
-            f"CGN_Mat_{element}", _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
+            f"CGN_Mat_{element}", style.color, style.roughness
         )
         if ellipsoids:
             _add_geometry_nodes_modifier(
-                obj, node_group, material=material, probability=probability
+                obj,
+                node_group,
+                material=material,
+                probability=1.0 if element == "H" else probability,
             )
         else:
             radius = _atom_radius(
@@ -788,6 +856,7 @@ def _make_atom_objects(root, atoms):
                 ),
                 model,
             )
+            radius *= size_scale
             _add_geometry_nodes_modifier(obj, node_group, radius, material)
 
 
@@ -1865,11 +1934,6 @@ class CGN_MT_fill(Menu):
         layout.operator("cgn.fill_asu", text="Asymmetric Unit-cell")
         layout.operator("cgn.fill_cell", text="Unit-Cell")
         layout.operator("cgn.fill_pack", text="Pack Unit-cells...")
-        layout.operator(
-            "cgn.pack_cell_boxes",
-            text="Pack Unit-Cells (Faces & Edges)...",
-            icon='MESH_CUBE',
-        )
 
 
 def _visible_atom_mask(atoms, root):
@@ -2708,6 +2772,11 @@ class CGN_PT_unit_cell(Panel):
         layout.prop(
             settings, "show_unit_cell", text="Show Unit Cell", icon='MESH_CUBE'
         )
+        layout.operator(
+            "cgn.pack_cell_boxes",
+            text="Pack Unit-Cells (Faces & Edges)...",
+            icon='MESH_CUBE',
+        )
         if not settings.show_unit_cell:
             return
         column = layout.column(align=True)
@@ -2736,22 +2805,43 @@ class CGN_PT_model_style(Panel):
         scene = context.scene
         layout.prop(scene, "cgn_model", text="Model")
         if scene.cgn_model == 'ELLIPSOID':
-            column = layout.column(align=True)
-            column.prop(
+            layout.prop(
                 scene,
                 "cgn_ellipsoid_probability",
                 text="Probability (%)",
                 slider=True,
             )
-            column.label(
-                text=(
-                    f"3D Gaussian surface: "
-                    f"{scene.cgn_ellipsoid_probability:.0f} %"
-                ),
-                icon='DRIVER_ROTATIONAL_DIFFERENCE',
-            )
-            column.label(text="Axes use the Cartesian ADP tensor (Ucart).")
-        elif scene.cgn_model == 'SPACE_FILLING':
+        layout.prop(
+            scene,
+            "cgn_hydrogen_scale",
+            text="Hydrogen Size",
+            slider=True,
+        )
+        elements = sorted(
+            {
+                str(obj.get("cgn_element", "")).upper()
+                for obj in _active_root(scene).objects
+                if obj.get("cgn_role") == "atoms"
+            }
+        )
+        if elements:
+            box = layout.box()
+            box.label(text="Atom Appearance")
+            for element in elements:
+                style = next(
+                    (
+                        item for item in scene.cgn_atom_styles
+                        if item.element == element
+                    ),
+                    None,
+                )
+                if style is None:
+                    continue
+                row = box.row(align=True)
+                row.label(text=element)
+                row.prop(style, "color", text="")
+                row.prop(style, "roughness", text="Roughness")
+        if scene.cgn_model == 'SPACE_FILLING':
             layout.label(
                 text="Full van der Waals radii; bonds are hidden.",
                 icon='INFO',
@@ -2820,6 +2910,7 @@ def _draw_file_import(self, context):
 _CLASSES = (
     CGN_AddonPreferences,
     CGN_ConnectivityPair,
+    CGN_AtomStyle,
     CGN_UnitCellSettings,
     CGN_OT_import_cif,
     CGN_OT_rebuild_connectivity,
@@ -2847,6 +2938,9 @@ def register():
     bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(
         type=CGN_ConnectivityPair
     )
+    bpy.types.Scene.cgn_atom_styles = CollectionProperty(
+        type=CGN_AtomStyle
+    )
     bpy.types.Scene.cgn_active_structure = StringProperty(options={'HIDDEN'})
     bpy.types.Scene.cgn_show_hydrogens = BoolProperty(
         name="Show Hydrogens",
@@ -2872,6 +2966,14 @@ def register():
         max=100.0,
         update=_update_ellipsoid_probability,
     )
+    bpy.types.Scene.cgn_hydrogen_scale = FloatProperty(
+        name="Hydrogen Size",
+        description="Scale hydrogen atoms without changing their probability level",
+        default=1.0,
+        min=0.1,
+        max=3.0,
+        update=_update_hydrogen_scale,
+    )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_menu)
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
 
@@ -2879,11 +2981,13 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
+    del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ellipsoid_probability
     del bpy.types.Scene.cgn_model
     del bpy.types.Scene.cgn_unit_cell_settings
     del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_active_structure
+    del bpy.types.Scene.cgn_atom_styles
     del bpy.types.Scene.cgn_connectivity_pairs
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)

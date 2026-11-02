@@ -701,7 +701,7 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
             (1.0, 0.0, 0.0),
         ),
     )
-    for ellipse in ellipse_planes:
+    for plane_index, ellipse in enumerate(ellipse_planes):
         start = len(vertices)
         for segment in range(tube_segments):
             angle = 2.0 * math.pi * segment / tube_segments
@@ -731,10 +731,16 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
                     start + ((segment + 1) % tube_segments) * tube_sides
                     + (side + 1) % tube_sides
                 )
-                faces.extend((
-                    (current, next_segment, next_both),
-                    (current, next_both, next_side),
-                ))
+                if plane_index == 1:
+                    faces.extend((
+                        (current, next_both, next_segment),
+                        (current, next_side, next_both),
+                    ))
+                else:
+                    faces.extend((
+                        (current, next_segment, next_both),
+                        (current, next_both, next_side),
+                    ))
                 face_types.extend(((False, False, True),) * 2)
                 smooth_faces.extend((True, True))
 
@@ -751,7 +757,7 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
             attribute.data[polygon_index].value = face_type[flag_index]
     for polygon, smooth in zip(mesh.polygons, smooth_faces):
         polygon.use_smooth = smooth
-    mesh["cgn_ortep_template_version"] = 2
+    mesh["cgn_ortep_template_version"] = 3
     mesh["cgn_ortep_ellipse_thickness"] = tube_radius
     return mesh
 
@@ -766,7 +772,7 @@ def _ensure_ortep_template():
         )
     elif (
         obj.type != 'MESH'
-        or obj.data.get("cgn_ortep_template_version") != 2
+        or obj.data.get("cgn_ortep_template_version") != 3
         or not math.isclose(
             float(obj.data.get("cgn_ortep_ellipse_thickness", -1.0)),
             bpy.context.scene.cgn_ortep_ellipse_thickness,

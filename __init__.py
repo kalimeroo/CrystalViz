@@ -1208,15 +1208,11 @@ def _read_worker_response(worker):
 def _unwrapped_cell_instances(
     sites, cell_matrix, pair_settings, max_instances=_MAX_FILL_ATOMS
 ):
-    """Return the cell contents plus the atoms that complete whole molecules.
+    """Return one whole image of each finite molecule plus periodic contents.
 
-    The P1 site table stores every atom inside the cell, so a molecule that
-    crosses a cell boundary is split into fragments. This walks the periodic
-    bond graph and assigns each atom an integer cell translation so bonded
-    atoms stay together. Every cell atom is then kept at its wrapped position,
-    and each molecule fragment that is visible in the cell is completed by
-    adding the missing atoms just outside it. Periodic frameworks cannot be
-    unwrapped into finite molecules and keep their plain cell contents.
+    A finite molecule is unwrapped once and shifted so its center is near the
+    unit-cell center. Periodic components cannot be represented as finite
+    molecules, so their original unit-cell contents are retained.
     """
     windows = {}
     for setting in pair_settings:
@@ -1350,29 +1346,47 @@ def _unwrapped_cell_instances(
         if is_periodic:
             periodic.append(len(components) - 1)
 
-    instances = {(index, 0, 0, 0) for index in range(len(sites))}
+    instances = set()
     for component_index, component in enumerate(components):
         if component_index in periodic:
+            instances.update((index, 0, 0, 0) for index in component)
             continue
         anchors = {
             (-translations[index][0], -translations[index][1],
              -translations[index][2])
             for index in component
         }
-        for anchor in anchors:
-            for index in component:
-                translation = translations[index]
-                instances.add((
-                    index,
-                    translation[0] + anchor[0],
-                    translation[1] + anchor[1],
-                    translation[2] + anchor[2],
-                ))
-                if len(instances) > max_instances:
-                    raise ValueError(
-                        f"Molecule completion exceeds the "
-                        f"{max_instances}-atom fill limit."
-                    )
+        center = tuple(
+            sum(
+                float(sites[index]["frac"][axis])
+                + translations[index][axis]
+                for index in component
+            ) / len(component)
+            for axis in range(3)
+        )
+        anchor = min(
+            anchors,
+            key=lambda value: (
+                sum(
+                    (center[axis] + value[axis] - 0.5) ** 2
+                    for axis in range(3)
+                ),
+                value,
+            ),
+        )
+        for index in component:
+            translation = translations[index]
+            instances.add((
+                index,
+                translation[0] + anchor[0],
+                translation[1] + anchor[1],
+                translation[2] + anchor[2],
+            ))
+            if len(instances) > max_instances:
+                raise ValueError(
+                    f"Molecule completion exceeds the "
+                    f"{max_instances}-atom fill limit."
+                )
 
     return [
         value

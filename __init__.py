@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 12),
+    "version": (0, 4, 13),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
@@ -18,7 +18,7 @@ import time
 import traceback
 import uuid
 import gpu
-from bpy_extras import view3d_utils
+import numpy as np
 from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
 from bpy.props import (
     BoolProperty,
@@ -1715,6 +1715,90 @@ class CGN_MT_fill(Menu):
         layout.operator("cgn.fill_pack", text="Pack Unit-cells...")
 
 
+def _visible_atom_mask(atoms, root):
+    """Return a mask of atoms whose element object is visible in the viewport."""
+    count = len(atoms)
+    if count == 0:
+        return np.empty(0, dtype=bool)
+    if root is None or root.hide_viewport:
+        return np.zeros(count, dtype=bool)
+
+    hidden_elements = set()
+    for obj in root.objects:
+        if obj.get("cgn_role") != "atoms":
+            continue
+        try:
+            hidden = obj.hide_viewport or obj.hide_get()
+        except RuntimeError:
+            hidden = obj.hide_viewport
+        if hidden:
+            hidden_elements.add(str(obj.get("cgn_element", "")).upper())
+    if not hidden_elements:
+        return np.ones(count, dtype=bool)
+    return np.fromiter(
+        (
+            str(atom.get("element", "X")).upper() not in hidden_elements
+            for atom in atoms
+        ),
+        dtype=bool,
+        count=count,
+    )
+
+
+def _project_points(coords, matrix, width, height):
+    """Project homogeneous points to region pixels with NumPy.
+
+    Returns atom indices, pixel positions and NDC depth values for points in
+    front of the camera and inside the region. Smaller depth values are
+    nearer to the camera.
+    """
+    if len(coords) == 0:
+        return (
+            np.empty(0, dtype=np.int64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+        )
+
+    clip = coords @ np.asarray(matrix, dtype=np.float64).T
+    w = clip[:, 3]
+    front = np.nonzero(w > 0.0)[0]
+    if front.size == 0:
+        return (
+            np.empty(0, dtype=np.int64),
+            np.empty((0, 2), dtype=np.float64),
+            np.empty(0, dtype=np.float64),
+        )
+
+    ndc = clip[front, :3] / w[front, None]
+    x = width * 0.5 * (ndc[:, 0] + 1.0)
+    y = height * 0.5 * (ndc[:, 1] + 1.0)
+    inside = (
+        (x >= 0.0) & (x < width)
+        & (y >= 0.0) & (y < height)
+    )
+    selected = front[inside]
+    points = np.column_stack((x[inside], y[inside]))
+    return selected, points, ndc[inside, 2]
+
+
+def _click_candidate(indices, points, depths, visible, origin, max_distance):
+    """Return the frontmost visible atom within *max_distance* pixels."""
+    if len(indices) == 0:
+        return None
+    distance = np.hypot(
+        points[:, 0] - float(origin[0]),
+        points[:, 1] - float(origin[1]),
+    )
+    candidates = np.nonzero(visible & (distance <= max_distance))[0]
+    if candidates.size == 0:
+        return None
+    # lexsort uses the last key first: depth, then pixel distance.
+    best = candidates[
+        np.lexsort((distance[candidates], depths[candidates]))[0]
+    ]
+    return int(indices[best])
+
+
 def _select_click(selected, candidate, additive):
     """Apply one click to *selected*: toggle the atom or replace/add."""
     if candidate is not None and candidate in selected:
@@ -1774,6 +1858,13 @@ class _CGN_OT_select_atoms(Operator):
         self._drag_end = None
         self._drag_additive = False
         self._dragging = False
+        self._projection_coords = np.asarray(
+            [(*_display_point(atom["cart"]), 1.0) for atom in self._atoms],
+            dtype=np.float64,
+        ).reshape((-1, 4))
+        self._atom_visibility = _visible_atom_mask(self._atoms, root)
+        self._projection_cache_key = None
+        self._projection_cache = None
         _update_growth_selection(root, self._atoms, self._selected)
         self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw_box, (), 'WINDOW', 'POST_PIXEL'
@@ -1821,19 +1912,29 @@ class _CGN_OT_select_atoms(Operator):
         return None
 
     def _project_atoms(self, context):
+        """Return cached projected atoms as NumPy arrays."""
         region_3d = context.area.spaces.active.region_3d
-        points = []
-        for index, atom in enumerate(self._atoms):
-            point = view3d_utils.location_3d_to_region_2d(
-                self._region, region_3d, Vector(_display_point(atom["cart"]))
+        matrix = region_3d.perspective_matrix
+        key = (
+            self._region.width,
+            self._region.height,
+            matrix.copy(),
+        )
+        if self._projection_cache_key != key:
+            indices, points, depths = _project_points(
+                self._projection_coords,
+                matrix,
+                self._region.width,
+                self._region.height,
             )
-            if (
-                point is not None
-                and 0 <= point.x < self._region.width
-                and 0 <= point.y < self._region.height
-            ):
-                points.append((index, point))
-        return points
+            self._projection_cache_key = key
+            self._projection_cache = (
+                indices,
+                points,
+                depths,
+                self._atom_visibility[indices],
+            )
+        return self._projection_cache
 
     def _draw_box(self):
         if not self._dragging or self._drag_start is None or self._drag_end is None:
@@ -1875,19 +1976,17 @@ class _CGN_OT_select_atoms(Operator):
                 self._selected.clear()
             x_min, x_max = sorted((self._drag_start.x, self._drag_end.x))
             y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
-            self._selected.update(
-                index for index, point in self._project_atoms(context)
-                if x_min <= point.x <= x_max and y_min <= point.y <= y_max
+            indices, points, _depths, _visible = self._project_atoms(context)
+            boxed = (
+                (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
+                & (points[:, 1] >= y_min) & (points[:, 1] <= y_max)
             )
+            self._selected.update(int(index) for index in indices[boxed])
         else:
-            candidates = [
-                (index, (point - self._drag_start).length)
-                for index, point in self._project_atoms(context)
-                if (point - self._drag_start).length <= self.max_pixel_distance
-            ]
-            nearest = (
-                min(candidates, key=lambda item: item[1])[0]
-                if candidates else None
+            indices, points, depths, visible = self._project_atoms(context)
+            nearest = _click_candidate(
+                indices, points, depths, visible,
+                self._drag_start, self.max_pixel_distance,
             )
             _select_click(self._selected, nearest, self._drag_additive)
 

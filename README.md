@@ -64,7 +64,9 @@ Packing is limited to 200,000 atoms.
 Use **Grow Structure** to add one shell around all atoms. Use **Grow Selected
 Atoms** to enter viewport selection mode; click or box-select atoms, use
 Shift-click or Shift-drag to add to the selection, and click a selected atom
-again to remove just that atom. Selected atoms are highlighted in orange.
+again to remove just that atom. Click picking ignores hidden atoms and chooses
+the frontmost atom within the click radius; box selection keeps its existing
+replace/add behavior. Selected atoms are highlighted in orange.
 Press Enter or right-click to grow immediately around the selection, or press
 Esc to cancel. The worker expands the CIF to P1 with cctbx and searches
 symmetry-equivalent sites and integer unit-cell translations around the chosen

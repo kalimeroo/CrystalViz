@@ -43,11 +43,17 @@ The **Model & Style** sub-panel switches the rendering model:
   an isotropic Uiso value use a spherical ellipsoid; atoms without displacement
   parameters fall back to the Ball & Stick sphere. The probability slider
   affects non-hydrogen atoms; use **Hydrogen Size** to scale hydrogen atoms.
-  Each element has independent color and roughness controls in every model.
+  Ellipsoids use an ORTEP-style cutaway with colored inner faces and three
+  principal-plane ellipses; their colors and roughness are adjustable.
   Bonds are drawn thin.
 - **Space-filling (Use VdW radii)** — full van der Waals spheres with bonds
   hidden.
 - **Wire-sticks** — very thin atoms and bonds.
+
+Every model has independent per-element color and roughness controls, with
+roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius
+be adjusted from zero to its van der Waals radius. Hydrogen size is adjustable
+in Ellipsoids and Space-filling modes.
 
 Switching models rebuilds atom and bond objects from the stored site table, so a
 structured imported before this feature still switches correctly (it simply has

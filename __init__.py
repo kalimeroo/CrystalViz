@@ -1205,7 +1205,9 @@ def _read_worker_response(worker):
     return response["result"]
 
 
-def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
+def _unwrapped_cell_instances(
+    sites, cell_matrix, pair_settings, max_instances=_MAX_FILL_ATOMS
+):
     """Return the cell contents plus the atoms that complete whole molecules.
 
     The P1 site table stores every atom inside the cell, so a molecule that
@@ -1224,6 +1226,10 @@ def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
             )
     if not windows:
         return None
+    if len(sites) > max_instances:
+        raise ValueError(
+            f"Molecule completion exceeds the {max_instances}-atom fill limit."
+        )
     max_distance = max(bound[1] for bound in windows.values())
     if max_distance <= 0.0:
         return None
@@ -1283,15 +1289,20 @@ def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
                     for other_index, translation, image_cart in bank.get(
                         neighbour, ()
                     ):
-                        if other_index == index:
-                            continue
                         bounds = windows.get(
                             _pair_key(elements[index], elements[other_index])
                         )
                         if bounds is None:
                             continue
                         distance = (image_cart - cart).length
+                        if distance <= 1e-8:
+                            continue
                         if not (bounds[0] <= distance <= bounds[1]):
+                            continue
+                        if (
+                            other_index == index
+                            and translation == (0, 0, 0)
+                        ):
                             continue
                         edge = (index, other_index, translation)
                         if edge in seen:
@@ -1357,6 +1368,11 @@ def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
                     translation[1] + anchor[1],
                     translation[2] + anchor[2],
                 ))
+                if len(instances) > max_instances:
+                    raise ValueError(
+                        f"Molecule completion exceeds the "
+                        f"{max_instances}-atom fill limit."
+                    )
 
     return [
         value
@@ -1366,7 +1382,7 @@ def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
 
 
 def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
-    """Replace the displayed atoms with the ASU, one cell, or packed cells."""
+    """Replace displayed atoms with the ASU, completed cell, or packed cells."""
     root = _active_root(context.scene)
     if root is None:
         operator.report({'ERROR'}, "Import a CIF before filling the structure.")
@@ -1416,20 +1432,22 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
             repeats = (1, 1, 1)
             description = "one unit cell"
 
-        cell_instances = [
-            value
-            for site_index in range(len(sites))
-            for value in (site_index, 0, 0, 0)
-        ]
-        cell_atom_count = len(cell_instances) // 4
-        atom_count = cell_atom_count * repeats[0] * repeats[1] * repeats[2]
-        if atom_count > _MAX_FILL_ATOMS:
-            operator.report(
-                {'ERROR'},
-                f"This fill would create {atom_count} atoms; reduce the "
-                f"repeats (limit {_MAX_FILL_ATOMS}).",
+        try:
+            cell_instances = _unwrapped_cell_instances(
+                sites,
+                cell_matrix,
+                context.scene.cgn_connectivity_pairs,
             )
+        except ValueError as exc:
+            operator.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+        if cell_instances is None:
+            cell_instances = [
+                value
+                for site_index in range(len(sites))
+                for value in (site_index, 0, 0, 0)
+            ]
+        cell_atom_count = len(cell_instances) // 4
 
         seen = set()
         new_instances = []
@@ -1446,6 +1464,13 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                         if key in seen:
                             continue
                         seen.add(key)
+                        if len(seen) > _MAX_FILL_ATOMS:
+                            operator.report(
+                                {'ERROR'},
+                                f"This fill would create more than "
+                                f"{_MAX_FILL_ATOMS} atoms; reduce the repeats.",
+                            )
+                            return {'CANCELLED'}
                         new_instances.extend(key)
 
     atoms = _materialize_atoms(
@@ -1612,7 +1637,9 @@ class CGN_OT_fill_asu(Operator):
 class CGN_OT_fill_cell(Operator):
     bl_idname = "cgn.fill_cell"
     bl_label = "Fill Unit-Cell"
-    bl_description = "Show the symmetry-expanded contents of one unit cell"
+    bl_description = (
+        "Show one unit cell and complete finite molecules across its boundaries"
+    )
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1622,7 +1649,9 @@ class CGN_OT_fill_cell(Operator):
 class CGN_OT_fill_pack(Operator):
     bl_idname = "cgn.fill_pack"
     bl_label = "Pack Unit-cells"
-    bl_description = "Show a block of repeated symmetry-expanded unit cells"
+    bl_description = (
+        "Show repeated unit cells with finite molecules completed at the edges"
+    )
     bl_options = {'REGISTER', 'UNDO'}
 
     repeat_a: IntProperty(

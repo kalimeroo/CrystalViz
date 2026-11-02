@@ -52,10 +52,12 @@ Use the **Fill** menu to choose what the structure displays: **Asymmetric
 Unit-cell** (the CIF asymmetric unit), **Unit-Cell** (the symmetry-expanded
 contents of one unit cell), or **Pack Unit-cells...**, which asks for the
 number of unit cells along a, b and c. Unit-cell and packed fills use the
-space-group operations to generate exactly the atoms whose fractional
-coordinates lie inside the cell, which preserves the asymmetric-unit/Z
-relationship. Molecules crossing a cell face are therefore cut at the boundary,
-as in standard unit-cell contents; no extra atoms are added outside the cell.
+space-group operations to generate the unit-cell contents, then complete finite
+molecules that cross a cell face by adding their bonded atoms from neighboring
+cells. This can place some atoms just outside the unit-cell boundary.
+Connectivity pair distance settings determine which atoms count as bonded;
+periodic frameworks remain limited to the unit-cell contents, and genuinely
+isolated sites are retained.
 The **Unit Cell** sub-panel has a **Show Unit Cell**
 toggle; while it is on, the unit cell is drawn with adjustable face color, face
 transparency, edge color and edge thickness. Turning it off hides the box. Fill

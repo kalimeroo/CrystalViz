@@ -107,7 +107,6 @@ _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
 _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
-_UNIT_CELL_MARKER_RADIUS = 0.1
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
@@ -1541,18 +1540,25 @@ def _clear_unit_cell(root):
 
 
 def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
-    radius = _UNIT_CELL_MARKER_RADIUS * _DISPLAY_SCALE
+    _face, _alpha, _edge, thickness = _unit_cell_values(settings)
+    radius = thickness * _DISPLAY_SCALE
+    mesh = bpy.data.meshes.new("CGN_UnitCell_CornerMarkers")
+    mesh["cgn_marker_radius"] = radius
+    if radius <= 0.0:
+        return mesh
     sphere = bmesh.new()
-    bmesh.ops.create_icosphere(sphere, subdivisions=2, radius=radius)
-    sphere.verts.ensure_lookup_table()
-    sphere.verts.index_update()
-    sphere.faces.ensure_lookup_table()
-    sphere_vertices = [vertex.co.copy() for vertex in sphere.verts]
-    sphere_faces = [
-        tuple(vertex.index for vertex in face.verts) for face in sphere.faces
-    ]
-    sphere.free()
-
+    try:
+        bmesh.ops.create_icosphere(sphere, subdivisions=2, radius=radius)
+        sphere.verts.ensure_lookup_table()
+        sphere.verts.index_update()
+        sphere.faces.ensure_lookup_table()
+        sphere_vertices = [vertex.co.copy() for vertex in sphere.verts]
+        sphere_faces = [
+            tuple(vertex.index for vertex in face.verts)
+            for face in sphere.faces
+        ]
+    finally:
+        sphere.free()
     vertices = []
     faces = []
     for i in range(repeats[0] + 1):
@@ -1569,9 +1575,10 @@ def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
                     tuple(base + index for index in face)
                     for face in sphere_faces
                 )
-    mesh = bpy.data.meshes.new("CGN_UnitCell_CornerMarkers")
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
+    for polygon in mesh.polygons:
+        polygon.use_smooth = True
     mesh.materials.append(_make_unit_cell_edge_material(settings))
     return mesh
 
@@ -1656,10 +1663,21 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     root.objects.link(face_obj)
 
 
-def _update_unit_cell_objects(edge_obj, face_obj, marker_obj, settings):
+def _update_unit_cell_objects(
+    edge_obj, face_obj, marker_obj, cell_matrix, repeats, settings
+):
     _face, _alpha, _edge, thickness = _unit_cell_values(settings)
     if isinstance(edge_obj.data, bpy.types.Curve):
         edge_obj.data.bevel_depth = thickness * _DISPLAY_SCALE
+    marker_mesh = marker_obj.data
+    marker_radius = float(marker_mesh.get("cgn_marker_radius", -1.0))
+    expected_radius = thickness * _DISPLAY_SCALE
+    if not math.isclose(marker_radius, expected_radius, abs_tol=1e-9):
+        marker_obj.data = _unit_cell_marker_mesh(
+            cell_matrix, repeats, settings
+        )
+        if marker_mesh.users == 0:
+            bpy.data.meshes.remove(marker_mesh)
     for obj, material in (
         (edge_obj, _make_unit_cell_edge_material(settings)),
         (marker_obj, _make_unit_cell_edge_material(settings)),
@@ -1719,7 +1737,9 @@ def _apply_unit_cell_settings(scene):
     if edge_obj is None or face_obj is None or marker_obj is None:
         _show_unit_cell(root, cell_matrix, settings, repeats)
         return
-    _update_unit_cell_objects(edge_obj, face_obj, marker_obj, settings)
+    _update_unit_cell_objects(
+        edge_obj, face_obj, marker_obj, cell_matrix, repeats, settings
+    )
 
 
 def _pair_key(element_a, element_b):

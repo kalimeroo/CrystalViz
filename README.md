@@ -101,8 +101,9 @@ sites are retained.
 The **Unit Cell** sub-panel has a **Show Unit Cell** toggle and a
 **Pack Unit-Cells (Faces & Edges)...** control for choosing repetitions along
 a, b and c. This displays a repeated cell grid without changing or duplicating
-atoms. Icosphere markers indicate the cell-outline corners. The cell is drawn
-with adjustable face color, face transparency, edge color and edge thickness.
+atoms. Smooth-shaded icosphere markers indicate the cell-outline corners and
+match the unit-cell edge thickness. The cell is drawn with adjustable face
+color, face transparency, edge color and edge thickness.
 Turning **Show Unit Cell** off hides the grid. Fill
 replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
 Packing is limited to 200,000 atoms.

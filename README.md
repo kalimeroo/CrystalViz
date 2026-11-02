@@ -62,21 +62,23 @@ replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
 Packing is limited to 200,000 atoms.
 
 Use **Grow Structure** to add one shell around all atoms. Use **Grow Selected
-Atoms** to enter viewport selection mode; click or box-select atoms, and use
-Shift-click or Shift-drag to add to the selection. Selected atoms are
-highlighted in orange. Press Enter or right-click to grow immediately around
-the selection, or press Esc to cancel. The worker expands the CIF to P1 with
-cctbx and searches symmetry-equivalent sites and integer unit-cell translations
-around the chosen seeds, while avoiding every atom already in the finite
-cluster. Selection highlights are cleared after growth so new atoms keep their
-normal element colors and sizes. Growth does not alter the source CIF or its
-unit cell/space group, and creates a finite expanded cluster rather than an
+Atoms** to enter viewport selection mode; click or box-select atoms, use
+Shift-click or Shift-drag to add to the selection, and click a selected atom
+again to remove just that atom. Selected atoms are highlighted in orange.
+Press Enter or right-click to grow immediately around the selection, or press
+Esc to cancel. The worker expands the CIF to P1 with cctbx and searches
+symmetry-equivalent sites and integer unit-cell translations around the chosen
+seeds, while avoiding every atom already in the finite cluster. Selection
+highlights are cleared after growth so new atoms keep their normal element
+colors and sizes. Growth does not alter the source CIF or its unit
+cell/space group, and creates a finite expanded cluster rather than an
 infinitely periodic structure.
 
 Use **Delete Atoms** to remove atoms. It uses the same viewport selection as
-**Grow Selected Atoms**: click or box-select atoms, Shift adds to the
-selection, then press Enter or right-click to delete them, or press Esc to
-cancel. Atom meshes and bonds are rebuilt after deletion.
+**Grow Selected Atoms**: click or box-select atoms, click a selected atom to
+remove it, Shift adds to the selection, then press Enter or right-click to
+delete them, or press Esc to cancel. Atom meshes and bonds are rebuilt after
+deletion.
 
 The prototype does not yet support coordination-polyhedron tools from the
 original add-on.

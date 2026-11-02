@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 13),
+    "version": (0, 4, 14),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
@@ -1416,15 +1416,11 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
             repeats = (1, 1, 1)
             description = "one unit cell"
 
-        cell_instances = _unwrapped_cell_instances(
-            sites, cell_matrix, context.scene.cgn_connectivity_pairs
-        )
-        if not cell_instances:
-            cell_instances = [
-                value
-                for site_index in range(len(sites))
-                for value in (site_index, 0, 0, 0)
-            ]
+        cell_instances = [
+            value
+            for site_index in range(len(sites))
+            for value in (site_index, 0, 0, 0)
+        ]
         cell_atom_count = len(cell_instances) // 4
         atom_count = cell_atom_count * repeats[0] * repeats[1] * repeats[2]
         if atom_count > _MAX_FILL_ATOMS:
@@ -1434,8 +1430,6 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                 f"repeats (limit {_MAX_FILL_ATOMS}).",
             )
             return {'CANCELLED'}
-        if cell_atom_count > len(sites):
-            description += " with completed molecules"
 
         seen = set()
         new_instances = []
@@ -1618,7 +1612,7 @@ class CGN_OT_fill_asu(Operator):
 class CGN_OT_fill_cell(Operator):
     bl_idname = "cgn.fill_cell"
     bl_label = "Fill Unit-Cell"
-    bl_description = "Show every atom in one unit cell"
+    bl_description = "Show the symmetry-expanded contents of one unit cell"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1628,7 +1622,7 @@ class CGN_OT_fill_cell(Operator):
 class CGN_OT_fill_pack(Operator):
     bl_idname = "cgn.fill_pack"
     bl_label = "Pack Unit-cells"
-    bl_description = "Show a block of repeated unit cells"
+    bl_description = "Show a block of repeated symmetry-expanded unit cells"
     bl_options = {'REGISTER', 'UNDO'}
 
     repeat_a: IntProperty(

@@ -628,10 +628,21 @@ def _atom_style(scene, element):
     for style in scene.cgn_atom_styles:
         if style.element == element:
             return style
+    color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
+    roughness = 0.35
+    material = bpy.data.materials.get(f"CGN_Mat_{element}")
+    if material is not None:
+        color = tuple(material.diffuse_color)
+        shader = (
+            material.node_tree.nodes.get("Principled BSDF")
+            if material.node_tree is not None else None
+        )
+        if shader is not None:
+            roughness = shader.inputs["Roughness"].default_value
     style = scene.cgn_atom_styles.add()
     style.element = element
-    style.color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
-    style.roughness = 0.35
+    style.color = color
+    style.roughness = roughness
     return style
 
 
@@ -2675,15 +2686,7 @@ class CGN_PT_model_style(Panel):
             box = layout.box()
             box.label(text="Atom Appearance")
             for element in elements:
-                style = next(
-                    (
-                        item for item in scene.cgn_atom_styles
-                        if item.element == element
-                    ),
-                    None,
-                )
-                if style is None:
-                    continue
+                style = _atom_style(scene, element)
                 row = box.row(align=True)
                 row.label(text=element)
                 row.prop(style, "color", text="")

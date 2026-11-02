@@ -46,9 +46,11 @@ Viewport header, and CIF import is also registered under **File > Import**.
 Use the **Fill** menu to choose what the structure displays: **Asymmetric
 Unit-cell** (the CIF asymmetric unit), **Unit-Cell** (every atom in one unit
 cell), or **Pack Unit-cells...**, which asks for the number of unit cells
-along a, b and c. Unit-cell and packed fills keep bonded molecules whole:
-atoms split across a cell boundary are moved just outside the cell so each
-molecule stays connected. The **Unit Cell** sub-panel has a **Show Unit Cell**
+along a, b and c. Unit-cell and packed fills keep every cell atom at its
+position and complete bonded molecules that cross a cell boundary by adding
+their missing atoms just outside it, so no molecule is left half-shown.
+Periodic frameworks, which cannot be unwrapped into finite molecules, keep
+their plain cell contents. The **Unit Cell** sub-panel has a **Show Unit Cell**
 toggle; while it is on, the unit cell is drawn with adjustable face color, face
 transparency, edge color and edge thickness. Turning it off hides the box. Fill
 replaces the displayed atoms, clears any growth selection, and rebuilds bonds.

@@ -19,6 +19,7 @@ import re
 import sys
 import traceback
 import uuid
+import bmesh
 import gpu
 import numpy as np
 from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
@@ -91,6 +92,8 @@ _BALL_ATOM_VDW_FACTOR = 0.25
 _SPACE_FILLING_ATOM_VDW_FACTOR = 1.0
 _ELLIPSOID_BOND_VDW_FACTOR = 0.05
 _WIRE_RADIUS_DEFAULT = 0.1
+_BOND_RADIUS_SCALE_DEFAULT = 1.0
+_BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
@@ -104,6 +107,7 @@ _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
 _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
+_UNIT_CELL_MARKER_RADIUS = 0.1
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
@@ -507,7 +511,11 @@ def _bond_radius(vdw_a, vdw_b, model=None):
         factor = _ELLIPSOID_BOND_VDW_FACTOR
     else:
         factor = _BOND_VDW_FACTOR
-    return mean_vdw * factor * _DISPLAY_SCALE
+    scene = getattr(bpy.context, "scene", None)
+    radius_scale = getattr(
+        scene, "cgn_bond_radius_scale", _BOND_RADIUS_SCALE_DEFAULT
+    )
+    return mean_vdw * factor * float(radius_scale) * _DISPLAY_SCALE
 
 
 def _ellipsoid_probability_factor(probability):
@@ -1518,7 +1526,9 @@ def _cell_corner(cell_matrix, fx, fy, fz):
 
 def _clear_unit_cell(root):
     for obj in list(root.objects):
-        if obj.get("cgn_role") not in {"unit_cell_edge", "unit_cell_face"}:
+        if obj.get("cgn_role") not in {
+            "unit_cell_edge", "unit_cell_face", "unit_cell_marker"
+        }:
             continue
         data = obj.data
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -1528,6 +1538,42 @@ def _clear_unit_cell(root):
             bpy.data.curves.remove(data)
         elif isinstance(data, bpy.types.Mesh):
             bpy.data.meshes.remove(data)
+
+
+def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
+    radius = _UNIT_CELL_MARKER_RADIUS * _DISPLAY_SCALE
+    sphere = bmesh.new()
+    bmesh.ops.create_icosphere(sphere, subdivisions=2, radius=radius)
+    sphere.verts.ensure_lookup_table()
+    sphere.verts.index_update()
+    sphere.faces.ensure_lookup_table()
+    sphere_vertices = [vertex.co.copy() for vertex in sphere.verts]
+    sphere_faces = [
+        tuple(vertex.index for vertex in face.verts) for face in sphere.faces
+    ]
+    sphere.free()
+
+    vertices = []
+    faces = []
+    for i in range(repeats[0] + 1):
+        for j in range(repeats[1] + 1):
+            for k in range(repeats[2] + 1):
+                center = Vector(
+                    _display_point(_cell_corner(cell_matrix, i, j, k))
+                )
+                base = len(vertices)
+                vertices.extend(
+                    tuple(center + offset) for offset in sphere_vertices
+                )
+                faces.extend(
+                    tuple(base + index for index in face)
+                    for face in sphere_faces
+                )
+    mesh = bpy.data.meshes.new("CGN_UnitCell_CornerMarkers")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    mesh.materials.append(_make_unit_cell_edge_material(settings))
+    return mesh
 
 
 def _stored_cell_matrix(root):
@@ -1594,6 +1640,13 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     edge_obj["cgn_role"] = "unit_cell_edge"
     root.objects.link(edge_obj)
 
+    marker_mesh = _unit_cell_marker_mesh(cell_matrix, repeats, settings)
+    marker_obj = bpy.data.objects.new(
+        "CGN_UnitCell_CornerMarkers", marker_mesh
+    )
+    marker_obj["cgn_role"] = "unit_cell_marker"
+    root.objects.link(marker_obj)
+
     mesh = bpy.data.meshes.new("CGN_UnitCell_Faces")
     mesh.from_pydata(corners, [], faces)
     mesh.update()
@@ -1603,12 +1656,13 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     root.objects.link(face_obj)
 
 
-def _update_unit_cell_objects(edge_obj, face_obj, settings):
+def _update_unit_cell_objects(edge_obj, face_obj, marker_obj, settings):
     _face, _alpha, _edge, thickness = _unit_cell_values(settings)
     if isinstance(edge_obj.data, bpy.types.Curve):
         edge_obj.data.bevel_depth = thickness * _DISPLAY_SCALE
     for obj, material in (
         (edge_obj, _make_unit_cell_edge_material(settings)),
+        (marker_obj, _make_unit_cell_edge_material(settings)),
         (face_obj, _make_unit_cell_face_material(settings)),
     ):
         if obj.data.materials:
@@ -1655,10 +1709,17 @@ def _apply_unit_cell_settings(scene):
         ),
         None,
     )
-    if edge_obj is None or face_obj is None:
+    marker_obj = next(
+        (
+            obj for obj in root.objects
+            if obj.get("cgn_role") == "unit_cell_marker"
+        ),
+        None,
+    )
+    if edge_obj is None or face_obj is None or marker_obj is None:
         _show_unit_cell(root, cell_matrix, settings, repeats)
         return
-    _update_unit_cell_objects(edge_obj, face_obj, settings)
+    _update_unit_cell_objects(edge_obj, face_obj, marker_obj, settings)
 
 
 def _pair_key(element_a, element_b):
@@ -1725,43 +1786,159 @@ def _bond_objects(root, atoms, pair_settings):
                         distance = math.sqrt(distance_sq)
                         if bounds[0] <= distance <= bounds[1]:
                             by_pair.setdefault(key, []).append(
-                                (other["cart"], atom["cart"])
+                                (
+                                    other["cart"],
+                                    atom["cart"],
+                                    str(other.get("element", "X")).upper(),
+                                    str(atom.get("element", "X")).upper(),
+                                )
                             )
         buckets.setdefault(cell, []).append(index)
 
     node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
     bond_count = 0
+    scene = getattr(bpy.context, "scene", None)
+    two_color = (
+        getattr(scene, "cgn_bond_style", 'SINGLE_COLOR') == 'TWO_COLOR'
+    )
     for key, segments in sorted(by_pair.items()):
-        vertices = []
-        edges = []
-        for first, second in segments:
-            start = len(vertices)
-            vertices.extend((_display_point(first), _display_point(second)))
-            edges.append((start, start + 1))
-        if not edges:
-            continue
         pair_name = "_".join(key)
-        mesh = bpy.data.meshes.new(f"CGN_Bonds_{pair_name}_Edges")
-        mesh.from_pydata(vertices, edges, [])
-        mesh.update()
-        obj = bpy.data.objects.new(f"CGN_Bonds_{pair_name}", mesh)
-        obj["cgn_role"] = "bonds"
-        obj["cgn_pair"] = "|".join(key)
-        root.objects.link(obj)
-        if "H" in key and not _show_hydrogens():
-            obj.hide_viewport = True
-            obj.hide_render = True
-        material = _make_material(
-            f"CGN_Bond_Mat_{pair_name}", (0.16, 0.16, 0.18, 1.0)
-        )
         vdw_a = vdw_by_element.get(key[0], _DEFAULT_VDW_RADIUS)
         vdw_b = vdw_by_element.get(key[1], _DEFAULT_VDW_RADIUS)
         bond_radius = _bond_radius(vdw_a, vdw_b, model)
-        _add_geometry_nodes_modifier(
-            obj, node_group, bond_radius, material
+        radius_scale = (
+            1.0
+            if model == 'WIRE_STICKS'
+            else getattr(
+                scene,
+                "cgn_bond_radius_scale",
+                _BOND_RADIUS_SCALE_DEFAULT,
+            )
         )
-        bond_count += len(edges)
+        base_radius = (
+            bond_radius / radius_scale if radius_scale else bond_radius
+        )
+        if two_color:
+            segments_by_element = {}
+            for first, second, first_element, second_element in segments:
+                midpoint = tuple(
+                    0.5 * (first[axis] + second[axis])
+                    for axis in range(3)
+                )
+                segments_by_element.setdefault(first_element, []).append(
+                    (first, midpoint)
+                )
+                segments_by_element.setdefault(second_element, []).append(
+                    (midpoint, second)
+                )
+            for element, element_segments in sorted(
+                segments_by_element.items()
+            ):
+                vertices = []
+                edges = []
+                for first, second in element_segments:
+                    start = len(vertices)
+                    vertices.extend(
+                        (_display_point(first), _display_point(second))
+                    )
+                    edges.append((start, start + 1))
+                obj_name = f"CGN_Bonds_{pair_name}_{element}"
+                mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
+                mesh.from_pydata(vertices, edges, [])
+                mesh.update()
+                obj = bpy.data.objects.new(obj_name, mesh)
+                style = _atom_style(scene, element)
+                material = _make_material(
+                    f"CGN_Mat_{element}", style.color, style.roughness
+                )
+                mesh.materials.append(material)
+                obj["cgn_role"] = "bonds"
+                obj["cgn_pair"] = "|".join(key)
+                obj["cgn_bond_element"] = element
+                obj["cgn_base_radius"] = base_radius
+                root.objects.link(obj)
+                if "H" in key and not _show_hydrogens():
+                    obj.hide_viewport = True
+                    obj.hide_render = True
+                _add_geometry_nodes_modifier(
+                    obj, node_group, bond_radius, material
+                )
+        else:
+            vertices = []
+            edges = []
+            for first, second, _first_element, _second_element in segments:
+                start = len(vertices)
+                vertices.extend(
+                    (_display_point(first), _display_point(second))
+                )
+                edges.append((start, start + 1))
+            obj_name = f"CGN_Bonds_{pair_name}"
+            mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
+            mesh.from_pydata(vertices, edges, [])
+            mesh.update()
+            obj = bpy.data.objects.new(obj_name, mesh)
+            obj["cgn_role"] = "bonds"
+            obj["cgn_pair"] = "|".join(key)
+            obj["cgn_base_radius"] = base_radius
+            root.objects.link(obj)
+            if "H" in key and not _show_hydrogens():
+                obj.hide_viewport = True
+                obj.hide_render = True
+            material = _make_material(
+                f"CGN_Bond_Mat_{pair_name}",
+                getattr(scene, "cgn_bond_color", _BOND_COLOR_DEFAULT),
+            )
+            _add_geometry_nodes_modifier(
+                obj, node_group, bond_radius, material
+            )
+        bond_count += len(segments)
     return bond_count
+
+
+def _update_bond_style(scene, context):
+    root = _active_root(scene)
+    if root is None:
+        return
+    try:
+        atoms = _structure_atoms(root)
+        _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+        if context.view_layer is not None:
+            context.view_layer.update()
+    except Exception:
+        traceback.print_exc()
+
+
+def _update_bond_radius_scale(scene, context):
+    if scene.cgn_model in {'WIRE_STICKS', 'SPACE_FILLING'}:
+        return
+    root = _active_root(scene)
+    if root is None:
+        return
+    bonds = [
+        obj for obj in root.objects if obj.get("cgn_role") == "bonds"
+    ]
+    if any("cgn_base_radius" not in obj for obj in bonds):
+        _update_bond_style(scene, context)
+        root = _active_root(scene)
+        bonds = [
+            obj for obj in root.objects if obj.get("cgn_role") == "bonds"
+        ]
+    for obj in bonds:
+        radius = float(obj["cgn_base_radius"]) * scene.cgn_bond_radius_scale
+        for modifier in obj.modifiers:
+            if modifier.type == 'NODES' and modifier.node_group is not None:
+                _set_modifier_input(
+                    modifier, modifier.node_group, "Radius", radius
+                )
+                obj.update_tag(refresh={'OBJECT', 'DATA'})
+    if context.view_layer is not None:
+        context.view_layer.update()
+
+
+def _update_bond_color(scene, context):
+    if scene.cgn_bond_style != 'SINGLE_COLOR':
+        return
+    _update_bond_style(scene, context)
 
 
 def _set_scene_units(scene):
@@ -3157,7 +3334,7 @@ class CGN_PT_unit_cell(Panel):
 
 
 class CGN_PT_model_style(Panel):
-    bl_label = "Model & Style"
+    bl_label = "Atom Model & Style"
     bl_idname = "CGN_PT_model_style"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -3174,11 +3351,21 @@ class CGN_PT_model_style(Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "cgn_model", text="Model")
+        layout.prop(scene, "cgn_bond_style", text="Bond Style")
+        if scene.cgn_bond_style == 'SINGLE_COLOR':
+            layout.prop(scene, "cgn_bond_color", text="Bond Color")
         if scene.cgn_model == 'WIRE_STICKS':
             layout.prop(
                 scene,
                 "cgn_wire_sticks_radius",
                 text="Atom & Bond Radius (Å)",
+                slider=True,
+            )
+        elif scene.cgn_model != 'SPACE_FILLING':
+            layout.prop(
+                scene,
+                "cgn_bond_radius_scale",
+                text="Bond Radius (× default)",
                 slider=True,
             )
         if scene.cgn_model == 'ELLIPSOID':
@@ -3350,6 +3537,35 @@ def register():
         default='BALL_STICK',
         update=_update_model,
     )
+    bpy.types.Scene.cgn_bond_style = EnumProperty(
+        name="Bond Style",
+        description="Use one shared color or color each half by its bonded atom",
+        items=(
+            ('SINGLE_COLOR', "Single Color", "Use one color for every bond"),
+            ('TWO_COLOR', "Two Colors", "Color each bond half by its atom"),
+        ),
+        default='SINGLE_COLOR',
+        update=_update_bond_style,
+    )
+    bpy.types.Scene.cgn_bond_color = FloatVectorProperty(
+        name="Bond Color",
+        description="Color for bonds when using the single-color style",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_BOND_COLOR_DEFAULT,
+        update=_update_bond_color,
+    )
+    bpy.types.Scene.cgn_bond_radius_scale = FloatProperty(
+        name="Bond Radius",
+        description="Scale the default bond radius for the selected atom model",
+        default=_BOND_RADIUS_SCALE_DEFAULT,
+        min=0.1,
+        max=5.0,
+        precision=2,
+        update=_update_bond_radius_scale,
+    )
     bpy.types.Scene.cgn_ellipsoid_probability = FloatProperty(
         name="Probability",
         description="Ellipsoid probability level in percent",
@@ -3435,6 +3651,9 @@ def unregister():
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_ortep_ellipse_thickness
     del bpy.types.Scene.cgn_wire_sticks_radius
+    del bpy.types.Scene.cgn_bond_radius_scale
+    del bpy.types.Scene.cgn_bond_color
+    del bpy.types.Scene.cgn_bond_style
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness
     del bpy.types.Scene.cgn_ortep_ellipse_color

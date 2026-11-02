@@ -106,7 +106,11 @@ _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
-_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids"
+_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
+_LEGACY_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids"
+_ORTEP_TEMPLATE_OBJECT = "CGN_ORTEP_Template"
+_ORTEP_INNER_COLOR = (0.12, 0.12, 0.16, 1.0)
+_ORTEP_ELLIPSE_COLOR = (0.015, 0.015, 0.02, 1.0)
 _MODEL_ITEMS = (
     ('BALL_STICK', "Ball & Stick", "Spheres at quarter van der Waals radius"),
     ('ELLIPSOID', "Ellipsoids", "Anisotropic displacement ellipsoids"),
@@ -197,6 +201,22 @@ def _update_atom_style(self, context):
     if shader is not None:
         shader.inputs["Base Color"].default_value = self.color
         shader.inputs["Roughness"].default_value = self.roughness
+    root = _active_root(context.scene)
+    if root is not None and context.scene.cgn_model == 'BALL_STICK':
+        for obj in root.objects:
+            if (
+                obj.get("cgn_role") != "atoms"
+                or obj.get("cgn_element") != self.element
+            ):
+                continue
+            radius = float(obj.get("cgn_vdw_radius", _DEFAULT_VDW_RADIUS))
+            for modifier in obj.modifiers:
+                if modifier.type == 'NODES' and modifier.node_group is not None:
+                    _set_modifier_input(
+                        modifier, modifier.node_group, "Radius",
+                        radius * self.size * _DISPLAY_SCALE,
+                    )
+            obj.update_tag(refresh={'OBJECT', 'DATA'})
 
 
 class CGN_AtomStyle(PropertyGroup):
@@ -211,12 +231,44 @@ class CGN_AtomStyle(PropertyGroup):
     )
     roughness: FloatProperty(
         name="Roughness",
-        default=0.35,
+        default=0.25,
         min=0.0,
         max=1.0,
         precision=2,
         update=_update_atom_style,
     )
+    size: FloatProperty(
+        name="Size",
+        description="Atom radius as a fraction of its van der Waals radius",
+        subtype='FACTOR',
+        default=0.25,
+        min=0.0,
+        max=1.0,
+        update=_update_atom_style,
+    )
+
+
+def _update_ortep_materials(scene, context):
+    for name, color, roughness in (
+        (
+            "CGN_ORTEP_Inner_Faces",
+            scene.cgn_ortep_inner_color,
+            scene.cgn_ortep_inner_roughness,
+        ),
+        (
+            "CGN_ORTEP_Ellipse_Lines",
+            scene.cgn_ortep_ellipse_color,
+            scene.cgn_ortep_ellipse_roughness,
+        ),
+    ):
+        material = bpy.data.materials.get(name)
+        if material is None:
+            continue
+        material.diffuse_color = color
+        shader = material.node_tree.nodes.get("Principled BSDF")
+        if shader is not None:
+            shader.inputs["Base Color"].default_value = color
+            shader.inputs["Roughness"].default_value = roughness
 
 
 def _unit_cell_settings_updated(self, context):
@@ -507,8 +559,214 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
     return (radius, radius, radius), (0.0, 0.0, 0.0)
 
 
+def _build_ortep_template_mesh():
+    """Create a clipped ellipsoid template with cut faces and three rings."""
+    latitude_steps = 32
+    longitude_steps = 64
+    vertices = [(0.0, 0.0, 1.0)]
+
+    def ring_index(latitude, longitude):
+        return (
+            1 + (latitude - 1) * longitude_steps
+            + longitude % longitude_steps
+        )
+
+    for latitude in range(1, latitude_steps):
+        theta = math.pi * latitude / latitude_steps
+        for longitude in range(longitude_steps):
+            phi = 2.0 * math.pi * longitude / longitude_steps
+            vertices.append((
+                math.sin(theta) * math.cos(phi),
+                math.sin(theta) * math.sin(phi),
+                math.cos(theta),
+            ))
+    south = len(vertices)
+    vertices.append((0.0, 0.0, -1.0))
+    faces = []
+    face_types = []
+    smooth_faces = []
+
+    def add_sphere_face(face):
+        centroid = tuple(
+            sum(vertices[index][axis] for index in face) / len(face)
+            for axis in range(3)
+        )
+        if all(component > 1e-8 for component in centroid):
+            return
+        faces.append(face)
+        face_types.append((True, False, False))
+        smooth_faces.append(True)
+
+    for longitude in range(longitude_steps):
+        add_sphere_face((
+            0, ring_index(1, longitude),
+            ring_index(1, longitude + 1),
+        ))
+    for latitude in range(1, latitude_steps - 1):
+        for longitude in range(longitude_steps):
+            current = ring_index(latitude, longitude)
+            next_longitude = ring_index(latitude, longitude + 1)
+            next_latitude = ring_index(latitude + 1, longitude)
+            next_both = ring_index(latitude + 1, longitude + 1)
+            add_sphere_face((current, next_latitude, next_both))
+            add_sphere_face((current, next_both, next_longitude))
+    for longitude in range(longitude_steps):
+        add_sphere_face((
+            ring_index(latitude_steps - 1, longitude),
+            south,
+            ring_index(latitude_steps - 1, longitude + 1),
+        ))
+
+    inner_center = len(vertices)
+    vertices.append((0.0, 0.0, 0.0))
+
+    def add_inner_fan(boundary, reverse=False):
+        for index in range(len(boundary) - 1):
+            first, second = boundary[index:index + 2]
+            face = (
+                (inner_center, second, first)
+                if reverse else (inner_center, first, second)
+            )
+            faces.append(face)
+            face_types.append((False, True, False))
+            smooth_faces.append(False)
+
+    half_latitude = latitude_steps // 2
+    quarter_longitude = longitude_steps // 4
+    x_cut = [0] + [
+        ring_index(latitude, quarter_longitude)
+        for latitude in range(1, half_latitude + 1)
+    ]
+    y_cut = [0] + [
+        ring_index(latitude, 0)
+        for latitude in range(1, half_latitude + 1)
+    ]
+    z_cut = [
+        ring_index(half_latitude, longitude)
+        for longitude in range(quarter_longitude + 1)
+    ]
+    add_inner_fan(x_cut, reverse=True)
+    add_inner_fan(y_cut)
+    add_inner_fan(z_cut)
+
+    tube_segments = 48
+    tube_sides = 6
+    tube_radius = 0.018
+    ellipse_planes = (
+        lambda angle: (
+            (math.cos(angle), math.sin(angle), 0.0),
+            (math.cos(angle), math.sin(angle), 0.0),
+            (0.0, 0.0, 1.0),
+        ),
+        lambda angle: (
+            (math.cos(angle), 0.0, math.sin(angle)),
+            (math.cos(angle), 0.0, math.sin(angle)),
+            (0.0, 1.0, 0.0),
+        ),
+        lambda angle: (
+            (0.0, math.cos(angle), math.sin(angle)),
+            (0.0, math.cos(angle), math.sin(angle)),
+            (1.0, 0.0, 0.0),
+        ),
+    )
+    for ellipse in ellipse_planes:
+        start = len(vertices)
+        for segment in range(tube_segments):
+            angle = 2.0 * math.pi * segment / tube_segments
+            point, radial, normal = ellipse(angle)
+            for side in range(tube_sides):
+                cross_angle = 2.0 * math.pi * side / tube_sides
+                vertices.append(tuple(
+                    point[axis] * 1.004
+                    + tube_radius * (
+                        math.cos(cross_angle) * radial[axis]
+                        + math.sin(cross_angle) * normal[axis]
+                    )
+                    for axis in range(3)
+                ))
+        for segment in range(tube_segments):
+            for side in range(tube_sides):
+                current = start + segment * tube_sides + side
+                next_side = (
+                    start + segment * tube_sides
+                    + (side + 1) % tube_sides
+                )
+                next_segment = (
+                    start + ((segment + 1) % tube_segments) * tube_sides
+                    + side
+                )
+                next_both = (
+                    start + ((segment + 1) % tube_segments) * tube_sides
+                    + (side + 1) % tube_sides
+                )
+                faces.extend((
+                    (current, next_segment, next_both),
+                    (current, next_both, next_side),
+                ))
+                face_types.extend(((False, False, True),) * 2)
+                smooth_faces.extend((True, True))
+
+    mesh = bpy.data.meshes.new("CGN_ORTEP_Template_Mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    for name, flag_index in (
+        ("cgn_ortep_surface", 0),
+        ("cgn_ortep_inner", 1),
+        ("cgn_ortep_ellipse", 2),
+    ):
+        attribute = mesh.attributes.new(name, 'BOOLEAN', 'FACE')
+        for polygon_index, face_type in enumerate(face_types):
+            attribute.data[polygon_index].value = face_type[flag_index]
+    for polygon, smooth in zip(mesh.polygons, smooth_faces):
+        polygon.use_smooth = smooth
+    mesh["cgn_ortep_template_version"] = 1
+    return mesh
+
+
+def _ensure_ortep_template():
+    obj = bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT)
+    if obj is None:
+        obj = bpy.data.objects.new(
+            _ORTEP_TEMPLATE_OBJECT, _build_ortep_template_mesh()
+        )
+    elif (
+        obj.type != 'MESH'
+        or obj.data.get("cgn_ortep_template_version") != 1
+    ):
+        old_mesh = obj.data
+        obj.data = _build_ortep_template_mesh()
+        if old_mesh.users == 0:
+            bpy.data.meshes.remove(old_mesh)
+    collection = bpy.data.collections.get("CGN_ORTEP_Assets")
+    if collection is None:
+        collection = bpy.data.collections.new("CGN_ORTEP_Assets")
+    if collection.name not in {
+        child.name for child in bpy.context.scene.collection.children
+    }:
+        bpy.context.scene.collection.children.link(collection)
+    if obj.name not in {item.name for item in collection.objects}:
+        collection.objects.link(obj)
+    obj.hide_render = True
+    obj.hide_set(True)
+    return obj
+
+
+def _make_ortep_materials(scene):
+    inner = _make_material(
+        "CGN_ORTEP_Inner_Faces",
+        scene.cgn_ortep_inner_color,
+        scene.cgn_ortep_inner_roughness,
+    )
+    ellipses = _make_material(
+        "CGN_ORTEP_Ellipse_Lines",
+        scene.cgn_ortep_ellipse_color,
+        scene.cgn_ortep_ellipse_roughness,
+    )
+    return inner, ellipses
+
+
 def _make_ellipsoid_node_group():
-    """Build (or fetch) the per-point ellipsoid instancing node group."""
+    """Build the ORTEP cutaway ellipsoid instancing node group."""
     node_group = bpy.data.node_groups.get(_NODE_GROUP_ELLIPSOIDS)
     if node_group is not None:
         return node_group
@@ -516,60 +774,97 @@ def _make_ellipsoid_node_group():
     node_group = bpy.data.node_groups.new(
         _NODE_GROUP_ELLIPSOIDS, "GeometryNodeTree"
     )
-    geometry_in = node_group.interface.new_socket(
+    sockets = {}
+    sockets["Geometry"] = node_group.interface.new_socket(
         name="Geometry", in_out='INPUT', socket_type="NodeSocketGeometry"
     )
-    material_in = node_group.interface.new_socket(
-        name="Material", in_out='INPUT', socket_type="NodeSocketMaterial"
-    )
-    probability_in = node_group.interface.new_socket(
-        name="Probability Scale", in_out='INPUT', socket_type="NodeSocketFloat"
-    )
-    probability_in.default_value = 1.0
-    geometry_out = node_group.interface.new_socket(
+    for name, socket_type in (
+        ("Material", "NodeSocketMaterial"),
+        ("Inner Face Material", "NodeSocketMaterial"),
+        ("Ellipse Material", "NodeSocketMaterial"),
+        ("Probability Scale", "NodeSocketFloat"),
+    ):
+        sockets[name] = node_group.interface.new_socket(
+            name=name,
+            in_out='INPUT',
+            socket_type=socket_type,
+        )
+    output_geometry = node_group.interface.new_socket(
         name="Geometry", in_out='OUTPUT', socket_type="NodeSocketGeometry"
     )
+    sockets["Probability Scale"].default_value = 1.0
 
     nodes = node_group.nodes
     links = node_group.links
     group_in = nodes.new("NodeGroupInput")
     group_out = nodes.new("NodeGroupOutput")
-    ico = nodes.new("GeometryNodeMeshIcoSphere")
-    set_material = nodes.new("GeometryNodeSetMaterial")
-    smooth = nodes.new("GeometryNodeSetShadeSmooth")
+    group_in.location = (-1050, 100)
+    group_out.location = (800, 100)
+    object_info = nodes.new("GeometryNodeObjectInfo")
+    object_info.transform_space = 'ORIGINAL'
+    object_info.inputs["Object"].default_value = _ensure_ortep_template()
+    object_info.inputs["As Instance"].default_value = False
+    object_info.location = (-800, -220)
     scale_attribute = nodes.new("GeometryNodeInputNamedAttribute")
     rotation_attribute = nodes.new("GeometryNodeInputNamedAttribute")
-    vector_scale = nodes.new("ShaderNodeVectorMath")
-    instance = nodes.new("GeometryNodeInstanceOnPoints")
-
-    group_in.location = (-900, 0)
-    group_out.location = (500, 0)
-    ico.location = (-650, -180)
-    set_material.location = (-420, -180)
-    smooth.location = (-220, -180)
-    scale_attribute.location = (-650, 80)
-    vector_scale.location = (-420, 80)
-    rotation_attribute.location = (-650, 260)
-    instance.location = (0, 0)
-
-    ico.inputs["Subdivisions"].default_value = 3
-    ico.inputs["Radius"].default_value = 1.0
     scale_attribute.data_type = 'FLOAT_VECTOR'
     scale_attribute.inputs["Name"].default_value = "cgn_scale"
+    scale_attribute.location = (-800, 240)
     rotation_attribute.data_type = 'FLOAT_VECTOR'
     rotation_attribute.inputs["Name"].default_value = "cgn_rotation"
+    rotation_attribute.location = (-800, 450)
+    vector_scale = nodes.new("ShaderNodeVectorMath")
     vector_scale.operation = 'SCALE'
+    vector_scale.location = (-350, 240)
+    instance = nodes.new("GeometryNodeInstanceOnPoints")
+    instance.location = (500, 100)
 
-    links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
-    links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
-    links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
-    links.new(set_material.outputs["Geometry"], smooth.inputs["Geometry"])
-    links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
+    material_nodes = []
+    for index, (attribute_name, material_name) in enumerate((
+        ("cgn_ortep_surface", "Material"),
+        ("cgn_ortep_inner", "Inner Face Material"),
+        ("cgn_ortep_ellipse", "Ellipse Material"),
+    )):
+        named_attribute = nodes.new("GeometryNodeInputNamedAttribute")
+        named_attribute.data_type = 'BOOLEAN'
+        named_attribute.inputs["Name"].default_value = attribute_name
+        set_material = nodes.new("GeometryNodeSetMaterial")
+        set_material.location = (-400 + index * 220, -220)
+        named_attribute.location = (-600 + index * 220, -400)
+        links.new(
+            named_attribute.outputs["Attribute"],
+            set_material.inputs["Selection"],
+        )
+        links.new(
+            group_in.outputs[sockets[material_name].identifier],
+            set_material.inputs["Material"],
+        )
+        material_nodes.append(set_material)
+
+    links.new(object_info.outputs["Geometry"], material_nodes[0].inputs["Geometry"])
+    links.new(
+        material_nodes[0].outputs["Geometry"],
+        material_nodes[1].inputs["Geometry"],
+    )
+    links.new(
+        material_nodes[1].outputs["Geometry"],
+        material_nodes[2].inputs["Geometry"],
+    )
+    links.new(
+        material_nodes[2].outputs["Geometry"], instance.inputs["Instance"]
+    )
+    links.new(group_in.outputs[sockets["Geometry"].identifier], instance.inputs["Points"])
     links.new(scale_attribute.outputs["Attribute"], vector_scale.inputs[0])
-    links.new(group_in.outputs[probability_in.identifier], vector_scale.inputs["Scale"])
+    links.new(
+        group_in.outputs[sockets["Probability Scale"].identifier],
+        vector_scale.inputs["Scale"],
+    )
     links.new(vector_scale.outputs["Vector"], instance.inputs["Scale"])
     links.new(rotation_attribute.outputs["Attribute"], instance.inputs["Rotation"])
-    links.new(instance.outputs["Instances"], group_out.inputs[geometry_out.identifier])
+    links.new(
+        instance.outputs["Instances"],
+        group_out.inputs[output_geometry.identifier],
+    )
     return node_group
 
 
@@ -611,7 +906,7 @@ def _set_modifier_input(modifier, node_group, socket_name, value):
         input_value.value = value
 
 
-def _make_material(name, color, roughness=0.35):
+def _make_material(name, color, roughness=0.25):
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
@@ -625,29 +920,28 @@ def _make_material(name, color, roughness=0.35):
 
 
 def _atom_style(scene, element):
+    if int(scene.get("cgn_atom_style_version", 0)) < 1:
+        for existing in scene.cgn_atom_styles:
+            if math.isclose(existing.roughness, 0.35, abs_tol=1e-6):
+                existing.roughness = 0.25
+        scene["cgn_atom_style_version"] = 1
     for style in scene.cgn_atom_styles:
         if style.element == element:
             return style
     color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
-    roughness = 0.35
     material = bpy.data.materials.get(f"CGN_Mat_{element}")
     if material is not None:
         color = tuple(material.diffuse_color)
-        shader = (
-            material.node_tree.nodes.get("Principled BSDF")
-            if material.node_tree is not None else None
-        )
-        if shader is not None:
-            roughness = shader.inputs["Roughness"].default_value
     style = scene.cgn_atom_styles.add()
     style.element = element
     style.color = color
-    style.roughness = roughness
+    style.roughness = 0.25
     return style
 
 
 def _add_geometry_nodes_modifier(
-    obj, node_group, radius=None, material=None, probability=None
+    obj, node_group, radius=None, material=None, probability=None,
+    inner_material=None, ellipse_material=None,
 ):
     modifier = obj.modifiers.new("Geometry Nodes", 'NODES')
     modifier.node_group = node_group
@@ -658,6 +952,14 @@ def _add_geometry_nodes_modifier(
     if probability is not None:
         _set_modifier_input(
             modifier, node_group, "Probability Scale", probability
+        )
+    if inner_material is not None:
+        _set_modifier_input(
+            modifier, node_group, "Inner Face Material", inner_material
+        )
+    if ellipse_material is not None:
+        _set_modifier_input(
+            modifier, node_group, "Ellipse Material", ellipse_material
         )
 
 
@@ -803,13 +1105,24 @@ def _update_model(scene, context):
 
 
 def _update_hydrogen_scale(scene, context):
-    _update_model(scene, context)
+    if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
+        _update_model(scene, context)
 
 
 def _update_ellipsoid_probability(scene, context):
     """Rescale existing ellipsoids without rebuilding geometry."""
     root = _active_root(scene)
     if root is None or _current_model(scene) != 'ELLIPSOID':
+        return
+    if any(
+        modifier.type == 'NODES'
+        and modifier.node_group is not None
+        and modifier.node_group.name == _LEGACY_NODE_GROUP_ELLIPSOIDS
+        for obj in root.objects
+        if obj.get("cgn_role") == "atoms"
+        for modifier in obj.modifiers
+    ):
+        _update_model(scene, context)
         return
     factor = _ellipsoid_probability_factor(
         scene.cgn_ellipsoid_probability
@@ -853,17 +1166,22 @@ def _make_atom_objects(root, atoms):
     if ellipsoids:
         node_group = _make_ellipsoid_node_group()
         scene = getattr(bpy.context, "scene", None)
+        inner_material, ellipse_material = _make_ortep_materials(scene)
         probability = _ellipsoid_probability_factor(
             getattr(scene, "cgn_ellipsoid_probability", 50.0)
         )
     else:
         node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
         probability = None
+        inner_material = None
+        ellipse_material = None
     for element, element_atoms in sorted(by_element.items()):
         scene = bpy.context.scene
         style = _atom_style(scene, element)
         size_scale = (
-            scene.cgn_hydrogen_scale if element == "H" else 1.0
+            scene.cgn_hydrogen_scale
+            if element == "H" and model in {'ELLIPSOID', 'SPACE_FILLING'}
+            else 1.0
         )
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
@@ -875,6 +1193,9 @@ def _make_atom_objects(root, atoms):
         obj = bpy.data.objects.new(f"CGN_Atoms_{element}", mesh)
         obj["cgn_role"] = "atoms"
         obj["cgn_element"] = element
+        obj["cgn_vdw_radius"] = float(
+            element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS)
+        )
         root.objects.link(obj)
         if element == "H" and not _show_hydrogens():
             obj.hide_viewport = True
@@ -888,15 +1209,15 @@ def _make_atom_objects(root, atoms):
                 node_group,
                 material=material,
                 probability=1.0 if element == "H" else probability,
+                inner_material=inner_material,
+                ellipse_material=ellipse_material,
             )
         else:
-            radius = _atom_radius(
-                float(
-                    element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS)
-                ),
-                model,
-            )
-            radius *= size_scale
+            if model == 'BALL_STICK':
+                radius = obj["cgn_vdw_radius"] * style.size * _DISPLAY_SCALE
+            else:
+                radius = _atom_radius(obj["cgn_vdw_radius"], model)
+                radius *= size_scale
             _add_geometry_nodes_modifier(obj, node_group, radius, material)
 
 
@@ -2669,12 +2990,23 @@ class CGN_PT_model_style(Panel):
                 text="Probability (%)",
                 slider=True,
             )
-        layout.prop(
-            scene,
-            "cgn_hydrogen_scale",
-            text="Hydrogen Size",
-            slider=True,
-        )
+            ortep_box = layout.box()
+            ortep_box.label(text="ORTEP Cutaway")
+            ortep_box.prop(scene, "cgn_ortep_inner_color", text="Inner Faces")
+            ortep_box.prop(
+                scene, "cgn_ortep_inner_roughness", text="Inner Roughness"
+            )
+            ortep_box.prop(scene, "cgn_ortep_ellipse_color", text="Ellipses")
+            ortep_box.prop(
+                scene, "cgn_ortep_ellipse_roughness", text="Ellipse Roughness"
+            )
+        if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
+            layout.prop(
+                scene,
+                "cgn_hydrogen_scale",
+                text="Hydrogen Size",
+                slider=True,
+            )
         elements = sorted(
             {
                 str(obj.get("cgn_element", "")).upper()
@@ -2691,6 +3023,13 @@ class CGN_PT_model_style(Panel):
                 row.label(text=element)
                 row.prop(style, "color", text="")
                 row.prop(style, "roughness", text="Roughness")
+                if scene.cgn_model == 'BALL_STICK':
+                    box.prop(
+                        style,
+                        "size",
+                        text=f"{element} Size (× VdW)",
+                        slider=True,
+                    )
         if scene.cgn_model == 'SPACE_FILLING':
             layout.label(
                 text="Full van der Waals radii; bonds are hidden.",
@@ -2823,6 +3162,38 @@ def register():
         max=3.0,
         update=_update_hydrogen_scale,
     )
+    bpy.types.Scene.cgn_ortep_inner_color = FloatVectorProperty(
+        name="Inner Face Color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_ORTEP_INNER_COLOR,
+        update=_update_ortep_materials,
+    )
+    bpy.types.Scene.cgn_ortep_inner_roughness = FloatProperty(
+        name="Inner Face Roughness",
+        default=0.25,
+        min=0.0,
+        max=1.0,
+        update=_update_ortep_materials,
+    )
+    bpy.types.Scene.cgn_ortep_ellipse_color = FloatVectorProperty(
+        name="Ellipse Color",
+        subtype='COLOR',
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_ORTEP_ELLIPSE_COLOR,
+        update=_update_ortep_materials,
+    )
+    bpy.types.Scene.cgn_ortep_ellipse_roughness = FloatProperty(
+        name="Ellipse Roughness",
+        default=0.25,
+        min=0.0,
+        max=1.0,
+        update=_update_ortep_materials,
+    )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_menu)
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
 
@@ -2831,6 +3202,10 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_hydrogen_scale
+    del bpy.types.Scene.cgn_ortep_ellipse_roughness
+    del bpy.types.Scene.cgn_ortep_ellipse_color
+    del bpy.types.Scene.cgn_ortep_inner_roughness
+    del bpy.types.Scene.cgn_ortep_inner_color
     del bpy.types.Scene.cgn_ellipsoid_probability
     del bpy.types.Scene.cgn_model
     del bpy.types.Scene.cgn_unit_cell_settings

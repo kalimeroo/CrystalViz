@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 9),
+    "version": (0, 4, 10),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
@@ -1644,10 +1644,14 @@ class _CGN_OT_select_atoms(Operator):
 
 
 def _grow_from_selection():
-    """Run the grow operator after the selection modal has fully finished."""
+    """Grow after the selection modal has returned, without a modal worker.
+
+    Starting the modal grow operator from the selection modal's timer does not
+    deliver events on a real window, so the worker is run and consumed here.
+    """
     try:
-        bpy.ops.cgn.grow_further('INVOKE_DEFAULT', all_atoms=False)
-    except RuntimeError as exc:
+        CGN_OT_grow_further.execute(_BlockingGrowthRunner(), bpy.context)
+    except Exception as exc:
         print(f"CCTBX Geometry Nodes: grow failed: {exc}")
     return None
 
@@ -1885,11 +1889,26 @@ class CGN_OT_grow_further(Operator):
             "root_name": root.name,
             "root_id": root.get("cgn_instance_id"),
         }
+        if getattr(self, "_blocking", False):
+            return self._run_blocking(context)
         self._timer = context.window_manager.event_timer_add(
             0.2, window=context.window
         )
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
+
+    def _run_blocking(self, context):
+        """Wait for the worker in place, for calls made outside a modal loop."""
+        process = self._worker["process"]
+        while process.poll() is None:
+            if time.monotonic() >= self._worker["deadline"]:
+                _stop_worker(process)
+                self._worker["stdout"].close()
+                self._worker["stderr"].close()
+                self.report({'ERROR'}, "cctbx grow worker timed out.")
+                return {'CANCELLED'}
+            time.sleep(0.02)
+        return self._apply_worker_result(context)
 
     def _finish_worker(self, context):
         timer = getattr(self, "_timer", None)
@@ -1919,6 +1938,9 @@ class CGN_OT_grow_further(Operator):
             return {'RUNNING_MODAL'}
 
         self._finish_worker(context)
+        return self._apply_worker_result(context)
+
+    def _apply_worker_result(self, context):
         try:
             result = _read_worker_response(self._worker)
             root = bpy.data.collections.get(self._worker["root_name"])
@@ -1959,6 +1981,18 @@ class CGN_OT_grow_further(Operator):
             traceback.print_exc()
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
+
+
+class _BlockingGrowthRunner:
+    """Lightweight operator stand-in for the deferred right-click grow."""
+
+    all_atoms = False
+    _blocking = True
+    _run_blocking = CGN_OT_grow_further._run_blocking
+    _apply_worker_result = CGN_OT_grow_further._apply_worker_result
+
+    def report(self, level, message):
+        print(f"CCTBX Geometry Nodes: {message}")
 
 
 class CGN_PT_panel(Panel):

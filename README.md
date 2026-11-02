@@ -37,10 +37,15 @@ inclusive minimum/maximum distance in Å, inside the collapsible **Connectivity*
 sub-panel. After changing those settings, use **Rebuild Bonds**. Initial maximum
 distances are inferred from the cctbx covalent radii plus 0.4 Å.
 
+Atoms use the JMOL CPK colour scheme (the Science Notes table): colours are
+stored as sRGB hex and converted to linear values so Blender displays the
+intended hue. Elements missing from the table fall back to Jmol's pink.
+
 The **CCTBX GN** sidebar tab is split into collapsible sections: the main panel
-shows the import button, space group and atom count; **Build** holds Fill, Grow
-and Delete; **Connectivity**, **Unit Cell** and **About** are collapsed by
-default. The same build actions are available from the **CCTBX** menu in the 3D
+shows the import button, space group, unit-cell parameters (a, b, c and α, β,
+γ) and atom count; **Build** holds Fill, Grow, Delete and a **Show Hydrogens**
+checkbox that hides or shows hydrogen atoms together with their bonds;
+**Connectivity**, **Unit Cell** and **About** are collapsed by default. The same build actions are available from the **CCTBX** menu in the 3D
 Viewport header, and CIF import is also registered under **File > Import**.
 
 Use the **Fill** menu to choose what the structure displays: **Asymmetric

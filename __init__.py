@@ -88,9 +88,8 @@ _DISPLAY_SCALE = 0.1
 _BOND_VDW_FACTOR = 0.1
 _BALL_ATOM_VDW_FACTOR = 0.25
 _SPACE_FILLING_ATOM_VDW_FACTOR = 1.0
-_WIRE_ATOM_VDW_FACTOR = 1.0 / 16.0
 _ELLIPSOID_BOND_VDW_FACTOR = 0.05
-_WIRE_BOND_VDW_FACTOR = 0.03
+_WIRE_RADIUS_DEFAULT = 0.1
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
@@ -441,10 +440,14 @@ def _atom_radius(vdw_radius, model=None):
     """Display-space atom radius for the active model."""
     if model is None:
         model = _current_model()
+    if model == 'WIRE_STICKS':
+        scene = getattr(bpy.context, "scene", None)
+        wire_radius = getattr(
+            scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT
+        )
+        return float(wire_radius) * _DISPLAY_SCALE
     if model == 'SPACE_FILLING':
         factor = _SPACE_FILLING_ATOM_VDW_FACTOR
-    elif model == 'WIRE_STICKS':
-        factor = _WIRE_ATOM_VDW_FACTOR
     else:
         factor = _BALL_ATOM_VDW_FACTOR
     return float(vdw_radius) * factor * _DISPLAY_SCALE
@@ -454,10 +457,14 @@ def _bond_radius(vdw_a, vdw_b, model=None):
     """Display-space bond radius for the active model."""
     if model is None:
         model = _current_model()
-    mean_vdw = 0.5 * (float(vdw_a) + float(vdw_b))
     if model == 'WIRE_STICKS':
-        factor = _WIRE_BOND_VDW_FACTOR
-    elif model == 'ELLIPSOID':
+        scene = getattr(bpy.context, "scene", None)
+        wire_radius = getattr(
+            scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT
+        )
+        return float(wire_radius) * _DISPLAY_SCALE
+    mean_vdw = 0.5 * (float(vdw_a) + float(vdw_b))
+    if model == 'ELLIPSOID':
         factor = _ELLIPSOID_BOND_VDW_FACTOR
     else:
         factor = _BOND_VDW_FACTOR
@@ -1222,6 +1229,26 @@ def _update_model(scene, context):
 def _update_hydrogen_scale(scene, context):
     if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
         _update_model(scene, context)
+
+
+def _update_wire_sticks_radius(scene, context):
+    if scene.cgn_model != 'WIRE_STICKS':
+        return
+    root = _active_root(scene)
+    if root is None:
+        return
+    radius = float(scene.cgn_wire_sticks_radius) * _DISPLAY_SCALE
+    for obj in root.objects:
+        if obj.get("cgn_role") not in {"atoms", "bonds"}:
+            continue
+        for modifier in obj.modifiers:
+            if modifier.type == 'NODES' and modifier.node_group is not None:
+                _set_modifier_input(
+                    modifier, modifier.node_group, "Radius", radius
+                )
+                obj.update_tag(refresh={'OBJECT', 'DATA'})
+    if context.view_layer is not None:
+        context.view_layer.update()
 
 
 def _update_ellipsoid_probability(scene, context):
@@ -3300,6 +3327,13 @@ class CGN_PT_model_style(Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "cgn_model", text="Model")
+        if scene.cgn_model == 'WIRE_STICKS':
+            layout.prop(
+                scene,
+                "cgn_wire_sticks_radius",
+                text="Atom & Bond Radius (Å)",
+                slider=True,
+            )
         if scene.cgn_model == 'ELLIPSOID':
             layout.prop(
                 scene,
@@ -3486,6 +3520,15 @@ def register():
         max=3.0,
         update=_update_hydrogen_scale,
     )
+    bpy.types.Scene.cgn_wire_sticks_radius = FloatProperty(
+        name="Atom & Bond Radius",
+        description="Shared atom and bond radius in Wire-sticks mode",
+        default=_WIRE_RADIUS_DEFAULT,
+        min=0.01,
+        max=0.5,
+        precision=2,
+        update=_update_wire_sticks_radius,
+    )
     bpy.types.Scene.cgn_ortep_ellipse_thickness = FloatProperty(
         name="Ellipse Thickness",
         description="Tube thickness of the three ORTEP ellipses",
@@ -3545,6 +3588,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_ortep_ellipse_thickness
+    del bpy.types.Scene.cgn_wire_sticks_radius
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness
     del bpy.types.Scene.cgn_ortep_ellipse_color

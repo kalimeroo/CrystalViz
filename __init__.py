@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes (gemmi)",
     "author": "OpenAI",
-    "version": (0, 5, 3),
+    "version": (0, 5, 4),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": (
@@ -1661,6 +1661,19 @@ class CGN_MT_fill(Menu):
         layout.operator("cgn.fill_pack", text="Pack Unit-cells...")
 
 
+def _select_click(selected, candidate, additive):
+    """Apply one click to *selected*: toggle the atom or replace/add."""
+    if candidate is not None and candidate in selected:
+        # Clicking an already selected atom toggles it off without
+        # disturbing the rest of the selection.
+        selected.discard(candidate)
+    else:
+        if not additive:
+            selected.clear()
+        if candidate is not None:
+            selected.add(candidate)
+
+
 class _CGN_OT_select_atoms(Operator):
     """Shared click/box atom selection modal for the grow and delete tools."""
 
@@ -1803,9 +1816,9 @@ class _CGN_OT_select_atoms(Operator):
             self.report({'ERROR'}, "The active structure changed during selection.")
             return
 
-        if not self._drag_additive:
-            self._selected.clear()
         if self._dragging:
+            if not self._drag_additive:
+                self._selected.clear()
             x_min, x_max = sorted((self._drag_start.x, self._drag_end.x))
             y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
             self._selected.update(
@@ -1818,8 +1831,11 @@ class _CGN_OT_select_atoms(Operator):
                 for index, point in self._project_atoms(context)
                 if (point - self._drag_start).length <= self.max_pixel_distance
             ]
-            if candidates:
-                self._selected.add(min(candidates, key=lambda item: item[1])[0])
+            nearest = (
+                min(candidates, key=lambda item: item[1])[0]
+                if candidates else None
+            )
+            _select_click(self._selected, nearest, self._drag_additive)
 
         _update_growth_selection(root, self._atoms, self._selected)
         context.area.tag_redraw()
@@ -1876,12 +1892,12 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
     bl_label = "Grow Selected Atoms"
     bl_description = (
         "Select atoms in the viewport, then confirm to grow around them; "
-        "Shift adds to the selection"
+        "click a selected atom to remove it, Shift adds to the selection"
     )
 
     select_error = "Import a CIF before selecting growth atoms."
     status_text = (
-        "Click or drag to select atoms; Shift adds. "
+        "Click atoms to add/remove, drag a box to select; Shift adds. "
         "Enter/right-click grows around them, Esc cancels."
     )
 
@@ -1903,13 +1919,13 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
     bl_label = "Delete Atoms"
     bl_description = (
         "Click atoms or drag a box around them, then confirm to delete; "
-        "Shift adds to the selection"
+        "click a selected atom to remove it, Shift adds to the selection"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
     select_error = "Import a CIF before deleting atoms."
     status_text = (
-        "Click or drag to select atoms to delete; Shift adds. "
+        "Click atoms to add/remove, drag a box to select; Shift adds. "
         "Enter/right-click deletes them, Esc cancels."
     )
     keep_stored_selection = False

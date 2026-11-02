@@ -73,11 +73,11 @@ The **Atom Model & Style** sub-panel switches the rendering model:
 - **Wire-sticks** — atoms and bonds use the same adjustable radius, set in Å
   with **Atom & Bond Radius**.
 
-Choose **Bond Style** to give bonds one shared color or color each half with
-the corresponding bonded atom's element color. Single-color bonds have an
-adjustable color. For models other than Wire-sticks, **Bond Radius** scales the
-model's default bond radius; in Wire-sticks, the shared atom-and-bond radius
-control keeps both radii equal.
+The expandable **Bond Style** panel lets bonds use one shared color or color
+each half with the corresponding bonded atom's element color. Single-color
+bonds have an adjustable color. For models other than Wire-sticks,
+**Bond Radius** scales the model's default bond radius; in Wire-sticks, the
+shared atom-and-bond radius control keeps both radii equal.
 
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius

@@ -1938,7 +1938,29 @@ def _update_bond_radius_scale(scene, context):
 def _update_bond_color(scene, context):
     if scene.cgn_bond_style != 'SINGLE_COLOR':
         return
-    _update_bond_style(scene, context)
+    root = _active_root(scene)
+    if root is None:
+        return
+    for obj in root.objects:
+        if (
+            obj.get("cgn_role") != "bonds"
+            or obj.get("cgn_bond_element")
+        ):
+            continue
+        pair_name = str(obj.get("cgn_pair", "")).replace("|", "_")
+        if not pair_name:
+            continue
+        material = _make_material(
+            f"CGN_Bond_Mat_{pair_name}", scene.cgn_bond_color
+        )
+        for modifier in obj.modifiers:
+            if modifier.type == 'NODES' and modifier.node_group is not None:
+                _set_modifier_input(
+                    modifier, modifier.node_group, "Material", material
+                )
+                obj.update_tag(refresh={'OBJECT', 'DATA'})
+    if context.view_layer is not None:
+        context.view_layer.update()
 
 
 def _set_scene_units(scene):

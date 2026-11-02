@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 7),
+    "version": (0, 4, 8),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
@@ -864,13 +864,15 @@ def _read_worker_response(worker):
 
 
 def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
-    """Return one instance per site with translations that keep molecules whole.
+    """Return the cell contents plus the atoms that complete whole molecules.
 
     The P1 site table stores every atom inside the cell, so a molecule that
     crosses a cell boundary is split into fragments. This walks the periodic
     bond graph and assigns each atom an integer cell translation so bonded
-    atoms stay together; each molecule is then shifted as a whole so its
-    centroid lies in the cell. Some atoms therefore end up just outside it.
+    atoms stay together. Every cell atom is then kept at its wrapped position,
+    and each molecule fragment that is visible in the cell is completed by
+    adding the missing atoms just outside it. Periodic frameworks cannot be
+    unwrapped into finite molecules and keep their plain cell contents.
     """
     windows = {}
     for setting in pair_settings:
@@ -995,36 +997,30 @@ def _unwrapped_cell_instances(sites, cell_matrix, pair_settings):
         if is_periodic:
             periodic.append(len(components) - 1)
 
+    instances = {(index, 0, 0, 0) for index in range(len(sites))}
     for component_index, component in enumerate(components):
         if component_index in periodic:
+            continue
+        anchors = {
+            (-translations[index][0], -translations[index][1],
+             -translations[index][2])
+            for index in component
+        }
+        for anchor in anchors:
             for index in component:
-                translations[index] = (0, 0, 0)
-            continue
-        center = Vector((0.0, 0.0, 0.0))
-        for index in component:
-            center += fracs[index] + Vector(translations[index])
-        center /= len(component)
-        shift = (
-            -math.floor(center.x),
-            -math.floor(center.y),
-            -math.floor(center.z),
-        )
-        if shift == (0, 0, 0):
-            continue
-        for index in component:
-            translation = translations[index]
-            translations[index] = (
-                translation[0] + shift[0],
-                translation[1] + shift[1],
-                translation[2] + shift[2],
-            )
+                translation = translations[index]
+                instances.add((
+                    index,
+                    translation[0] + anchor[0],
+                    translation[1] + anchor[1],
+                    translation[2] + anchor[2],
+                ))
 
-    instances = []
-    for index, translation in enumerate(translations):
-        instances.extend((
-            index, translation[0], translation[1], translation[2],
-        ))
-    return instances
+    return [
+        value
+        for instance in sorted(instances)
+        for value in instance
+    ]
 
 
 def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
@@ -1078,15 +1074,6 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
             repeats = (1, 1, 1)
             description = "one unit cell"
 
-        atom_count = len(sites) * repeats[0] * repeats[1] * repeats[2]
-        if atom_count > _MAX_FILL_ATOMS:
-            operator.report(
-                {'ERROR'},
-                f"This fill would create {atom_count} atoms; reduce the "
-                f"repeats (limit {_MAX_FILL_ATOMS}).",
-            )
-            return {'CANCELLED'}
-
         cell_instances = _unwrapped_cell_instances(
             sites, cell_matrix, context.scene.cgn_connectivity_pairs
         )
@@ -1096,18 +1083,34 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                 for site_index in range(len(sites))
                 for value in (site_index, 0, 0, 0)
             ]
+        cell_atom_count = len(cell_instances) // 4
+        atom_count = cell_atom_count * repeats[0] * repeats[1] * repeats[2]
+        if atom_count > _MAX_FILL_ATOMS:
+            operator.report(
+                {'ERROR'},
+                f"This fill would create {atom_count} atoms; reduce the "
+                f"repeats (limit {_MAX_FILL_ATOMS}).",
+            )
+            return {'CANCELLED'}
+        if cell_atom_count > len(sites):
+            description += " with completed molecules"
 
+        seen = set()
         new_instances = []
         for tx in range(repeats[0]):
             for ty in range(repeats[1]):
                 for tz in range(repeats[2]):
                     for offset in range(0, len(cell_instances), 4):
-                        new_instances.extend((
+                        key = (
                             cell_instances[offset],
                             cell_instances[offset + 1] + tx,
                             cell_instances[offset + 2] + ty,
                             cell_instances[offset + 3] + tz,
-                        ))
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        new_instances.extend(key)
 
     atoms = _materialize_atoms(
         sites, cell_matrix, new_instances, len(new_instances) // 4

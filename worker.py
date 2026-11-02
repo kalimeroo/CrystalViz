@@ -33,7 +33,8 @@ def _radius_tables(element, label):
 
 
 def _read_structure(cif_path, block_name=None):
-    structures = cif.reader(file_path=cif_path).build_crystal_structures()
+    reader = cif.reader(file_path=cif_path)
+    structures = reader.build_crystal_structures()
     if not structures:
         raise ValueError("No crystal structures were found in this CIF.")
     if block_name:
@@ -50,7 +51,7 @@ def _read_structure(cif_path, block_name=None):
             "This CIF contains multiple structures. Enter a CIF block name: "
             + ", ".join(structures.keys())
         )
-    return structures[key], key
+    return structures[key], key, reader.model()[key]
 
 
 def _p1_sites(structure):
@@ -309,7 +310,7 @@ def _instances_from_atoms(unit_cell, base_atoms, lookup, atoms):
 
 def load_structure(cif_path, block_name=None):
     """Return the P1 site table and the instances that make up the ASU."""
-    structure, key = _read_structure(cif_path, block_name)
+    structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = structure.unit_cell()
     sites = _p1_sites(structure)
     base_atoms = _base_atoms(unit_cell, sites)
@@ -334,6 +335,17 @@ def load_structure(cif_path, block_name=None):
             for operation in structure.space_group().all_ops()
         ],
         "unit_cell": list(unit_cell.parameters()),
+        "unit_cell_display": [
+            str(block.get(tag, ""))
+            for tag in (
+                "_cell_length_a",
+                "_cell_length_b",
+                "_cell_length_c",
+                "_cell_angle_alpha",
+                "_cell_angle_beta",
+                "_cell_angle_gamma",
+            )
+        ],
         "cell_matrix": _cell_columns(unit_cell),
         "sites": sites,
         "instances": instances,

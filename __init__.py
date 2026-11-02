@@ -12,6 +12,7 @@ import bpy
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -89,8 +90,8 @@ _SPACE_FILLING_ATOM_VDW_FACTOR = 1.0
 _WIRE_ATOM_VDW_FACTOR = 1.0 / 16.0
 _ELLIPSOID_BOND_VDW_FACTOR = 0.05
 _WIRE_BOND_VDW_FACTOR = 0.03
-# Chi-square with 3 degrees of freedom at 50 % probability (ORTEP convention).
-_ELLIPSOID_SCALE_50 = 1.5381722
+# Chi-square quantile with 3 degrees of freedom at 50 % probability.
+_ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
 _DEFAULT_BOND_RADIUS = (
     _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
@@ -115,6 +116,9 @@ _MODEL_ITEMS = (
         "Spheres at full van der Waals radius, without bonds",
     ),
     ('WIRE_STICKS', "Wire-sticks", "Thin atoms and thin bonds"),
+)
+_CIF_CELL_VALUE_RE = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$"
 )
 _DOCS_URL = "https://github.com/kalimeroo/BlenderCCTBX"
 
@@ -360,12 +364,27 @@ def _bond_radius(vdw_a, vdw_b, model=None):
 
 
 def _ellipsoid_probability_factor(probability):
-    """Scale factor relative to the 50 % probability surface."""
-    p = max(0.001, min(99.999, float(probability))) / 100.0
-    factor = math.sqrt(
-        (-2.0 * math.log(1.0 - p)) / (-2.0 * math.log(0.5))
-    )
-    return max(0.001, min(6.0, factor))
+    """Scale ADP axes to the requested 3D Gaussian probability surface."""
+    probability = max(0.001, min(99.999, float(probability))) / 100.0
+
+    def chi_square_3_cdf(value):
+        root = math.sqrt(value / 2.0)
+        return (
+            math.erf(root)
+            - math.sqrt(2.0 * value / math.pi) * math.exp(-value / 2.0)
+        )
+
+    lower = 0.0
+    upper = 1.0
+    while chi_square_3_cdf(upper) < probability:
+        upper *= 2.0
+    for _iteration in range(64):
+        middle = 0.5 * (lower + upper)
+        if chi_square_3_cdf(middle) < probability:
+            lower = middle
+        else:
+            upper = middle
+    return math.sqrt(0.5 * (lower + upper) / _ELLIPSOID_CHI2_50)
 
 
 def _ellipsoid_base_components(atom):
@@ -397,7 +416,7 @@ def _ellipsoid_base_components(atom):
             try:
                 eigenvalues, eigenvectors = numpy.linalg.eigh(tensor)
                 eigenvalues = numpy.clip(eigenvalues, 0.0, None)
-                axes = numpy.sqrt(eigenvalues * _ELLIPSOID_SCALE_50)
+                axes = numpy.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
                 axes = numpy.maximum(axes * _DISPLAY_SCALE, 1e-4)
                 if numpy.linalg.det(eigenvectors) < 0.0:
                     eigenvectors[:, 2] *= -1.0
@@ -495,18 +514,19 @@ def _add_ellipsoid_attributes(mesh, atoms):
 
 def _set_modifier_input(modifier, node_group, socket_name, value):
     identifier = _socket_identifier(node_group, socket_name)
+    inputs = getattr(getattr(modifier, "properties", None), "inputs", None)
+    input_value = getattr(inputs, identifier, None)
+    if input_value is not None and hasattr(input_value, "value"):
+        input_value.value = value
+        return
     try:
         modifier[identifier] = value
     except TypeError:
-        input_value = getattr(modifier.properties.inputs, identifier, None)
         if input_value is None:
             raise RuntimeError(
                 f"Geometry Nodes modifier input '{socket_name}' is unavailable."
             )
-        try:
-            input_value["value"] = value
-        except (TypeError, KeyError):
-            input_value.value = value
+        input_value.value = value
 
 
 def _make_material(name, color):
@@ -699,6 +719,7 @@ def _update_ellipsoid_probability(scene, context):
     for obj in root.objects:
         if obj.get("cgn_role") != "atoms":
             continue
+        updated = False
         for modifier in obj.modifiers:
             if (
                 modifier.type == 'NODES'
@@ -710,8 +731,11 @@ def _update_ellipsoid_probability(scene, context):
                         modifier, modifier.node_group,
                         "Probability Scale", factor,
                     )
+                    updated = True
                 except Exception:
                     traceback.print_exc()
+        if updated:
+            obj.update_tag(refresh={'OBJECT', 'DATA'})
     try:
         context.view_layer.update()
     except Exception:
@@ -898,43 +922,57 @@ def _stored_cell_matrix(root):
     return matrix
 
 
-def _show_unit_cell(root, cell_matrix, settings=None):
-    """Draw the original unit cell: transparent faces and solid black edges."""
+def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
+    """Draw one or more transparent unit cells with solid edges."""
     _clear_unit_cell(root)
     _face, _alpha, _edge, thickness = _unit_cell_values(settings)
-    corners = [
-        _display_point(_cell_corner(cell_matrix, i, j, k))
-        for i in range(2)
-        for j in range(2)
-        for k in range(2)
-    ]
-    edges = [
+    edge_corners = [
         (index, index ^ (1 << bit))
         for index in range(8)
         for bit in range(3)
         if index < (index ^ (1 << bit))
     ]
+    face_corners = (
+        (0, 1, 3, 2), (4, 6, 7, 5),
+        (0, 4, 5, 1), (2, 3, 7, 6),
+        (0, 2, 6, 4), (1, 5, 7, 3),
+    )
+    corners = []
+    faces = []
 
     curve = bpy.data.curves.new("CGN_UnitCell_Edges", 'CURVE')
     curve.dimensions = '3D'
     curve.resolution_u = 1
     curve.bevel_resolution = 2
     curve.bevel_depth = thickness * _DISPLAY_SCALE
-    for first, second in edges:
-        spline = curve.splines.new('POLY')
-        spline.points.add(1)
-        spline.points[0].co = (*corners[first], 1.0)
-        spline.points[1].co = (*corners[second], 1.0)
+    for tx in range(repeats[0]):
+        for ty in range(repeats[1]):
+            for tz in range(repeats[2]):
+                base = len(corners)
+                corners.extend(
+                    _display_point(
+                        _cell_corner(
+                            cell_matrix, i + tx, j + ty, k + tz
+                        )
+                    )
+                    for i in range(2)
+                    for j in range(2)
+                    for k in range(2)
+                )
+                for first, second in edge_corners:
+                    spline = curve.splines.new('POLY')
+                    spline.points.add(1)
+                    spline.points[0].co = (*corners[base + first], 1.0)
+                    spline.points[1].co = (*corners[base + second], 1.0)
+                faces.extend(
+                    tuple(base + index for index in face)
+                    for face in face_corners
+                )
     curve.materials.append(_make_unit_cell_edge_material(settings))
     edge_obj = bpy.data.objects.new("CGN_UnitCell_Edges", curve)
     edge_obj["cgn_role"] = "unit_cell_edge"
     root.objects.link(edge_obj)
 
-    faces = [
-        (0, 1, 3, 2), (4, 6, 7, 5),
-        (0, 4, 5, 1), (2, 3, 7, 6),
-        (0, 2, 6, 4), (1, 5, 7, 3),
-    ]
     mesh = bpy.data.meshes.new("CGN_UnitCell_Faces")
     mesh.from_pydata(corners, [], faces)
     mesh.update()
@@ -971,6 +1009,17 @@ def _apply_unit_cell_settings(scene):
     if not cell_matrix:
         _clear_unit_cell(root)
         return
+    try:
+        repeats = tuple(
+            max(1, min(_MAX_FILL_REPEATS, int(value)))
+            for value in json.loads(
+                root.get("cgn_cell_pack_repeats", "[1, 1, 1]")
+            )
+        )
+    except (TypeError, ValueError):
+        repeats = (1, 1, 1)
+    if len(repeats) != 3:
+        repeats = (1, 1, 1)
     edge_obj = next(
         (
             obj for obj in root.objects
@@ -986,7 +1035,7 @@ def _apply_unit_cell_settings(scene):
         None,
     )
     if edge_obj is None or face_obj is None:
-        _show_unit_cell(root, cell_matrix, settings)
+        _show_unit_cell(root, cell_matrix, settings, repeats)
         return
     _update_unit_cell_objects(edge_obj, face_obj, settings)
 
@@ -1122,6 +1171,9 @@ def _import_result(scene, result, cif_path):
         result.get("space_group_ops", [])
     )
     root["cgn_unit_cell"] = json.dumps(result.get("unit_cell", []))
+    root["cgn_unit_cell_display"] = json.dumps(
+        result.get("unit_cell_display", [])
+    )
     root["cgn_cif_block"] = result.get("label", "")
     root["cgn_cif_path"] = cif_path
     root["cgn_sites"] = json.dumps(sites)
@@ -1741,6 +1793,69 @@ class CGN_OT_fill_pack(Operator):
         )
 
 
+class CGN_OT_pack_cell_boxes(Operator):
+    bl_idname = "cgn.pack_cell_boxes"
+    bl_label = "Pack Unit-Cells (Faces & Edges)"
+    bl_description = (
+        "Show a packed unit-cell grid without adding or changing atoms"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    repeat_a: IntProperty(name="a", default=2, min=1, max=_MAX_FILL_REPEATS)
+    repeat_b: IntProperty(name="b", default=2, min=1, max=_MAX_FILL_REPEATS)
+    repeat_c: IntProperty(name="c", default=2, min=1, max=_MAX_FILL_REPEATS)
+
+    def invoke(self, context, event):
+        root = _active_root(context.scene)
+        if root is not None:
+            try:
+                repeats = [
+                    int(value) for value in json.loads(
+                        root.get("cgn_cell_pack_repeats", "[2, 2, 2]")
+                    )
+                ]
+            except (ValueError, TypeError):
+                repeats = []
+            if len(repeats) == 3:
+                self.repeat_a, self.repeat_b, self.repeat_c = (
+                    max(1, min(_MAX_FILL_REPEATS, value))
+                    for value in repeats
+                )
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Number of unit-cell boxes along each axis:")
+        row = layout.row(align=True)
+        row.prop(self, "repeat_a")
+        row.prop(self, "repeat_b")
+        row.prop(self, "repeat_c")
+        layout.label(text="Draws faces and edges only; atoms are unchanged.")
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({'ERROR'}, "Import a CIF before packing unit cells.")
+            return {'CANCELLED'}
+        cell_matrix = _stored_cell_matrix(root)
+        if cell_matrix is None:
+            self.report({'ERROR'}, "The structure has no valid unit-cell data.")
+            return {'CANCELLED'}
+        repeats = tuple(
+            max(1, min(_MAX_FILL_REPEATS, int(value)))
+            for value in (self.repeat_a, self.repeat_b, self.repeat_c)
+        )
+        root["cgn_cell_pack_repeats"] = json.dumps(list(repeats))
+        settings = context.scene.cgn_unit_cell_settings
+        settings.show_unit_cell = True
+        _show_unit_cell(root, cell_matrix, settings, repeats)
+        self.report(
+            {'INFO'},
+            f"Displayed {repeats[0]}×{repeats[1]}×{repeats[2]} unit-cell boxes.",
+        )
+        return {'FINISHED'}
+
+
 class CGN_MT_fill(Menu):
     bl_idname = "CGN_MT_fill"
     bl_label = "Fill"
@@ -1750,6 +1865,11 @@ class CGN_MT_fill(Menu):
         layout.operator("cgn.fill_asu", text="Asymmetric Unit-cell")
         layout.operator("cgn.fill_cell", text="Unit-Cell")
         layout.operator("cgn.fill_pack", text="Pack Unit-cells...")
+        layout.operator(
+            "cgn.pack_cell_boxes",
+            text="Pack Unit-Cells (Faces & Edges)...",
+            icon='MESH_CUBE',
+        )
 
 
 def _visible_atom_mask(atoms, root):
@@ -2420,6 +2540,21 @@ class _BlockingGrowthRunner:
         print(f"CCTBX Geometry Nodes: {message}")
 
 
+def _format_cell_parameter(value, cif_value="", angle=False):
+    """Keep CIF standard uncertainties visible and avoid trailing angle zeros."""
+    token = str(cif_value or "").strip()
+    if token not in {"", ".", "?"} and _CIF_CELL_VALUE_RE.fullmatch(token):
+        if angle and "(" not in token:
+            numeric = float(token)
+            if numeric.is_integer():
+                return str(int(numeric))
+        return token
+    numeric = float(value)
+    if angle and math.isclose(numeric, round(numeric), abs_tol=1e-9):
+        return str(int(round(numeric)))
+    return f"{numeric:.3f}" if angle else f"{numeric:.4f}"
+
+
 class CGN_PT_panel(Panel):
     bl_label = "CCTBX Geometry Nodes"
     bl_idname = "CGN_PT_panel"
@@ -2444,32 +2579,48 @@ class CGN_PT_panel(Panel):
             parameters = json.loads(root.get("cgn_unit_cell", "[]"))
         except (ValueError, TypeError):
             parameters = []
+        try:
+            cell_display = json.loads(
+                root.get("cgn_unit_cell_display", "[]")
+            )
+        except (ValueError, TypeError):
+            cell_display = []
         if len(parameters) >= 6:
             a, b, c, alpha, beta, gamma = (
                 float(value) for value in parameters[:6]
             )
+            displayed = [
+                _format_cell_parameter(
+                    value,
+                    cell_display[index] if index < len(cell_display) else "",
+                    angle=index >= 3,
+                )
+                for index, value in enumerate(
+                    (a, b, c, alpha, beta, gamma)
+                )
+            ]
             grid = layout.grid_flow(
                 row_major=True, columns=2, even_columns=True, align=True
             )
             grid.label(
-                text=f"a = {a:.4f} Å", icon='DRIVER_DISTANCE'
+                text=f"a = {displayed[0]} Å", icon='DRIVER_DISTANCE'
             )
             grid.label(
-                text=f"α = {alpha:.3f}°",
+                text=f"α = {displayed[3]}°",
                 icon='DRIVER_ROTATIONAL_DIFFERENCE',
             )
             grid.label(
-                text=f"b = {b:.4f} Å", icon='DRIVER_DISTANCE'
+                text=f"b = {displayed[1]} Å", icon='DRIVER_DISTANCE'
             )
             grid.label(
-                text=f"β = {beta:.3f}°",
+                text=f"β = {displayed[4]}°",
                 icon='DRIVER_ROTATIONAL_DIFFERENCE',
             )
             grid.label(
-                text=f"c = {c:.4f} Å", icon='DRIVER_DISTANCE'
+                text=f"c = {displayed[2]} Å", icon='DRIVER_DISTANCE'
             )
             grid.label(
-                text=f"γ = {gamma:.3f}°",
+                text=f"γ = {displayed[5]}°",
                 icon='DRIVER_ROTATIONAL_DIFFERENCE',
             )
         if root.get("cgn_instances", ""):
@@ -2606,11 +2757,12 @@ class CGN_PT_model_style(Panel):
             )
             column.label(
                 text=(
-                    f"{scene.cgn_ellipsoid_probability:.0f} % probability "
-                    "level"
+                    f"3D Gaussian surface: "
+                    f"{scene.cgn_ellipsoid_probability:.0f} %"
                 ),
                 icon='DRIVER_ROTATIONAL_DIFFERENCE',
             )
+            column.label(text="Axes use the Cartesian ADP tensor (Ucart).")
         elif scene.cgn_model == 'SPACE_FILLING':
             layout.label(
                 text="Full van der Waals radii; bonds are hidden.",
@@ -2686,6 +2838,7 @@ _CLASSES = (
     CGN_OT_fill_asu,
     CGN_OT_fill_cell,
     CGN_OT_fill_pack,
+    CGN_OT_pack_cell_boxes,
     CGN_OT_select_growth_atoms,
     CGN_OT_delete_atoms,
     CGN_OT_grow_further,

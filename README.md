@@ -36,10 +36,12 @@ The **Model & Style** sub-panel switches the rendering model:
 - **Ball & Stick** — quarter van der Waals spheres with 0.1× mean-vdW bonds.
 - **Ellipsoids** — anisotropic displacement ellipsoids built from the CIF ADP
   tensors, shown at the 50 % probability level by default. The **Probability**
-  slider below the model dropdown rescales them from 0 to 100 % without
-  rebuilding the atom meshes. Atoms with only an isotropic Uiso value use a
-  spherical ellipsoid; atoms without displacement parameters fall back to the
-  Ball & Stick sphere. Bonds are drawn thin.
+  slider below the model dropdown rescales the 3D Gaussian probability surface
+  using the chi-square distribution with three degrees of freedom, without
+  rebuilding the atom meshes. Cartesian ADP tensors are converted from the CIF
+  crystallographic basis and rotated with each symmetry image. Atoms with only
+  an isotropic Uiso value use a spherical ellipsoid; atoms without displacement
+  parameters fall back to the Ball & Stick sphere. Bonds are drawn thin.
 - **Space-filling (Use VdW radii)** — full van der Waals spheres with bonds
   hidden.
 - **Wire-sticks** — very thin atoms and bonds.
@@ -58,6 +60,8 @@ some atoms just outside the unit-cell boundary without duplicating molecules.
 Connectivity pair distance settings determine which atoms count as bonded;
 periodic frameworks remain limited to the unit-cell contents, and isolated
 sites are retained.
+Choose **Pack Unit-Cells (Faces & Edges)...** to display a repeated cell grid
+without changing or duplicating the atoms.
 The **Unit Cell** sub-panel has a **Show Unit Cell**
 toggle; while it is on, the unit cell is drawn with adjustable face color, face
 transparency, edge color and edge thickness. Turning it off hides the box. Fill

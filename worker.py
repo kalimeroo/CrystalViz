@@ -56,12 +56,20 @@ def _read_structure(cif_path, block_name=None):
 def _p1_sites(structure):
     """Cell contents in P1 as a small table of sites."""
     sites = []
+    unit_cell = structure.unit_cell()
     p1_structure = structure.expand_to_p1(sites_mod_positive=True)
     for scatterer in p1_structure.scatterers():
         symbol = scatterer.element_symbol()
         element = symbol.upper()
         vdw_radius, covalent_radius = _radius_tables(symbol, scatterer.label)
-        sites.append({
+        # Cartesian ADP tensor (U11, U22, U33, U12, U13, U23) in A^2.
+        # cctbx already folds Uiso into a diagonal tensor and returns
+        # non-positive values when the atom has no displacement parameters.
+        u_cart = [
+            float(value)
+            for value in scatterer.u_cart_plus_u_iso(unit_cell)
+        ]
+        site = {
             "label": scatterer.label,
             "source_label": scatterer.label,
             "element": element,
@@ -69,7 +77,10 @@ def _p1_sites(structure):
             "occupancy": float(scatterer.occupancy),
             "vdw_radius": vdw_radius,
             "covalent_radius": covalent_radius,
-        })
+        }
+        if u_cart[0] > 0.0 and u_cart[1] > 0.0 and u_cart[2] > 0.0:
+            site["u_cart"] = u_cart
+        sites.append(site)
     return sites
 
 

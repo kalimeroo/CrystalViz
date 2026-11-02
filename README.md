@@ -31,7 +31,7 @@ or shows hydrogen atoms together with their bonds; **Connectivity**,
 build actions are available from the **CCTBX** menu in the 3D Viewport header,
 and CIF import is also registered under **File > Import**.
 
-The **Model & Style** sub-panel switches the rendering model:
+The **Atom Model & Style** sub-panel switches the rendering model:
 
 - **Ball & Stick** — quarter van der Waals spheres with 0.1× mean-vdW bonds.
 - **ORTEP** — anisotropic displacement ellipsoids built from the CIF ADP
@@ -51,6 +51,12 @@ The **Model & Style** sub-panel switches the rendering model:
   hidden.
 - **Wire-sticks** — atoms and bonds use the same adjustable radius, set in Å
   with **Atom & Bond Radius**.
+
+Choose **Bond Style** to give bonds one shared color or color each half with
+the corresponding bonded atom's element color. Single-color bonds have an
+adjustable color. For models other than Wire-sticks, **Bond Radius** scales the
+model's default bond radius; in Wire-sticks, the shared atom-and-bond radius
+control keeps both radii equal.
 
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius
@@ -74,7 +80,8 @@ sites are retained.
 The **Unit Cell** sub-panel has a **Show Unit Cell** toggle and a
 **Pack Unit-Cells (Faces & Edges)...** control for choosing repetitions along
 a, b and c. This displays a repeated cell grid without changing or duplicating
-atoms. The cell is drawn with adjustable face color, face transparency, edge
+atoms. Icosphere markers indicate the cell-outline corners. The cell is drawn
+with adjustable face color, face transparency, edge
 color and edge thickness. Turning **Show Unit Cell** off hides the grid. Fill
 replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
 Packing is limited to 200,000 atoms.

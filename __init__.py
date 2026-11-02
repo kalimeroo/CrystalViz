@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes (gemmi)",
     "author": "OpenAI",
-    "version": (0, 5, 2),
+    "version": (0, 5, 3),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": (
@@ -24,6 +24,7 @@ from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
+    EnumProperty,
     FloatProperty,
     FloatVectorProperty,
     IntProperty,
@@ -84,6 +85,13 @@ _ELEMENT_COLORS = {
 _DEFAULT_COLOR = _cpk_color("FF1493")
 _DISPLAY_SCALE = 0.1
 _BOND_VDW_FACTOR = 0.1
+_BALL_ATOM_VDW_FACTOR = 0.25
+_SPACE_FILLING_ATOM_VDW_FACTOR = 1.0
+_WIRE_ATOM_VDW_FACTOR = 1.0 / 16.0
+_ELLIPSOID_BOND_VDW_FACTOR = 0.05
+_WIRE_BOND_VDW_FACTOR = 0.03
+# Chi-square with 3 degrees of freedom at 50 % probability (ORTEP convention).
+_ELLIPSOID_SCALE_50 = 1.5381722
 _DEFAULT_VDW_RADIUS = 1.5
 _DEFAULT_BOND_RADIUS = (
     _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
@@ -97,6 +105,17 @@ _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
+_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids"
+_MODEL_ITEMS = (
+    ('BALL_STICK', "Ball & Stick", "Spheres at quarter van der Waals radius"),
+    ('ELLIPSOID', "Ellipsoids", "Anisotropic displacement ellipsoids"),
+    (
+        'SPACE_FILLING',
+        "Space-filling (Use VdW radii)",
+        "Spheres at full van der Waals radius, without bonds",
+    ),
+    ('WIRE_STICKS', "Wire-sticks", "Thin atoms and thin bonds"),
+)
 _DOCS_URL = "https://github.com/kalimeroo/BlenderCCTBX"
 
 
@@ -342,6 +361,193 @@ def _make_node_group(name, is_bond_group):
     return node_group
 
 
+def _current_model(scene=None):
+    """Return the active rendering model name."""
+    if scene is None:
+        scene = getattr(bpy.context, "scene", None)
+    model = getattr(scene, "cgn_model", 'BALL_STICK') if scene else 'BALL_STICK'
+    if model not in {item[0] for item in _MODEL_ITEMS}:
+        model = 'BALL_STICK'
+    return model
+
+
+def _atom_radius(vdw_radius, model=None):
+    """Display-space atom radius for the active model."""
+    if model is None:
+        model = _current_model()
+    if model == 'SPACE_FILLING':
+        factor = _SPACE_FILLING_ATOM_VDW_FACTOR
+    elif model == 'WIRE_STICKS':
+        factor = _WIRE_ATOM_VDW_FACTOR
+    else:
+        factor = _BALL_ATOM_VDW_FACTOR
+    return float(vdw_radius) * factor * _DISPLAY_SCALE
+
+
+def _bond_radius(vdw_a, vdw_b, model=None):
+    """Display-space bond radius for the active model."""
+    if model is None:
+        model = _current_model()
+    mean_vdw = 0.5 * (float(vdw_a) + float(vdw_b))
+    if model == 'WIRE_STICKS':
+        factor = _WIRE_BOND_VDW_FACTOR
+    elif model == 'ELLIPSOID':
+        factor = _ELLIPSOID_BOND_VDW_FACTOR
+    else:
+        factor = _BOND_VDW_FACTOR
+    return mean_vdw * factor * _DISPLAY_SCALE
+
+
+def _ellipsoid_probability_factor(probability):
+    """Scale factor relative to the 50 % probability surface."""
+    p = max(0.001, min(99.999, float(probability))) / 100.0
+    factor = math.sqrt(
+        (-2.0 * math.log(1.0 - p)) / (-2.0 * math.log(0.5))
+    )
+    return max(0.001, min(6.0, factor))
+
+
+def _ellipsoid_base_components(atom):
+    """Return (semi-axes in BU, Euler XYZ rotation) at 50 % probability.
+
+    The axes come from the Cartesian ADP tensor when present. Atoms without
+    displacement parameters remain spherical using the ball-and-stick radius.
+    """
+    try:
+        import numpy
+    except ImportError:
+        numpy = None
+
+    values = atom.get("u_cart")
+    if numpy is not None and values and len(values) == 6:
+        u11, u22, u33, u12, u13, u23 = (float(value) for value in values)
+        if (
+            all(math.isfinite(value) for value in values)
+            and u11 > 0.0 and u22 > 0.0 and u33 > 0.0
+        ):
+            tensor = numpy.array(
+                (
+                    (u11, u12, u13),
+                    (u12, u22, u23),
+                    (u13, u23, u33),
+                ),
+                dtype=float,
+            )
+            try:
+                eigenvalues, eigenvectors = numpy.linalg.eigh(tensor)
+                eigenvalues = numpy.clip(eigenvalues, 0.0, None)
+                axes = numpy.sqrt(eigenvalues * _ELLIPSOID_SCALE_50)
+                axes = numpy.maximum(axes * _DISPLAY_SCALE, 1e-4)
+                if numpy.linalg.det(eigenvectors) < 0.0:
+                    eigenvectors[:, 2] *= -1.0
+                rotation = Matrix(eigenvectors.tolist()).to_euler('XYZ')
+                return (
+                    tuple(float(value) for value in axes),
+                    (float(rotation.x), float(rotation.y), float(rotation.z)),
+                )
+            except Exception:
+                pass
+
+    radius = _atom_radius(
+        atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), 'BALL_STICK'
+    )
+    return (radius, radius, radius), (0.0, 0.0, 0.0)
+
+
+def _make_ellipsoid_node_group():
+    """Build (or fetch) the per-point ellipsoid instancing node group."""
+    node_group = bpy.data.node_groups.get(_NODE_GROUP_ELLIPSOIDS)
+    if node_group is not None:
+        return node_group
+
+    node_group = bpy.data.node_groups.new(
+        _NODE_GROUP_ELLIPSOIDS, "GeometryNodeTree"
+    )
+    geometry_in = node_group.interface.new_socket(
+        name="Geometry", in_out='INPUT', socket_type="NodeSocketGeometry"
+    )
+    material_in = node_group.interface.new_socket(
+        name="Material", in_out='INPUT', socket_type="NodeSocketMaterial"
+    )
+    probability_in = node_group.interface.new_socket(
+        name="Probability Scale", in_out='INPUT', socket_type="NodeSocketFloat"
+    )
+    probability_in.default_value = 1.0
+    geometry_out = node_group.interface.new_socket(
+        name="Geometry", in_out='OUTPUT', socket_type="NodeSocketGeometry"
+    )
+
+    nodes = node_group.nodes
+    links = node_group.links
+    group_in = nodes.new("NodeGroupInput")
+    group_out = nodes.new("NodeGroupOutput")
+    ico = nodes.new("GeometryNodeMeshIcoSphere")
+    set_material = nodes.new("GeometryNodeSetMaterial")
+    smooth = nodes.new("GeometryNodeSetShadeSmooth")
+    scale_attribute = nodes.new("GeometryNodeInputNamedAttribute")
+    rotation_attribute = nodes.new("GeometryNodeInputNamedAttribute")
+    vector_scale = nodes.new("ShaderNodeVectorMath")
+    instance = nodes.new("GeometryNodeInstanceOnPoints")
+
+    group_in.location = (-900, 0)
+    group_out.location = (500, 0)
+    ico.location = (-650, -180)
+    set_material.location = (-420, -180)
+    smooth.location = (-220, -180)
+    scale_attribute.location = (-650, 80)
+    vector_scale.location = (-420, 80)
+    rotation_attribute.location = (-650, 260)
+    instance.location = (0, 0)
+
+    ico.inputs["Subdivisions"].default_value = 3
+    ico.inputs["Radius"].default_value = 1.0
+    scale_attribute.data_type = 'FLOAT_VECTOR'
+    scale_attribute.inputs["Name"].default_value = "cgn_scale"
+    rotation_attribute.data_type = 'FLOAT_VECTOR'
+    rotation_attribute.inputs["Name"].default_value = "cgn_rotation"
+    vector_scale.operation = 'SCALE'
+
+    links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
+    links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
+    links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
+    links.new(set_material.outputs["Geometry"], smooth.inputs["Geometry"])
+    links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
+    links.new(scale_attribute.outputs["Attribute"], vector_scale.inputs[0])
+    links.new(group_in.outputs[probability_in.identifier], vector_scale.inputs["Scale"])
+    links.new(vector_scale.outputs["Vector"], instance.inputs["Scale"])
+    links.new(rotation_attribute.outputs["Attribute"], instance.inputs["Rotation"])
+    links.new(instance.outputs["Instances"], group_out.inputs[geometry_out.identifier])
+    return node_group
+
+
+def _add_ellipsoid_attributes(mesh, atoms):
+    """Store per-point semi-axes and rotations on an atom point mesh."""
+    scale_attribute = mesh.attributes.new("cgn_scale", 'FLOAT_VECTOR', 'POINT')
+    rotation_attribute = mesh.attributes.new(
+        "cgn_rotation", 'FLOAT_VECTOR', 'POINT'
+    )
+    for index, atom in enumerate(atoms):
+        axes, rotation = _ellipsoid_base_components(atom)
+        scale_attribute.data[index].vector = axes
+        rotation_attribute.data[index].vector = rotation
+
+
+def _set_modifier_input(modifier, node_group, socket_name, value):
+    identifier = _socket_identifier(node_group, socket_name)
+    try:
+        modifier[identifier] = value
+    except TypeError:
+        input_value = getattr(modifier.properties.inputs, identifier, None)
+        if input_value is None:
+            raise RuntimeError(
+                f"Geometry Nodes modifier input '{socket_name}' is unavailable."
+            )
+        try:
+            input_value["value"] = value
+        except (TypeError, KeyError):
+            input_value.value = value
+
+
 def _make_material(name, color):
     material = bpy.data.materials.get(name)
     if material is None:
@@ -355,20 +561,19 @@ def _make_material(name, color):
     return material
 
 
-def _add_geometry_nodes_modifier(obj, node_group, radius, material):
+def _add_geometry_nodes_modifier(
+    obj, node_group, radius=None, material=None, probability=None
+):
     modifier = obj.modifiers.new("Geometry Nodes", 'NODES')
     modifier.node_group = node_group
-    for socket_name, value in (("Radius", radius), ("Material", material)):
-        identifier = _socket_identifier(node_group, socket_name)
-        try:
-            modifier[identifier] = value
-        except TypeError:
-            input_value = getattr(modifier.properties.inputs, identifier, None)
-            if input_value is None:
-                raise RuntimeError(
-                    f"Geometry Nodes modifier input '{socket_name}' is unavailable."
-                )
-            input_value.value = value
+    if radius is not None:
+        _set_modifier_input(modifier, node_group, "Radius", radius)
+    if material is not None:
+        _set_modifier_input(modifier, node_group, "Material", material)
+    if probability is not None:
+        _set_modifier_input(
+            modifier, node_group, "Probability Scale", probability
+        )
 
 
 def _clear_collection(collection):
@@ -494,18 +699,78 @@ def _update_show_hydrogens(scene, context):
     )
 
 
+def _update_model(scene, context):
+    """Rebuild atoms and bonds when the rendering model changes."""
+    root = _active_root(scene)
+    if root is None:
+        return
+    try:
+        sites, instances, cell_matrix, initial_count = _structure_tables(root)
+        atoms = _materialize_atoms(
+            sites, cell_matrix, instances, initial_count
+        )
+        _rebuild_atom_objects(root, atoms)
+        _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+        _apply_hydrogen_visibility(root, scene.cgn_show_hydrogens)
+        context.view_layer.update()
+    except Exception:
+        traceback.print_exc()
+
+
+def _update_ellipsoid_probability(scene, context):
+    """Rescale existing ellipsoids without rebuilding geometry."""
+    root = _active_root(scene)
+    if root is None or _current_model(scene) != 'ELLIPSOID':
+        return
+    factor = _ellipsoid_probability_factor(
+        scene.cgn_ellipsoid_probability
+    )
+    for obj in root.objects:
+        if obj.get("cgn_role") != "atoms":
+            continue
+        for modifier in obj.modifiers:
+            if (
+                modifier.type == 'NODES'
+                and modifier.node_group is not None
+                and modifier.node_group.name == _NODE_GROUP_ELLIPSOIDS
+            ):
+                try:
+                    _set_modifier_input(
+                        modifier, modifier.node_group,
+                        "Probability Scale", factor,
+                    )
+                except Exception:
+                    traceback.print_exc()
+    try:
+        context.view_layer.update()
+    except Exception:
+        pass
+
+
 def _make_atom_objects(root, atoms):
     by_element = {}
     for atom in atoms:
         element = str(atom.get("element", "X")).upper()
         by_element.setdefault(element, []).append(atom)
 
-    node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
+    model = _current_model()
+    ellipsoids = model == 'ELLIPSOID'
+    if ellipsoids:
+        node_group = _make_ellipsoid_node_group()
+        scene = getattr(bpy.context, "scene", None)
+        probability = _ellipsoid_probability_factor(
+            getattr(scene, "cgn_ellipsoid_probability", 50.0)
+        )
+    else:
+        node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
+        probability = None
     for element, element_atoms in sorted(by_element.items()):
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
             [_display_point(atom["cart"]) for atom in element_atoms], [], []
         )
+        if ellipsoids:
+            _add_ellipsoid_attributes(mesh, element_atoms)
         mesh.update()
         obj = bpy.data.objects.new(f"CGN_Atoms_{element}", mesh)
         obj["cgn_role"] = "atoms"
@@ -517,12 +782,18 @@ def _make_atom_objects(root, atoms):
         material = _make_material(
             f"CGN_Mat_{element}", _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
         )
-        radius = (
-            float(element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS))
-            / 4.0
-            * _DISPLAY_SCALE
-        )
-        _add_geometry_nodes_modifier(obj, node_group, radius, material)
+        if ellipsoids:
+            _add_geometry_nodes_modifier(
+                obj, node_group, material=material, probability=probability
+            )
+        else:
+            radius = _atom_radius(
+                float(
+                    element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS)
+                ),
+                model,
+            )
+            _add_geometry_nodes_modifier(obj, node_group, radius, material)
 
 
 def _rebuild_atom_objects(root, atoms):
@@ -761,6 +1032,10 @@ def _bond_objects(root, atoms, pair_settings):
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
 
+    model = _current_model()
+    if model == 'SPACE_FILLING':
+        return 0
+
     enabled = {}
     for setting in pair_settings:
         key = _pair_key(setting.element_a, setting.element_b)
@@ -840,9 +1115,7 @@ def _bond_objects(root, atoms, pair_settings):
         )
         vdw_a = vdw_by_element.get(key[0], _DEFAULT_VDW_RADIUS)
         vdw_b = vdw_by_element.get(key[1], _DEFAULT_VDW_RADIUS)
-        bond_radius = (
-            _BOND_VDW_FACTOR * 0.5 * (vdw_a + vdw_b) * _DISPLAY_SCALE
-        )
+        bond_radius = _bond_radius(vdw_a, vdw_b, model)
         _add_geometry_nodes_modifier(
             obj, node_group, bond_radius, material
         )
@@ -1870,15 +2143,28 @@ class CGN_PT_panel(Panel):
             a, b, c, alpha, beta, gamma = (
                 float(value) for value in parameters[:6]
             )
-            layout.label(
-                text=f"a = {a:.4f} Å   b = {b:.4f} Å   c = {c:.4f} Å",
-                icon='DRIVER_DISTANCE',
+            grid = layout.grid_flow(
+                row_major=True, columns=2, even_columns=True, align=True
             )
-            layout.label(
-                text=(
-                    f"α = {alpha:.3f}°   β = {beta:.3f}°   "
-                    f"γ = {gamma:.3f}°"
-                ),
+            grid.label(
+                text=f"a = {a:.4f} Å", icon='DRIVER_DISTANCE'
+            )
+            grid.label(
+                text=f"α = {alpha:.3f}°",
+                icon='DRIVER_ROTATIONAL_DIFFERENCE',
+            )
+            grid.label(
+                text=f"b = {b:.4f} Å", icon='DRIVER_DISTANCE'
+            )
+            grid.label(
+                text=f"β = {beta:.3f}°",
+                icon='DRIVER_ROTATIONAL_DIFFERENCE',
+            )
+            grid.label(
+                text=f"c = {c:.4f} Å", icon='DRIVER_DISTANCE'
+            )
+            grid.label(
+                text=f"γ = {gamma:.3f}°",
                 icon='DRIVER_ROTATIONAL_DIFFERENCE',
             )
         if root.get("cgn_instances", ""):
@@ -1987,6 +2273,46 @@ class CGN_PT_unit_cell(Panel):
         column.prop(settings, "edge_thickness", text="Edge Thickness")
 
 
+class CGN_PT_model_style(Panel):
+    bl_label = "Model & Style"
+    bl_idname = "CGN_PT_model_style"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 4
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.prop(scene, "cgn_model", text="Model")
+        if scene.cgn_model == 'ELLIPSOID':
+            column = layout.column(align=True)
+            column.prop(
+                scene,
+                "cgn_ellipsoid_probability",
+                text="Probability (%)",
+                slider=True,
+            )
+            column.label(
+                text=(
+                    f"{scene.cgn_ellipsoid_probability:.0f} % probability "
+                    "level"
+                ),
+                icon='DRIVER_ROTATIONAL_DIFFERENCE',
+            )
+        elif scene.cgn_model == 'SPACE_FILLING':
+            layout.label(
+                text="Full van der Waals radii; bonds are hidden.",
+                icon='INFO',
+            )
+
+
 class CGN_PT_about(Panel):
     bl_label = "About"
     bl_idname = "CGN_PT_about"
@@ -1995,7 +2321,7 @@ class CGN_PT_about(Panel):
     bl_category = "CCTBX GN"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 4
+    bl_order = 5
 
     def draw(self, context):
         layout = self.layout
@@ -2063,6 +2389,7 @@ _CLASSES = (
     CGN_PT_build,
     CGN_PT_connectivity,
     CGN_PT_unit_cell,
+    CGN_PT_model_style,
     CGN_PT_about,
 )
 
@@ -2083,6 +2410,21 @@ def register():
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(
         type=CGN_UnitCellSettings
     )
+    bpy.types.Scene.cgn_model = EnumProperty(
+        name="Model",
+        description="Rendering model for atoms and bonds",
+        items=_MODEL_ITEMS,
+        default='BALL_STICK',
+        update=_update_model,
+    )
+    bpy.types.Scene.cgn_ellipsoid_probability = FloatProperty(
+        name="Probability",
+        description="Ellipsoid probability level in percent",
+        default=50.0,
+        min=0.0,
+        max=100.0,
+        update=_update_ellipsoid_probability,
+    )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_menu)
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
 
@@ -2090,6 +2432,8 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
+    del bpy.types.Scene.cgn_ellipsoid_probability
+    del bpy.types.Scene.cgn_model
     del bpy.types.Scene.cgn_unit_cell_settings
     del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_active_structure

@@ -246,16 +246,20 @@ def _special_position(ops, unit_cell, frac):
 
 
 def _expand_site(ops, unit_cell, frac):
-    """Distinct symmetry images of a site, wrapped into [0, 1)."""
+    """Distinct symmetry images of a site, wrapped into [0, 1).
+
+    Returns (fractional position, symmetry operation) pairs so anisotropic
+    displacement tensors can be rotated with their image.
+    """
     images = []
     for operation in ops:
         image = _wrapped_fractional(operation.apply_to_xyz(frac))
         if any(
-            _cart_distance(unit_cell, image, other) <= _CART_TOLERANCE
+            _cart_distance(unit_cell, image, other[0]) <= _CART_TOLERANCE
             for other in images
         ):
             continue
-        images.append(image)
+        images.append((image, operation))
     return images
 
 
@@ -310,6 +314,105 @@ def _read_structure(cif_path, block_name=None):
     return structures[key], key
 
 
+def _matrix3_from_columns(columns):
+    """3x3 matrix whose columns are the three orthogonalized cell vectors."""
+    return [
+        [float(columns[0]), float(columns[3]), float(columns[6])],
+        [float(columns[1]), float(columns[4]), float(columns[7])],
+        [float(columns[2]), float(columns[5]), float(columns[8])],
+    ]
+
+
+def _matrix3_multiply(left, right):
+    return [
+        [
+            sum(left[row][k] * right[k][column] for k in range(3))
+            for column in range(3)
+        ]
+        for row in range(3)
+    ]
+
+
+def _matrix3_transpose(matrix):
+    return [
+        [matrix[column][row] for column in range(3)]
+        for row in range(3)
+    ]
+
+
+def _symmetry_rotation(operation):
+    """Fractional rotation matrix of a gemmi symmetry operation."""
+    flattened = []
+    for row in operation.rot:
+        if isinstance(row, (list, tuple)):
+            flattened.extend(row)
+        else:
+            flattened.append(row)
+    return [
+        [float(flattened[row * 3 + column]) / 24.0 for column in range(3)]
+        for row in range(3)
+    ]
+
+
+def _site_u_cart(site, unit_cell, operation=None):
+    """Cartesian ADP tensor (U11, U22, U33, U12, U13, U23) in A^2.
+
+    CIF Uij values are expressed along the direct cell axes, so they are first
+    converted to the reciprocal-basis tensor and then to Cartesian space.
+    Symmetry images rotate the tensor with the operation that generated them.
+    """
+    aniso = getattr(site, "aniso", None)
+    try:
+        values = [float(value) for value in aniso.elements_voigt()]
+    except Exception:
+        values = [0.0] * 6
+    if values[0] > 0.0 and values[1] > 0.0 and values[2] > 0.0:
+        u_cif = [
+            [values[0], values[5], values[4]],
+            [values[5], values[1], values[3]],
+            [values[4], values[3], values[2]],
+        ]
+        reciprocal = unit_cell.cell.reciprocal().parameters
+        astar, bstar, cstar = (
+            float(reciprocal[0]),
+            float(reciprocal[1]),
+            float(reciprocal[2]),
+        )
+        cell = _matrix3_from_columns(unit_cell._columns)
+        scaling = _matrix3_multiply(
+            cell,
+            [
+                [astar, 0.0, 0.0],
+                [0.0, bstar, 0.0],
+                [0.0, 0.0, cstar],
+            ],
+        )
+        tensor = _matrix3_multiply(
+            _matrix3_multiply(scaling, u_cif),
+            _matrix3_transpose(scaling),
+        )
+        if operation is not None:
+            fractional = _matrix3_from_columns(unit_cell._fractionalization)
+            rotation = _matrix3_multiply(
+                _matrix3_multiply(
+                    cell, _symmetry_rotation(operation)
+                ),
+                fractional,
+            )
+            tensor = _matrix3_multiply(
+                _matrix3_multiply(rotation, tensor),
+                _matrix3_transpose(rotation),
+            )
+        return [
+            tensor[0][0], tensor[1][1], tensor[2][2],
+            tensor[0][1], tensor[0][2], tensor[1][2],
+        ]
+    u_iso = float(getattr(site, "u_iso", 0.0) or 0.0)
+    if u_iso > 0.0:
+        return [u_iso, u_iso, u_iso, 0.0, 0.0, 0.0]
+    return None
+
+
 def _p1_sites(structure, unit_cell):
     """Cell contents in P1 as a small table of sites."""
     ops = _space_group_ops(structure)
@@ -318,8 +421,8 @@ def _p1_sites(structure, unit_cell):
         element = _site_element(site)
         vdw_radius, covalent_radius = _radius_tables(element)
         frac = _special_position(ops, unit_cell, [float(v) for v in site.fract])
-        for image in _expand_site(ops, unit_cell, frac):
-            sites.append({
+        for image, operation in _expand_site(ops, unit_cell, frac):
+            site_data = {
                 "label": site.label,
                 "source_label": site.label,
                 "element": element.upper(),
@@ -327,7 +430,11 @@ def _p1_sites(structure, unit_cell):
                 "occupancy": float(site.occ),
                 "vdw_radius": vdw_radius,
                 "covalent_radius": covalent_radius,
-            })
+            }
+            u_cart = _site_u_cart(site, unit_cell, operation)
+            if u_cart is not None:
+                site_data["u_cart"] = u_cart
+            sites.append(site_data)
     return sites
 
 

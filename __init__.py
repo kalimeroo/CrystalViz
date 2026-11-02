@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 8),
+    "version": (0, 4, 9),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",
@@ -33,21 +33,54 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 
 
-_ELEMENT_COLORS = {
-    "H": (0.92, 0.92, 0.92, 1.0),
-    "C": (0.20, 0.20, 0.20, 1.0),
-    "N": (0.12, 0.25, 0.90, 1.0),
-    "O": (0.90, 0.08, 0.08, 1.0),
-    "F": (0.35, 0.82, 0.32, 1.0),
-    "CL": (0.20, 0.75, 0.20, 1.0),
-    "S": (0.95, 0.78, 0.08, 1.0),
-    "P": (1.0, 0.48, 0.08, 1.0),
-    "TI": (0.50, 0.52, 0.55, 1.0),
-    "FE": (0.78, 0.36, 0.12, 1.0),
-    "CU": (0.78, 0.42, 0.18, 1.0),
-    "ZN": (0.48, 0.52, 0.70, 1.0),
+def _srgb_to_linear(value):
+    value /= 255.0
+    if value <= 0.04045:
+        return value / 12.92
+    return ((value + 0.055) / 1.055) ** 2.4
+
+
+def _cpk_color(hex_value):
+    """Convert a Jmol CPK hex colour to linear RGBA for Blender."""
+    rgb = tuple(int(hex_value[index:index + 2], 16) for index in (0, 2, 4))
+    return tuple(_srgb_to_linear(channel) for channel in rgb) + (1.0,)
+
+
+# Jmol CPK colours (sRGB hex) from the Science Notes JMOL CPK table.
+_JMOL_CPK_HEX = {
+    "H": "FFFFFF", "D": "FFFFC0", "T": "FFFFA0", "HE": "D9FFFF",
+    "LI": "CC80FF", "BE": "C2FF00", "B": "FFB5B5", "C": "909090",
+    "N": "3050F8", "O": "FF0D0D", "F": "90E050", "NE": "B3E3F5",
+    "NA": "AB5CF2", "MG": "8AFF00", "AL": "BFA6A6", "SI": "F0C8A0",
+    "P": "FF8000", "S": "FFFF30", "CL": "1FF01F", "AR": "80D1E3",
+    "K": "8F40D4", "CA": "3DFF00", "SC": "E6E6E6", "TI": "BFC2C7",
+    "V": "A6A6AB", "CR": "8A99C7", "MN": "9C7AC7", "FE": "E06633",
+    "CO": "F090A0", "NI": "50D050", "CU": "C88033", "ZN": "7D80B0",
+    "GA": "C28F8F", "GE": "668F8F", "AS": "BD80E3", "SE": "FFA100",
+    "BR": "A62929", "KR": "5CB8D1", "RB": "702EB0", "SR": "00FF00",
+    "Y": "94FFFF", "ZR": "94E0E0", "NB": "73C2C9", "MO": "54B5B5",
+    "TC": "3B9E9E", "RU": "248F8F", "RH": "0A7D8C", "PD": "006985",
+    "AG": "C0C0C0", "CD": "FFD98F", "IN": "A67573", "SN": "668080",
+    "SB": "9E63B5", "TE": "D47A00", "I": "940094", "XE": "429EB0",
+    "CS": "57178F", "BA": "00C900", "LA": "70D4FF", "CE": "FFFFC7",
+    "PR": "D9FFC7", "ND": "C7FFC7", "PM": "A3FFC7", "SM": "8FFFC7",
+    "EU": "61FFC7", "GD": "45FFC7", "TB": "30FFC7", "DY": "1FFFC7",
+    "HO": "00FF9C", "ER": "00E675", "TM": "00D452", "YB": "00BF38",
+    "LU": "00AB24", "HF": "4DC2FF", "TA": "4DA6FF", "W": "2194D6",
+    "RE": "267DAB", "OS": "266696", "IR": "175487", "PT": "D0D0E0",
+    "AU": "FFD123", "HG": "B8B8D0", "TL": "A6544D", "PB": "575961",
+    "BI": "9E4FB5", "PO": "AB5C00", "AT": "754F45", "RN": "428296",
+    "FR": "420066", "RA": "007D00", "AC": "70ABFA", "TH": "00BAFF",
+    "PA": "00A1FF", "U": "008FFF", "NP": "0080FF", "PU": "006BFF",
+    "AM": "545CF2", "CM": "785CE3", "BK": "8A4FE3", "CF": "A136D4",
+    "ES": "B31FD4", "FM": "B31FBA", "MD": "B30DA6", "NO": "BD0D87",
+    "LR": "C70066", "RF": "CC0059", "DB": "D1004F", "SG": "D90045",
+    "BH": "E00038", "HS": "E6002E", "MT": "EB0026",
 }
-_DEFAULT_COLOR = (0.48, 0.52, 0.56, 1.0)
+_ELEMENT_COLORS = {
+    element: _cpk_color(value) for element, value in _JMOL_CPK_HEX.items()
+}
+_DEFAULT_COLOR = _cpk_color("FF1493")
 _DISPLAY_SCALE = 0.1
 _BOND_VDW_FACTOR = 0.1
 _DEFAULT_VDW_RADIUS = 1.5
@@ -274,12 +307,12 @@ def _make_material(name, color):
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
-        material.diffuse_color = color
         material.use_nodes = True
-        shader = material.node_tree.nodes.get("Principled BSDF")
-        if shader is not None:
-            shader.inputs["Base Color"].default_value = color
-            shader.inputs["Roughness"].default_value = 0.35
+    material.diffuse_color = color
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = color
+        shader.inputs["Roughness"].default_value = 0.35
     return material
 
 
@@ -402,6 +435,36 @@ def _display_point(cart):
     return tuple(float(value) * _DISPLAY_SCALE for value in cart)
 
 
+def _show_hydrogens():
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return True
+    return bool(getattr(scene, "cgn_show_hydrogens", True))
+
+
+def _apply_hydrogen_visibility(root, visible):
+    """Show or hide every hydrogen atom object and its bond objects."""
+    if root is None:
+        return
+    for obj in root.objects:
+        role = obj.get("cgn_role")
+        if role == "atoms":
+            is_hydrogen = str(obj.get("cgn_element", "")).upper() == "H"
+        elif role == "bonds":
+            is_hydrogen = "H" in str(obj.get("cgn_pair", "")).upper().split("|")
+        else:
+            continue
+        if is_hydrogen:
+            obj.hide_viewport = not visible
+            obj.hide_render = not visible
+
+
+def _update_show_hydrogens(scene, context):
+    _apply_hydrogen_visibility(
+        _active_root(scene), scene.cgn_show_hydrogens
+    )
+
+
 def _make_atom_objects(root, atoms):
     by_element = {}
     for atom in atoms:
@@ -419,6 +482,9 @@ def _make_atom_objects(root, atoms):
         obj["cgn_role"] = "atoms"
         obj["cgn_element"] = element
         root.objects.link(obj)
+        if element == "H" and not _show_hydrogens():
+            obj.hide_viewport = True
+            obj.hide_render = True
         material = _make_material(
             f"CGN_Mat_{element}", _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
         )
@@ -737,6 +803,9 @@ def _bond_objects(root, atoms, pair_settings):
         obj["cgn_role"] = "bonds"
         obj["cgn_pair"] = "|".join(key)
         root.objects.link(obj)
+        if "H" in key and not _show_hydrogens():
+            obj.hide_viewport = True
+            obj.hide_render = True
         material = _make_material(
             f"CGN_Bond_Mat_{pair_name}", (0.16, 0.16, 0.18, 1.0)
         )
@@ -1574,6 +1643,15 @@ class _CGN_OT_select_atoms(Operator):
         return {'PASS_THROUGH'}
 
 
+def _grow_from_selection():
+    """Run the grow operator after the selection modal has fully finished."""
+    try:
+        bpy.ops.cgn.grow_further('INVOKE_DEFAULT', all_atoms=False)
+    except RuntimeError as exc:
+        print(f"CCTBX Geometry Nodes: grow failed: {exc}")
+    return None
+
+
 class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
     bl_idname = "cgn.select_growth_atoms"
     bl_label = "Grow Selected Atoms"
@@ -1594,10 +1672,11 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
             self.report({'ERROR'}, "Select one or more atoms before growing.")
             return {'CANCELLED'}
         self._finish(context)
-        result = bpy.ops.cgn.grow_further(
-            'INVOKE_DEFAULT', all_atoms=False
-        )
-        return {'CANCELLED'} if 'CANCELLED' in result else {'FINISHED'}
+        # The grow operator is modal, and starting a modal operator from
+        # inside this modal does not receive events. Defer it until the
+        # selection operator has returned.
+        bpy.app.timers.register(_grow_from_selection, first_interval=0.01)
+        return {'FINISHED'}
 
 
 class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
@@ -1902,6 +1981,25 @@ class CGN_PT_panel(Panel):
             text=f"Space group: {root.get('cgn_space_group', 'unknown')}",
             icon='INFO',
         )
+        try:
+            parameters = json.loads(root.get("cgn_unit_cell", "[]"))
+        except (ValueError, TypeError):
+            parameters = []
+        if len(parameters) >= 6:
+            a, b, c, alpha, beta, gamma = (
+                float(value) for value in parameters[:6]
+            )
+            layout.label(
+                text=f"a = {a:.4f} Å   b = {b:.4f} Å   c = {c:.4f} Å",
+                icon='DRIVER_DISTANCE',
+            )
+            layout.label(
+                text=(
+                    f"α = {alpha:.3f}°   β = {beta:.3f}°   "
+                    f"γ = {gamma:.3f}°"
+                ),
+                icon='DRIVER_ROTATIONAL_DIFFERENCE',
+            )
         if root.get("cgn_instances", ""):
             layout.label(
                 text=f"Atoms: {_structure_atom_count(root)}",
@@ -1940,6 +2038,13 @@ class CGN_PT_build(Panel):
         )
         layout.separator()
         layout.operator("cgn.delete_atoms", text="Delete Atoms", icon='X')
+        layout.separator()
+        layout.prop(
+            context.scene,
+            "cgn_show_hydrogens",
+            text="Show Hydrogens",
+            icon='HIDE_OFF' if context.scene.cgn_show_hydrogens else 'HIDE_ON',
+        )
 
 
 class CGN_PT_connectivity(Panel):
@@ -2089,6 +2194,12 @@ def register():
         type=CGN_ConnectivityPair
     )
     bpy.types.Scene.cgn_active_structure = StringProperty(options={'HIDDEN'})
+    bpy.types.Scene.cgn_show_hydrogens = BoolProperty(
+        name="Show Hydrogens",
+        description="Show hydrogen atoms and their bonds",
+        default=True,
+        update=_update_show_hydrogens,
+    )
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(
         type=CGN_UnitCellSettings
     )
@@ -2100,6 +2211,7 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_unit_cell_settings
+    del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_active_structure
     del bpy.types.Scene.cgn_connectivity_pairs
     for cls in reversed(_CLASSES):

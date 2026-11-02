@@ -34,7 +34,7 @@ and CIF import is also registered under **File > Import**.
 The **Model & Style** sub-panel switches the rendering model:
 
 - **Ball & Stick** — quarter van der Waals spheres with 0.1× mean-vdW bonds.
-- **Ellipsoids** — anisotropic displacement ellipsoids built from the CIF ADP
+- **ORTEP** — anisotropic displacement ellipsoids built from the CIF ADP
   tensors, shown at the 50 % probability level by default. The **Probability**
   slider below the model dropdown rescales the 3D Gaussian probability surface
   using the chi-square distribution with three degrees of freedom, without
@@ -42,10 +42,11 @@ The **Model & Style** sub-panel switches the rendering model:
   crystallographic basis and rotated with each symmetry image. Atoms with only
   an isotropic Uiso value use a spherical ellipsoid; atoms without displacement
   parameters fall back to the Ball & Stick sphere. The probability slider
-  affects non-hydrogen atoms; use **Hydrogen Size** to scale hydrogen atoms.
-  Ellipsoids use an ORTEP-style cutaway with colored inner faces and three
-  principal-plane ellipses; their colors and roughness are adjustable.
-  Bonds are drawn thin.
+  affects non-hydrogen atoms; hydrogen atoms are displayed as spheres and use
+  the adjustable **Hydrogen Size** control. ORTEP ellipsoids use a cutaway with
+  colored inner faces and three principal-plane ellipses; their colors,
+  roughness and ellipse thickness are adjustable. The removed octant tracks the
+  active viewport direction and faces the render camera. Bonds are drawn thin.
 - **Space-filling (Use VdW radii)** — full van der Waals spheres with bonds
   hidden.
 - **Wire-sticks** — very thin atoms and bonds.
@@ -53,7 +54,7 @@ The **Model & Style** sub-panel switches the rendering model:
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius
 be adjusted from zero to its van der Waals radius. Hydrogen size is adjustable
-in Ellipsoids and Space-filling modes.
+in ORTEP and Space-filling modes.
 
 Switching models rebuilds atom and bond objects from the stored site table, so a
 structured imported before this feature still switches correctly (it simply has

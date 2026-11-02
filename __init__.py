@@ -31,8 +31,9 @@ from bpy.props import (
     PointerProperty,
     StringProperty,
 )
+from bpy.app.handlers import persistent
 from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
+from mathutils import Euler, Matrix, Vector
 
 
 def _srgb_to_linear(value):
@@ -111,9 +112,11 @@ _LEGACY_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids"
 _ORTEP_TEMPLATE_OBJECT = "CGN_ORTEP_Template"
 _ORTEP_INNER_COLOR = (0.12, 0.12, 0.16, 1.0)
 _ORTEP_ELLIPSE_COLOR = (0.015, 0.015, 0.02, 1.0)
+_ORTEP_ELLIPSE_THICKNESS = 0.018
+_ORTEP_VIEW_SIGNATURES = {}
 _MODEL_ITEMS = (
     ('BALL_STICK', "Ball & Stick", "Spheres at quarter van der Waals radius"),
-    ('ELLIPSOID', "Ellipsoids", "Anisotropic displacement ellipsoids"),
+    ('ELLIPSOID', "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
     (
         'SPACE_FILLING',
         "Space-filling (Use VdW radii)",
@@ -230,6 +233,21 @@ def _update_ortep_materials(scene, context):
         if shader is not None:
             shader.inputs["Base Color"].default_value = color
             shader.inputs["Roughness"].default_value = roughness
+
+
+def _update_ortep_ellipse_thickness(scene, context):
+    template = bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT)
+    if template is None:
+        return
+    old_mesh = template.data
+    template.data = _build_ortep_template_mesh(
+        scene.cgn_ortep_ellipse_thickness
+    )
+    if old_mesh.users == 0:
+        bpy.data.meshes.remove(old_mesh)
+    template.update_tag(refresh={'OBJECT', 'DATA'})
+    if context.view_layer is not None:
+        context.view_layer.update()
 
 
 def _unit_cell_settings_updated(self, context):
@@ -520,7 +538,7 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
     return (radius, radius, radius), (0.0, 0.0, 0.0)
 
 
-def _build_ortep_template_mesh():
+def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     """Create a clipped ellipsoid template with cut faces and three rings."""
     latitude_steps = 32
     longitude_steps = 64
@@ -612,7 +630,7 @@ def _build_ortep_template_mesh():
 
     tube_segments = 48
     tube_sides = 6
-    tube_radius = 0.018
+    tube_radius = max(0.001, float(ellipse_thickness))
     ellipse_planes = (
         lambda angle: (
             (math.cos(angle), math.sin(angle), 0.0),
@@ -680,22 +698,32 @@ def _build_ortep_template_mesh():
             attribute.data[polygon_index].value = face_type[flag_index]
     for polygon, smooth in zip(mesh.polygons, smooth_faces):
         polygon.use_smooth = smooth
-    mesh["cgn_ortep_template_version"] = 1
+    mesh["cgn_ortep_template_version"] = 2
+    mesh["cgn_ortep_ellipse_thickness"] = tube_radius
     return mesh
 
 
 def _ensure_ortep_template():
     obj = bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT)
     if obj is None:
+        scene = bpy.context.scene
         obj = bpy.data.objects.new(
-            _ORTEP_TEMPLATE_OBJECT, _build_ortep_template_mesh()
+            _ORTEP_TEMPLATE_OBJECT,
+            _build_ortep_template_mesh(scene.cgn_ortep_ellipse_thickness),
         )
     elif (
         obj.type != 'MESH'
-        or obj.data.get("cgn_ortep_template_version") != 1
+        or obj.data.get("cgn_ortep_template_version") != 2
+        or not math.isclose(
+            float(obj.data.get("cgn_ortep_ellipse_thickness", -1.0)),
+            bpy.context.scene.cgn_ortep_ellipse_thickness,
+            rel_tol=1e-6,
+        )
     ):
         old_mesh = obj.data
-        obj.data = _build_ortep_template_mesh()
+        obj.data = _build_ortep_template_mesh(
+            bpy.context.scene.cgn_ortep_ellipse_thickness
+        )
         if old_mesh.users == 0:
             bpy.data.meshes.remove(old_mesh)
     collection = bpy.data.collections.get("CGN_ORTEP_Assets")
@@ -848,6 +876,122 @@ def _add_ellipsoid_attributes(mesh, atoms):
         axes, rotation = _ellipsoid_base_components(atom, size_scale)
         scale_attribute.data[index].vector = axes
         rotation_attribute.data[index].vector = rotation
+
+
+def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
+    root = _active_root(scene)
+    if root is None or scene.cgn_model != 'ELLIPSOID':
+        return
+    for obj in root.objects:
+        if (
+            obj.get("cgn_role") != "atoms"
+            or str(obj.get("cgn_element", "")).upper() == "H"
+        ):
+            continue
+        scale_attribute = obj.data.attributes.get("cgn_scale")
+        rotation_attribute = obj.data.attributes.get("cgn_rotation")
+        if scale_attribute is None or rotation_attribute is None:
+            continue
+        changed = False
+        world_to_object = obj.matrix_world.to_3x3().inverted_safe()
+        for index, vertex in enumerate(obj.data.vertices):
+            if camera_position is not None:
+                point = obj.matrix_world @ vertex.co
+                direction = world_to_object @ (camera_position - point)
+            elif view_direction is not None:
+                direction = world_to_object @ view_direction
+            else:
+                continue
+            rotation = Euler(
+                rotation_attribute.data[index].vector, 'XYZ'
+            ).to_matrix()
+            local_direction = rotation.transposed() @ direction
+            current = scale_attribute.data[index].vector
+            magnitudes = tuple(abs(value) for value in current)
+            oriented = tuple(
+                magnitude if component >= 0.0 else -magnitude
+                for magnitude, component in zip(magnitudes, local_direction)
+            )
+            if any(
+                not math.isclose(current[axis], oriented[axis], abs_tol=1e-8)
+                for axis in range(3)
+            ):
+                scale_attribute.data[index].vector = oriented
+                changed = True
+        if changed:
+            obj.data.update()
+            obj.update_tag(refresh={'OBJECT', 'DATA'})
+
+
+@persistent
+def _orient_ortep_for_render(scene):
+    if scene.camera is not None:
+        _orient_ortep_to_camera(scene, scene.camera)
+    _ORTEP_VIEW_SIGNATURES.pop(scene.as_pointer(), None)
+
+
+def _orient_ortep_to_camera(scene, camera):
+    if camera.data.type == 'ORTHO':
+        camera_direction = (
+            camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
+        )
+        _orient_ortep_openings(scene, view_direction=camera_direction)
+    else:
+        _orient_ortep_openings(
+            scene, camera_position=camera.matrix_world.translation.copy()
+        )
+
+
+def _ortep_view_signature(view_direction=None, camera=None):
+    if camera is not None:
+        if camera.data.type == 'ORTHO':
+            direction = camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
+            return ('ortho', *(round(value, 4) for value in direction))
+        position = camera.matrix_world.translation
+        return ('camera', *(round(value, 4) for value in position))
+    direction = view_direction.normalized()
+    return ('view', *(round(value, 4) for value in direction))
+
+
+def _update_ortep_view_orientation():
+    scene = bpy.context.scene
+    if scene is None or scene.cgn_model != 'ELLIPSOID':
+        return 0.25
+    view_direction = None
+    camera = None
+    window_manager = getattr(bpy.context, "window_manager", None)
+    windows = getattr(window_manager, "windows", ())
+    for window in windows:
+        screen = getattr(window, "screen", None)
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != 'VIEW_3D':
+                continue
+            region = area.spaces.active.region_3d
+            if region.view_perspective == 'CAMERA' and scene.camera is not None:
+                camera = scene.camera
+            else:
+                view_direction = (
+                    region.view_rotation @ Vector((0.0, 0.0, 1.0))
+                )
+            break
+        if view_direction is not None or camera is not None:
+            break
+    if view_direction is None and camera is None:
+        if scene.camera is not None:
+            camera = scene.camera
+        else:
+            view_direction = Vector((1.0, 1.0, 1.0))
+    signature = _ortep_view_signature(view_direction, camera)
+    scene_key = scene.as_pointer()
+    if _ORTEP_VIEW_SIGNATURES.get(scene_key) != signature:
+        if camera is not None:
+            _orient_ortep_to_camera(scene, camera)
+        else:
+            _orient_ortep_openings(scene, view_direction=view_direction)
+        _ORTEP_VIEW_SIGNATURES[scene_key] = signature
+    return 0.25
 
 
 def _set_modifier_input(modifier, node_group, socket_name, value):
@@ -1134,8 +1278,14 @@ def _make_atom_objects(root, atoms):
 
     model = _current_model()
     ellipsoids = model == 'ELLIPSOID'
+    scene = getattr(bpy.context, "scene", None)
+    if scene is not None:
+        _ORTEP_VIEW_SIGNATURES.pop(scene.as_pointer(), None)
     if ellipsoids:
         node_group = _make_ellipsoid_node_group()
+        hydrogen_node_group = _make_node_group(
+            _NODE_GROUP_ATOMS, is_bond_group=False
+        )
         scene = getattr(bpy.context, "scene", None)
         inner_material, ellipse_material = _make_ortep_materials(scene)
         probability = _ellipsoid_probability_factor(
@@ -1143,6 +1293,7 @@ def _make_atom_objects(root, atoms):
         )
     else:
         node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
+        hydrogen_node_group = node_group
         probability = None
         inner_material = None
         ellipse_material = None
@@ -1158,7 +1309,8 @@ def _make_atom_objects(root, atoms):
         mesh.from_pydata(
             [_display_point(atom["cart"]) for atom in element_atoms], [], []
         )
-        if ellipsoids:
+        is_ortep_ellipsoid = ellipsoids and element != "H"
+        if is_ortep_ellipsoid:
             _add_ellipsoid_attributes(mesh, element_atoms)
         mesh.update()
         obj = bpy.data.objects.new(f"CGN_Atoms_{element}", mesh)
@@ -1174,7 +1326,7 @@ def _make_atom_objects(root, atoms):
         material = _make_material(
             f"CGN_Mat_{element}", style.color, style.roughness
         )
-        if ellipsoids:
+        if is_ortep_ellipsoid:
             _add_geometry_nodes_modifier(
                 obj,
                 node_group,
@@ -1184,12 +1336,24 @@ def _make_atom_objects(root, atoms):
                 ellipse_material=ellipse_material,
             )
         else:
-            if model == 'BALL_STICK':
+            if ellipsoids:
+                node_group_for_atom = hydrogen_node_group
+                radius = (
+                    obj["cgn_vdw_radius"]
+                    * _BALL_ATOM_VDW_FACTOR
+                    * size_scale
+                    * _DISPLAY_SCALE
+                )
+            elif model == 'BALL_STICK':
+                node_group_for_atom = node_group
                 radius = obj["cgn_vdw_radius"] * style.size * _DISPLAY_SCALE
             else:
+                node_group_for_atom = node_group
                 radius = _atom_radius(obj["cgn_vdw_radius"], model)
                 radius *= size_scale
-            _add_geometry_nodes_modifier(obj, node_group, radius, material)
+            _add_geometry_nodes_modifier(
+                obj, node_group_for_atom, radius, material
+            )
 
 
 def _rebuild_atom_objects(root, atoms):
@@ -3153,6 +3317,12 @@ class CGN_PT_model_style(Panel):
             ortep_box.prop(
                 scene, "cgn_ortep_ellipse_roughness", text="Ellipse Roughness"
             )
+            ortep_box.prop(
+                scene,
+                "cgn_ortep_ellipse_thickness",
+                text="Ellipse Thickness",
+                slider=True,
+            )
         if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
             layout.prop(
                 scene,
@@ -3316,6 +3486,15 @@ def register():
         max=3.0,
         update=_update_hydrogen_scale,
     )
+    bpy.types.Scene.cgn_ortep_ellipse_thickness = FloatProperty(
+        name="Ellipse Thickness",
+        description="Tube thickness of the three ORTEP ellipses",
+        default=_ORTEP_ELLIPSE_THICKNESS,
+        min=0.003,
+        max=0.06,
+        precision=3,
+        update=_update_ortep_ellipse_thickness,
+    )
     bpy.types.Scene.cgn_ortep_inner_color = FloatVectorProperty(
         name="Inner Face Color",
         subtype='COLOR',
@@ -3350,11 +3529,22 @@ def register():
     )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_menu)
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
+    if _orient_ortep_for_render not in bpy.app.handlers.render_pre:
+        bpy.app.handlers.render_pre.append(_orient_ortep_for_render)
+    if not bpy.app.timers.is_registered(_update_ortep_view_orientation):
+        bpy.app.timers.register(
+            _update_ortep_view_orientation, first_interval=0.25, persistent=True
+        )
 
 
 def unregister():
+    if _orient_ortep_for_render in bpy.app.handlers.render_pre:
+        bpy.app.handlers.render_pre.remove(_orient_ortep_for_render)
+    if bpy.app.timers.is_registered(_update_ortep_view_orientation):
+        bpy.app.timers.unregister(_update_ortep_view_orientation)
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
+    del bpy.types.Scene.cgn_ortep_ellipse_thickness
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness
     del bpy.types.Scene.cgn_ortep_ellipse_color

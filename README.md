@@ -27,9 +27,9 @@ shows the import button, space group, unit-cell parameters on a three-row,
 two-column grid (a, b, c on the left; α, β, γ on the right) and atom count;
 **Build** holds Fill, Grow, Delete and a **Show Hydrogens** checkbox that hides
 or shows hydrogen atoms together with their bonds; **Connectivity**,
-**Unit Cell**, **Model & Style** and **About** are collapsed by default. The same
-build actions are available from the **CCTBX** menu in the 3D Viewport header,
-and CIF import is also registered under **File > Import**.
+**Unit Cell**, **Atom Model & Style** and **About** are collapsed by default.
+The same build actions are available from the **CCTBX** menu in the 3D Viewport
+header, and CIF import is also registered under **File > Import**.
 
 The **Atom Model & Style** sub-panel switches the rendering model:
 
@@ -81,8 +81,8 @@ The **Unit Cell** sub-panel has a **Show Unit Cell** toggle and a
 **Pack Unit-Cells (Faces & Edges)...** control for choosing repetitions along
 a, b and c. This displays a repeated cell grid without changing or duplicating
 atoms. Icosphere markers indicate the cell-outline corners. The cell is drawn
-with adjustable face color, face transparency, edge
-color and edge thickness. Turning **Show Unit Cell** off hides the grid. Fill
+with adjustable face color, face transparency, edge color and edge thickness.
+Turning **Show Unit Cell** off hides the grid. Fill
 replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
 Packing is limited to 200,000 atoms.
 

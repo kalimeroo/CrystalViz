@@ -2418,9 +2418,12 @@ class CGN_PT_panel(Panel):
             layout.label(text="Import a CIF to begin.")
             return
 
+        cif_path = root.get("cgn_cif_path", "")
+        filename = os.path.splitext(os.path.basename(cif_path))[0]
+        if filename:
+            layout.label(text=filename)
         layout.label(
-            text=f"Space group: {root.get('cgn_space_group', 'unknown')}",
-            icon='INFO',
+            text=f"Space group: {root.get('cgn_space_group', 'unknown')}"
         )
         try:
             parameters = json.loads(root.get("cgn_unit_cell", "[]"))

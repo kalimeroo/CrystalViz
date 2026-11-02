@@ -277,7 +277,7 @@ def _wrapped_fractional(frac):
 # --------------------------------------------------------------------------
 
 def _read_structure(cif_path, block_name=None):
-    """Return (gemmi.SmallStructure, block name) for one CIF block."""
+    """Return (structure, block name, CIF block) for one crystal structure."""
     with open(cif_path, encoding="utf-8", errors="replace") as handle:
         text = handle.read()
     # check_level=0 tolerates duplicate block names (some AMCSD files have two
@@ -294,7 +294,7 @@ def _read_structure(cif_path, block_name=None):
             continue
         if not structure.sites or not structure.cell.a > 0.0:
             continue
-        structures[block.name] = structure
+        structures[block.name] = (structure, block)
     if not structures:
         raise ValueError("No crystal structures were found in this CIF.")
     if block_name:
@@ -311,7 +311,8 @@ def _read_structure(cif_path, block_name=None):
             "This CIF contains multiple structures. Enter a CIF block name: "
             + ", ".join(structures.keys())
         )
-    return structures[key], key
+    structure, block = structures[key]
+    return structure, key, block
 
 
 def _matrix3_from_columns(columns):
@@ -440,7 +441,7 @@ def _p1_sites(structure, unit_cell):
 
 def load_structure(cif_path, block_name=None):
     """Return the P1 site table and the instances that make up the ASU."""
-    structure, key = _read_structure(cif_path, block_name)
+    structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
     sites = _p1_sites(structure, unit_cell)
@@ -466,6 +467,17 @@ def load_structure(cif_path, block_name=None):
         "space_group": f"{space_group.xhm()} (No. {space_group.number})",
         "space_group_ops": [op.triplet() for op in ops],
         "unit_cell": unit_cell.parameters(),
+        "unit_cell_display": [
+            str(block.find_value(tag) or "")
+            for tag in (
+                "_cell_length_a",
+                "_cell_length_b",
+                "_cell_length_c",
+                "_cell_angle_alpha",
+                "_cell_angle_beta",
+                "_cell_angle_gamma",
+            )
+        ],
         "cell_matrix": list(unit_cell._columns),
         "sites": sites,
         "instances": instances,

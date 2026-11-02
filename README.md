@@ -43,7 +43,9 @@ intended hue. Elements missing from the table fall back to Jmol's pink.
 
 The **CCTBX GN** sidebar tab is split into collapsible sections: the main panel
 shows the import button, space group, unit-cell parameters on a three-row,
-two-column grid (a, b, c on the left; α, β, γ on the right) and atom count;
+two-column grid (a, b, c on the left; α, β, γ on the right) and atom count.
+Cell parameters retain CIF standard uncertainties, for example `7.57360(10)`,
+and exact integer angles display without decimal places;
 **Build** holds Fill, Grow, Delete and a **Show Hydrogens** checkbox that hides
 or shows hydrogen atoms together with their bonds; **Connectivity**,
 **Unit Cell**, **Model & Style** and **About** are collapsed by default. The same
@@ -55,11 +57,13 @@ The **Model & Style** sub-panel switches the rendering model:
 - **Ball & Stick** — quarter van der Waals spheres with 0.1× mean-vdW bonds.
 - **Ellipsoids** — anisotropic displacement ellipsoids built from the CIF ADP
   tensors, shown at the 50 % probability level by default. The **Probability**
-  slider below the model dropdown rescales them from 0 to 100 % without
-  rebuilding the atom meshes. Atoms with only an isotropic Uiso value use a
+  slider below the model dropdown rescales the 3D Gaussian probability surface
+  using the chi-square distribution with three degrees of freedom, without
+  rebuilding the atom meshes. Cartesian ADP tensors are converted from the CIF
+  crystallographic basis and rotated with each symmetry image. Atoms with only
+  an isotropic Uiso value use a
   spherical ellipsoid; atoms without displacement parameters fall back to the
-  Ball & Stick sphere. ADP tensors are rotated with each symmetry image. Bonds
-  are drawn thin.
+  Ball & Stick sphere. Bonds are drawn thin.
 - **Space-filling (Use VdW radii)** — full van der Waals spheres with bonds
   hidden.
 - **Wire-sticks** — very thin atoms and bonds.
@@ -78,6 +82,8 @@ some atoms just outside the unit-cell boundary without duplicating molecules.
 Connectivity pair distance settings determine which atoms count as bonded;
 periodic frameworks remain limited to the unit-cell contents, and isolated
 sites are retained.
+Choose **Pack Unit-Cells (Faces & Edges)...** to display a repeated cell grid
+without changing or duplicating the atoms.
 The **Unit Cell** sub-panel has a **Show Unit Cell**
 toggle; while it is on, the unit cell is drawn with adjustable face color, face
 transparency, edge color and edge thickness. Turning it off hides the box. Fill

@@ -2602,27 +2602,12 @@ class CGN_PT_panel(Panel):
             grid = layout.grid_flow(
                 row_major=True, columns=2, even_columns=True, align=True
             )
-            grid.label(
-                text=f"a = {displayed[0]} Å", icon='DRIVER_DISTANCE'
-            )
-            grid.label(
-                text=f"α = {displayed[3]}°",
-                icon='DRIVER_ROTATIONAL_DIFFERENCE',
-            )
-            grid.label(
-                text=f"b = {displayed[1]} Å", icon='DRIVER_DISTANCE'
-            )
-            grid.label(
-                text=f"β = {displayed[4]}°",
-                icon='DRIVER_ROTATIONAL_DIFFERENCE',
-            )
-            grid.label(
-                text=f"c = {displayed[2]} Å", icon='DRIVER_DISTANCE'
-            )
-            grid.label(
-                text=f"γ = {displayed[5]}°",
-                icon='DRIVER_ROTATIONAL_DIFFERENCE',
-            )
+            grid.label(text=f"a = {displayed[0]} Å")
+            grid.label(text=f"α = {displayed[3]}°")
+            grid.label(text=f"b = {displayed[1]} Å")
+            grid.label(text=f"β = {displayed[4]}°")
+            grid.label(text=f"c = {displayed[2]} Å")
+            grid.label(text=f"γ = {displayed[5]}°")
         if root.get("cgn_instances", ""):
             layout.label(
                 text=f"Atoms: {_structure_atom_count(root)}",

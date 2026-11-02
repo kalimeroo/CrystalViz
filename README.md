@@ -70,7 +70,8 @@ The **Model & Style** sub-panel switches the rendering model:
   active viewport direction and faces the render camera. Bonds are drawn thin.
 - **Space-filling (Use VdW radii)** — full van der Waals spheres with bonds
   hidden.
-- **Wire-sticks** — very thin atoms and bonds.
+- **Wire-sticks** — atoms and bonds use the same adjustable radius, set in Å
+  with **Atom & Bond Radius**.
 
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius

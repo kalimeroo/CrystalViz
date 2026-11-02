@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CCTBX Geometry Nodes",
     "author": "OpenAI",
-    "version": (0, 4, 14),
+    "version": (0, 5, 0),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > CCTBX GN; File > Import",
     "description": "Import CIF atoms and render editable connectivity with Geometry Nodes",

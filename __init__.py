@@ -1137,6 +1137,8 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
     root["cgn_instances"] = json.dumps(new_instances)
     root["cgn_initial_count"] = len(atoms)
     root["cgn_fill_mode"] = mode
+    if mode != 'ASU':
+        root["cgn_cell_atoms"] = cell_atom_count
     if mode == 'PACK':
         root["cgn_fill_repeats"] = json.dumps(list(repeats))
     root["cgn_growth_shells"] = 0
@@ -1292,11 +1294,12 @@ class CGN_OT_fill_pack(Operator):
             except (ValueError, TypeError):
                 sites = []
             if sites:
+                cell_atoms = int(root.get("cgn_cell_atoms", len(sites)))
                 count = (
-                    len(sites) * self.repeat_a * self.repeat_b
+                    cell_atoms * self.repeat_a * self.repeat_b
                     * self.repeat_c
                 )
-                layout.label(text=f"Atoms: {count}")
+                layout.label(text=f"Atoms (approx.): {count}")
 
     def execute(self, context):
         return _fill_structure(

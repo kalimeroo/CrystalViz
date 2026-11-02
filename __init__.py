@@ -3526,21 +3526,11 @@ class CGN_PT_model_style(Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "cgn_model", text="Model")
-        layout.prop(scene, "cgn_bond_style", text="Bond Style")
-        if scene.cgn_bond_style == 'SINGLE_COLOR':
-            layout.prop(scene, "cgn_bond_color", text="Bond Color")
         if scene.cgn_model == 'WIRE_STICKS':
             layout.prop(
                 scene,
                 "cgn_wire_sticks_radius",
                 text="Atom & Bond Radius (Å)",
-                slider=True,
-            )
-        elif scene.cgn_model != 'SPACE_FILLING':
-            layout.prop(
-                scene,
-                "cgn_bond_radius_scale",
-                text="Bond Radius (× default)",
                 slider=True,
             )
         if scene.cgn_model == 'ELLIPSOID':
@@ -3603,6 +3593,40 @@ class CGN_PT_model_style(Panel):
             )
 
 
+class CGN_PT_bond_style(Panel):
+    bl_label = "Bond Style"
+    bl_idname = "CGN_PT_bond_style"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "CCTBX GN"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 5
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.prop(scene, "cgn_bond_style", text="Style")
+        if scene.cgn_bond_style == 'SINGLE_COLOR':
+            layout.prop(scene, "cgn_bond_color", text="Color")
+        if scene.cgn_model == 'WIRE_STICKS':
+            layout.label(
+                text="Bond radius follows the Wire-sticks atom radius.",
+                icon='INFO',
+            )
+        elif scene.cgn_model != 'SPACE_FILLING':
+            layout.prop(
+                scene,
+                "cgn_bond_radius_scale",
+                text="Bond Radius (× default)",
+                slider=True,
+            )
+
+
 class CGN_PT_about(Panel):
     bl_label = "About"
     bl_idname = "CGN_PT_about"
@@ -3611,7 +3635,7 @@ class CGN_PT_about(Panel):
     bl_category = "CCTBX GN"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {'DEFAULT_CLOSED'}
-    bl_order = 5
+    bl_order = 6
 
     def draw(self, context):
         layout = self.layout
@@ -3683,6 +3707,7 @@ _CLASSES = (
     CGN_PT_connectivity,
     CGN_PT_unit_cell,
     CGN_PT_model_style,
+    CGN_PT_bond_style,
     CGN_PT_about,
 )
 
@@ -3772,7 +3797,7 @@ def register():
         description="Tube thickness of the three ORTEP ellipses",
         default=_ORTEP_ELLIPSE_THICKNESS,
         min=0.003,
-        max=0.06,
+        max=0.1,
         precision=3,
         update=_update_ortep_ellipse_thickness,
     )

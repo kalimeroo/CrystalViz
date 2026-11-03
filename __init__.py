@@ -94,21 +94,9 @@ _ELLIPSOID_BOND_VDW_FACTOR = 0.05
 _WIRE_RADIUS_DEFAULT = 0.1
 _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
-_CHEMDRAW_TRIPLE_BOND_LIMITS = {
-    ("C", "C"): 1.25,
-    ("C", "N"): 1.22,
-    ("N", "N"): 1.22,
-}
-_CHEMDRAW_DOUBLE_BOND_LIMITS = {
-    ("C", "C"): 1.43,
-    ("C", "N"): 1.38,
-    ("C", "O"): 1.32,
-    ("C", "S"): 1.70,
-    ("N", "N"): 1.38,
-    ("N", "O"): 1.30,
-    ("O", "O"): 1.30,
-    ("O", "P"): 1.60,
-    ("O", "S"): 1.60,
+_CHEMDRAW_MAX_VALENCE = {
+    "B": 3, "C": 4, "N": 4, "O": 2, "F": 1, "SI": 4, "P": 5,
+    "S": 6, "CL": 1, "BR": 1, "I": 1,
 }
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
@@ -1774,15 +1762,6 @@ def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
 
 
-def _chemdraw_bond_order(element_a, element_b, distance):
-    pair = _pair_key(element_a, element_b)
-    if distance <= _CHEMDRAW_TRIPLE_BOND_LIMITS.get(pair, 0.0):
-        return 3
-    if distance <= _CHEMDRAW_DOUBLE_BOND_LIMITS.get(pair, 0.0):
-        return 2
-    return 1
-
-
 def _bond_point_key(point):
     return tuple(round(float(value), 4) for value in point)
 
@@ -1791,43 +1770,148 @@ def _bond_edge_key(first, second):
     return tuple(sorted((_bond_point_key(first), _bond_point_key(second))))
 
 
-def _aromatic_bond_directions(segments):
-    """Find approximately regular five- and six-membered aromatic rings."""
-    ring_elements = {"B", "C", "N", "O", "S"}
-    nodes = {}
-    edges = []
-    neighbors = {}
+def _chemdraw_bond_orders(segments, covalent_radii):
+    """Infer conservative multiple-bond candidates with valence limits."""
+    degrees = {}
+    elements = {}
+    candidates = []
+    seen_edges = set()
     for first, second, element_a, element_b in segments:
         first_key = _bond_point_key(first)
         second_key = _bond_point_key(second)
+        edge_key = tuple(sorted((first_key, second_key)))
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        element_a = str(element_a).upper()
+        element_b = str(element_b).upper()
+        elements[first_key] = element_a
+        elements[second_key] = element_b
+        if element_a in _CHEMDRAW_MAX_VALENCE:
+            degrees[first_key] = degrees.get(first_key, 0) + 1
+        if element_b in _CHEMDRAW_MAX_VALENCE:
+            degrees[second_key] = degrees.get(second_key, 0) + 1
+
+        radius_a = float(covalent_radii.get(first_key, 0.0))
+        radius_b = float(covalent_radii.get(second_key, 0.0))
+        if (
+            element_a not in _CHEMDRAW_MAX_VALENCE
+            or element_b not in _CHEMDRAW_MAX_VALENCE
+            or radius_a <= 0.0
+            or radius_b <= 0.0
+        ):
+            continue
         distance = math.sqrt(sum(
             (float(first[axis]) - float(second[axis])) ** 2
             for axis in range(3)
         ))
+        normalized_length = distance / (radius_a + radius_b)
+        order = (
+            3 if normalized_length <= 0.83
+            else 2 if normalized_length <= 0.90
+            else 1
+        )
+        if order > 1:
+            confidence = (
+                0.83 - normalized_length
+                if order == 3
+                else 0.90 - normalized_length
+            )
+            candidates.append(
+                (confidence, edge_key, order, element_a, element_b)
+            )
+
+    remaining = {
+        node: max(
+            0,
+            _CHEMDRAW_MAX_VALENCE.get(element, 0) - degrees.get(node, 0),
+        )
+        for node, element in elements.items()
+    }
+    orders = {}
+    for _confidence, edge_key, order, _element_a, _element_b in sorted(
+        candidates, reverse=True
+    ):
+        extra_valence = min(
+            order - 1,
+            remaining.get(edge_key[0], 0),
+            remaining.get(edge_key[1], 0),
+        )
+        if extra_valence:
+            orders[edge_key] = extra_valence + 1
+            remaining[edge_key[0]] -= extra_valence
+            remaining[edge_key[1]] -= extra_valence
+    return orders
+
+
+def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
+    """Find planar, conjugated five- and six-membered ring candidates."""
+    ring_elements = {"B", "C", "N", "O", "S"}
+    nodes = {}
+    elements = {}
+    degrees = {}
+    edges = []
+    neighbors = {}
+    all_neighbors = {}
+    seen_edges = set()
+    for first, second, element_a, element_b in segments:
+        first_key = _bond_point_key(first)
+        second_key = _bond_point_key(second)
+        edge_key = tuple(sorted((first_key, second_key)))
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+        element_a = str(element_a).upper()
+        element_b = str(element_b).upper()
+        nodes[first_key] = tuple(float(value) for value in first)
+        nodes[second_key] = tuple(float(value) for value in second)
+        elements[first_key] = element_a
+        elements[second_key] = element_b
+        degrees[first_key] = degrees.get(first_key, 0) + 1
+        degrees[second_key] = degrees.get(second_key, 0) + 1
+        all_neighbors.setdefault(first_key, []).append(
+            (second_key, element_b)
+        )
+        all_neighbors.setdefault(second_key, []).append(
+            (first_key, element_a)
+        )
+        distance = math.sqrt(sum(
+            (float(first[axis]) - float(second[axis])) ** 2
+            for axis in range(3)
+        ))
+        radius_a = float(covalent_radii.get(first_key, 0.0))
+        radius_b = float(covalent_radii.get(second_key, 0.0))
+        normalized_length = (
+            distance / (radius_a + radius_b)
+            if radius_a + radius_b > 0.0
+            else 0.0
+        )
         if (
             element_a not in ring_elements
             or element_b not in ring_elements
-            or not 1.25 <= distance <= 1.46
+            or not 0.85 <= normalized_length <= 0.99
         ):
             continue
-        nodes[first_key] = tuple(float(value) for value in first)
-        nodes[second_key] = tuple(float(value) for value in second)
         edge_index = len(edges)
-        edges.append((first_key, second_key, distance))
+        edges.append((first_key, second_key, normalized_length))
         neighbors.setdefault(first_key, []).append((second_key, edge_index))
         neighbors.setdefault(second_key, []).append((first_key, edge_index))
 
     aromatic = {}
     seen_rings = set()
     for edge_index, (start, end, _distance) in enumerate(edges):
+        if degrees[start] > 3 or degrees[end] > 3:
+            continue
         path = [start]
         path_edges = []
 
         def find_ring(current):
-            if len(path_edges) >= 5:
+            if len(path_edges) >= 5 or degrees[current] > 3:
                 return
             for neighbor, next_edge in neighbors.get(current, ()):
                 if next_edge == edge_index:
+                    continue
+                if neighbor != end and degrees[neighbor] > 3:
                     continue
                 if neighbor == end and len(path_edges) in (3, 4):
                     ring_edges = tuple(sorted((*path_edges, next_edge,
@@ -1836,22 +1920,77 @@ def _aromatic_bond_directions(segments):
                         continue
                     seen_rings.add(ring_edges)
                     ring_distances = [edges[index][2] for index in ring_edges]
-                    if (
-                        max(ring_distances) - min(ring_distances) > 0.10
-                        or not 1.30 <= sum(ring_distances) / len(ring_distances)
-                        <= 1.44
-                    ):
-                        continue
                     ring_nodes = {
                         node
                         for index in ring_edges
                         for node in edges[index][:2]
                     }
-                    centroid = tuple(
-                        sum(nodes[node][axis] for node in ring_nodes)
-                        / len(ring_nodes)
-                        for axis in range(3)
+                    ring_edge_keys = {
+                        _bond_edge_key(edges[index][0], edges[index][1])
+                        for index in ring_edges
+                    }
+                    if (
+                        max(ring_distances) - min(ring_distances) > 0.08
+                        or not 0.90
+                        <= sum(ring_distances) / len(ring_distances)
+                        <= 0.96
+                        or any(
+                            degrees[node] > 3
+                            or elements[node] not in ring_elements
+                            for node in ring_nodes
+                        )
+                    ):
+                        continue
+                    pi_electrons = 0
+                    ring_has_exocyclic_multiple = False
+                    for node in ring_nodes:
+                        element = elements[node]
+                        for other, _other_element in all_neighbors.get(
+                            node, ()
+                        ):
+                            edge_key = tuple(sorted((node, other)))
+                            if (
+                                edge_key not in ring_edge_keys
+                                and bond_orders.get(edge_key, 1) > 1
+                            ):
+                                ring_has_exocyclic_multiple = True
+                                break
+                        if ring_has_exocyclic_multiple:
+                            break
+                        if element == "C":
+                            pi_electrons += 1
+                        elif element == "N":
+                            pi_electrons += (
+                                2
+                                if any(
+                                    other_element == "H"
+                                    for _other, other_element
+                                    in all_neighbors.get(node, ())
+                                )
+                                else 1
+                            )
+                        elif element in {"O", "S"}:
+                            pi_electrons += 2
+                    if (
+                        ring_has_exocyclic_multiple
+                        or pi_electrons < 2
+                        or (pi_electrons - 2) % 4 != 0
+                    ):
+                        continue
+                    coordinates = np.asarray(
+                        [nodes[node] for node in ring_nodes], dtype=float
                     )
+                    centroid_array = coordinates.mean(axis=0)
+                    _left, singular_values, _right = np.linalg.svd(
+                        coordinates - centroid_array, full_matrices=False
+                    )
+                    if (
+                        len(singular_values) < 3
+                        or singular_values[-1] / math.sqrt(len(ring_nodes))
+                        > 0.12
+                    ):
+                        continue
+                    centroid = tuple(float(value) for value in centroid_array)
                     for index in ring_edges:
                         first_key, second_key, _length = edges[index]
                         first_point = nodes[first_key]
@@ -1898,7 +2037,7 @@ def _aromatic_bond_directions(segments):
     return aromatic
 
 
-def _chemdraw_segments(segments, aromatic_directions):
+def _chemdraw_segments(segments, bond_orders, aromatic_directions):
     rendered = []
     for first, second, element_a, element_b in segments:
         delta = tuple(
@@ -1932,7 +2071,7 @@ def _chemdraw_segments(segments, aromatic_directions):
             ))
             continue
 
-        order = _chemdraw_bond_order(element_a, element_b, length)
+        order = bond_orders.get(_bond_edge_key(first, second), 1)
         if order == 1:
             rendered.append((first, second, element_a, element_b))
             continue
@@ -2125,9 +2264,23 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
 
     node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
     bond_count = 0
+    all_segments = [
+        segment for segments in by_pair.values() for segment in segments
+    ]
+    covalent_radii = {
+        _bond_point_key(atom["cart"]): float(
+            atom.get("covalent_radius", 0.0)
+        )
+        for atom in atoms
+    }
+    bond_orders = (
+        _chemdraw_bond_orders(all_segments, covalent_radii)
+        if chemdraw
+        else {}
+    )
     aromatic_directions = (
         _aromatic_bond_directions(
-            [segment for segments in by_pair.values() for segment in segments]
+            all_segments, covalent_radii, bond_orders
         )
         if chemdraw
         else {}
@@ -2137,7 +2290,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
     )
     for key, segments in sorted(by_pair.items()):
         rendered_segments = (
-            _chemdraw_segments(segments, aromatic_directions)
+            _chemdraw_segments(
+                segments, bond_orders, aromatic_directions
+            )
             if chemdraw
             else segments
         )

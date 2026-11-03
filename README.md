@@ -76,10 +76,19 @@ The **Atom Model & Style** sub-panel switches the rendering model:
 The expandable **Bond Style** panel lets bonds use one shared color or color
 each half with the corresponding bonded atom's element color. Single-color
 bonds have an adjustable color. Its **ChemDraw** checkbox adds parallel strokes
-for inferred double/triple bonds and inner strokes for approximately regular
-five- and six-membered aromatic rings. Bond orders and aromaticity are inferred
-from bond lengths and connectivity because standard crystallographic CIF bond
-tables generally do not specify them. For models other than Wire-sticks,
+for inferred double/triple bonds and inner strokes for planar, approximately
+regular five- and six-membered rings. Multiple-bond inference compares observed
+lengths with the CIF covalent radii and limits assignments by common valences;
+ring depiction also checks planarity and ring connectivity. It remains a
+geometry-based estimate, not a chemical-structure assignment. Its ring check
+uses a simple 4n+2 electron-count rule, not chemical databases or the
+statistical fragment priors used by comprehensive assignment software. CIFs
+often omit explicit bond orders, and unusual valence, disorder, or metal
+coordination can still make an assignment ambiguous. This conservative fallback
+is inspired by the distinction between bond detection and bond typing in
+[Bruno et al. (2011)](https://doi.org/10.1107/S0108768111024608), but does not
+reproduce the CSD-derived statistics in that work. For models other than
+Wire-sticks,
 **Bond Radius** scales the model's default bond radius up to 2×; in Wire-sticks,
 the shared atom-and-bond radius control keeps both radii equal.
 

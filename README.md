@@ -76,23 +76,32 @@ The **Atom Model & Style** sub-panel switches the rendering model:
 The expandable **Bond Style** panel lets bonds use one shared color or color
 each half with the corresponding bonded atom's element color. Single-color
 bonds have an adjustable color. Its **ChemDraw** checkbox adds parallel strokes
-for inferred double/triple bonds and, for planar, approximately regular
-five- and six-membered aromatic rings, an inner torus with a valence-limited
-Kekule pattern (two double bonds in five-membered rings and three in
-six-membered rings). Multiple-bond inference compares observed lengths with the
-CIF covalent radii and limits assignments by common valences; ring depiction
-also checks planarity, connectivity, and a simple 4n+2 electron count, including
-a heuristic for pyrrole-like nitrogen lone pairs. It remains a geometry-based
-estimate, not a chemical-structure assignment. It does not use chemical
-databases or the statistical fragment priors used by comprehensive assignment
-software. CIFs often omit explicit bond orders, and unusual valence, disorder,
-or metal coordination can still make an assignment ambiguous. This conservative
-fallback is inspired by the distinction between bond detection and bond typing in
-[Bruno et al. (2011)](https://doi.org/10.1107/S0108768111024608), but does not
-reproduce the CSD-derived statistics in that work. For models other than
+for inferred double/triple bonds, with slightly slimmer cylinders for multiple
+bonds. Planar, approximately regular five- and six-membered aromatic rings
+with conjugation and sufficiently equalized normalized bond lengths are shown
+with an inner torus even when individual bond lengths suggest one Kekule double
+bond; localized cycles instead show centered multiple-bond strokes in the plane
+of their neighboring atoms. Single-bond radius is independent of the
+**Multiple Bond Radius** control, and **Bond Spacing** adjusts the distance
+between parallel strokes. Torus size, width, and color are adjustable.
+Multiple-bond inference
+compares observed lengths with the CIF covalent radii and limits assignments by
+common valences; ring depiction also checks planarity, connectivity, and a
+simple 4n+2 electron count, including a heuristic for pyrrole-like nitrogen
+lone pairs. It remains a geometry-based estimate, not
+a chemical-structure assignment. It does not use chemical databases or the
+statistical fragment priors used by comprehensive assignment software. CIFs
+often omit explicit bond orders, and unusual valence, disorder, or metal
+coordination can still make an assignment ambiguous. The approach follows the
+hard-rule, bond-length, and conjugation-rule stages described by
+[Zhang et al. (2012)](https://doi.org/10.1186/1758-2946-4-26), and is also
+inspired by the distinction between bond detection and bond typing in
+[Bruno et al. (2011)](https://doi.org/10.1107/S0108768111024608); it does not
+reproduce the database-derived statistics or the full algorithms. For models other than
 Wire-sticks,
-**Bond Radius** scales the model's default bond radius up to 2×; in Wire-sticks,
-the shared atom-and-bond radius control keeps both radii equal.
+**Bond Radius** scales single bonds up to 2×; **Multiple Bond Radius** scales
+double and triple bonds independently. In Wire-sticks, the shared atom-and-bond
+radius control keeps the single-bond and atom radii equal.
 
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius

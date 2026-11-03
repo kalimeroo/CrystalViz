@@ -75,9 +75,13 @@ The **Atom Model & Style** sub-panel switches the rendering model:
 
 The expandable **Bond Style** panel lets bonds use one shared color or color
 each half with the corresponding bonded atom's element color. Single-color
-bonds have an adjustable color. For models other than Wire-sticks,
-**Bond Radius** scales the model's default bond radius; in Wire-sticks, the
-shared atom-and-bond radius control keeps both radii equal.
+bonds have an adjustable color. Its **ChemDraw** checkbox adds parallel strokes
+for inferred double/triple bonds and inner strokes for approximately regular
+five- and six-membered aromatic rings. Bond orders and aromaticity are inferred
+from bond lengths and connectivity because standard crystallographic CIF bond
+tables generally do not specify them. For models other than Wire-sticks,
+**Bond Radius** scales the model's default bond radius up to 2×; in Wire-sticks,
+the shared atom-and-bond radius control keeps both radii equal.
 
 Every model has independent per-element color and roughness controls, with
 roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius

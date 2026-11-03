@@ -94,6 +94,22 @@ _ELLIPSOID_BOND_VDW_FACTOR = 0.05
 _WIRE_RADIUS_DEFAULT = 0.1
 _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
+_CHEMDRAW_TRIPLE_BOND_LIMITS = {
+    ("C", "C"): 1.25,
+    ("C", "N"): 1.22,
+    ("N", "N"): 1.22,
+}
+_CHEMDRAW_DOUBLE_BOND_LIMITS = {
+    ("C", "C"): 1.43,
+    ("C", "N"): 1.38,
+    ("C", "O"): 1.32,
+    ("C", "S"): 1.70,
+    ("N", "N"): 1.38,
+    ("N", "O"): 1.30,
+    ("O", "O"): 1.30,
+    ("O", "P"): 1.60,
+    ("O", "S"): 1.60,
+}
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
@@ -1758,6 +1774,204 @@ def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
 
 
+def _chemdraw_bond_order(element_a, element_b, distance):
+    pair = _pair_key(element_a, element_b)
+    if distance <= _CHEMDRAW_TRIPLE_BOND_LIMITS.get(pair, 0.0):
+        return 3
+    if distance <= _CHEMDRAW_DOUBLE_BOND_LIMITS.get(pair, 0.0):
+        return 2
+    return 1
+
+
+def _bond_point_key(point):
+    return tuple(round(float(value), 4) for value in point)
+
+
+def _bond_edge_key(first, second):
+    return tuple(sorted((_bond_point_key(first), _bond_point_key(second))))
+
+
+def _aromatic_bond_directions(segments):
+    """Find approximately regular five- and six-membered aromatic rings."""
+    ring_elements = {"B", "C", "N", "O", "S"}
+    nodes = {}
+    edges = []
+    neighbors = {}
+    for first, second, element_a, element_b in segments:
+        first_key = _bond_point_key(first)
+        second_key = _bond_point_key(second)
+        distance = math.sqrt(sum(
+            (float(first[axis]) - float(second[axis])) ** 2
+            for axis in range(3)
+        ))
+        if (
+            element_a not in ring_elements
+            or element_b not in ring_elements
+            or not 1.25 <= distance <= 1.46
+        ):
+            continue
+        nodes[first_key] = tuple(float(value) for value in first)
+        nodes[second_key] = tuple(float(value) for value in second)
+        edge_index = len(edges)
+        edges.append((first_key, second_key, distance))
+        neighbors.setdefault(first_key, []).append((second_key, edge_index))
+        neighbors.setdefault(second_key, []).append((first_key, edge_index))
+
+    aromatic = {}
+    seen_rings = set()
+    for edge_index, (start, end, _distance) in enumerate(edges):
+        path = [start]
+        path_edges = []
+
+        def find_ring(current):
+            if len(path_edges) >= 5:
+                return
+            for neighbor, next_edge in neighbors.get(current, ()):
+                if next_edge == edge_index:
+                    continue
+                if neighbor == end and len(path_edges) in (3, 4):
+                    ring_edges = tuple(sorted((*path_edges, next_edge,
+                                               edge_index)))
+                    if ring_edges in seen_rings:
+                        continue
+                    seen_rings.add(ring_edges)
+                    ring_distances = [edges[index][2] for index in ring_edges]
+                    if (
+                        max(ring_distances) - min(ring_distances) > 0.10
+                        or not 1.30 <= sum(ring_distances) / len(ring_distances)
+                        <= 1.44
+                    ):
+                        continue
+                    ring_nodes = {
+                        node
+                        for index in ring_edges
+                        for node in edges[index][:2]
+                    }
+                    centroid = tuple(
+                        sum(nodes[node][axis] for node in ring_nodes)
+                        / len(ring_nodes)
+                        for axis in range(3)
+                    )
+                    for index in ring_edges:
+                        first_key, second_key, _length = edges[index]
+                        first_point = nodes[first_key]
+                        second_point = nodes[second_key]
+                        direction = tuple(
+                            second_point[axis] - first_point[axis]
+                            for axis in range(3)
+                        )
+                        midpoint = tuple(
+                            0.5 * (first_point[axis] + second_point[axis])
+                            for axis in range(3)
+                        )
+                        inward = tuple(
+                            centroid[axis] - midpoint[axis]
+                            for axis in range(3)
+                        )
+                        projection = sum(
+                            inward[axis] * direction[axis]
+                            for axis in range(3)
+                        ) / (sum(value * value for value in direction) or 1.0)
+                        inward = tuple(
+                            inward[axis] - projection * direction[axis]
+                            for axis in range(3)
+                        )
+                        length = math.sqrt(sum(value * value for value in inward))
+                        if length > 1e-8:
+                            edge_key = _bond_edge_key(
+                                first_point, second_point
+                            )
+                            aromatic.setdefault(
+                                edge_key,
+                                tuple(value / length for value in inward),
+                            )
+                    continue
+                if neighbor in path or len(path_edges) >= 4:
+                    continue
+                path.append(neighbor)
+                path_edges.append(next_edge)
+                find_ring(neighbor)
+                path_edges.pop()
+                path.pop()
+
+        find_ring(start)
+    return aromatic
+
+
+def _chemdraw_segments(segments, aromatic_directions):
+    rendered = []
+    for first, second, element_a, element_b in segments:
+        delta = tuple(
+            float(second[axis]) - float(first[axis]) for axis in range(3)
+        )
+        length = math.sqrt(sum(value * value for value in delta))
+        if length <= 1e-8:
+            rendered.append((first, second, element_a, element_b))
+            continue
+        direction = tuple(value / length for value in delta)
+        aromatic_direction = aromatic_directions.get(
+            _bond_edge_key(first, second)
+        )
+        if aromatic_direction is not None:
+            rendered.append((first, second, element_a, element_b))
+            rendered.append((
+                tuple(
+                    float(first[axis])
+                    + delta[axis] * 0.18
+                    + aromatic_direction[axis] * 0.24
+                    for axis in range(3)
+                ),
+                tuple(
+                    float(first[axis])
+                    + delta[axis] * 0.82
+                    + aromatic_direction[axis] * 0.24
+                    for axis in range(3)
+                ),
+                element_a,
+                element_b,
+            ))
+            continue
+
+        order = _chemdraw_bond_order(element_a, element_b, length)
+        if order == 1:
+            rendered.append((first, second, element_a, element_b))
+            continue
+        reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
+        reference = tuple(1.0 if axis == reference_axis else 0.0
+                          for axis in range(3))
+        perpendicular = (
+            direction[1] * reference[2] - direction[2] * reference[1],
+            direction[2] * reference[0] - direction[0] * reference[2],
+            direction[0] * reference[1] - direction[1] * reference[0],
+        )
+        perpendicular_length = math.sqrt(
+            sum(value * value for value in perpendicular)
+        )
+        perpendicular = tuple(
+            value / perpendicular_length for value in perpendicular
+        )
+        spacing = 0.32 if order == 2 else 0.30
+        offsets = (
+            (-spacing / 2.0, spacing / 2.0)
+            if order == 2
+            else (-spacing, 0.0, spacing)
+        )
+        for offset in offsets:
+            rendered.append((
+                tuple(
+                    float(first[axis]) + perpendicular[axis] * offset
+                    for axis in range(3)
+                ),
+                tuple(
+                    float(second[axis]) + perpendicular[axis] * offset
+                    for axis in range(3)
+                ),
+                element_a,
+                element_b,
+            ))
+    return rendered
+
+
 def _connectivity_settings_signature(pair_settings):
     settings = [
         {
@@ -1788,6 +2002,10 @@ def _cached_atoms_for_growth(root, pair_settings, atom_count, new_atoms):
 def _bond_objects(root, atoms, pair_settings, start_index=0):
     global _BOND_SPATIAL_CACHE
     start_index = max(0, min(int(start_index), len(atoms)))
+    scene = getattr(bpy.context, "scene", None)
+    chemdraw = bool(getattr(scene, "cgn_chemdraw", False))
+    if chemdraw:
+        start_index = 0
     model = _current_model()
     enabled = {}
     for setting in pair_settings:
@@ -1907,11 +2125,22 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
 
     node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
     bond_count = 0
-    scene = getattr(bpy.context, "scene", None)
+    aromatic_directions = (
+        _aromatic_bond_directions(
+            [segment for segments in by_pair.values() for segment in segments]
+        )
+        if chemdraw
+        else {}
+    )
     two_color = (
         getattr(scene, "cgn_bond_style", 'SINGLE_COLOR') == 'TWO_COLOR'
     )
     for key, segments in sorted(by_pair.items()):
+        rendered_segments = (
+            _chemdraw_segments(segments, aromatic_directions)
+            if chemdraw
+            else segments
+        )
         pair_name = "_".join(key)
         vdw_a = vdw_by_element.get(key[0], _DEFAULT_VDW_RADIUS)
         vdw_b = vdw_by_element.get(key[1], _DEFAULT_VDW_RADIUS)
@@ -1930,7 +2159,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
         )
         if two_color:
             segments_by_element = {}
-            for first, second, first_element, second_element in segments:
+            for first, second, first_element, second_element in rendered_segments:
                 midpoint = tuple(
                     0.5 * (first[axis] + second[axis])
                     for axis in range(3)
@@ -1976,7 +2205,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
         else:
             vertices = []
             edges = []
-            for first, second, _first_element, _second_element in segments:
+            for first, second, _first_element, _second_element in rendered_segments:
                 start = len(vertices)
                 vertices.extend(
                     (_display_point(first), _display_point(second))
@@ -3609,9 +3838,10 @@ class CGN_PT_bond_style(Panel):
             layout.prop(
                 scene,
                 "cgn_bond_radius_scale",
-                text="Bond Radius (× default)",
+                text="Bond Radius",
                 slider=True,
             )
+        layout.prop(scene, "cgn_chemdraw", text="ChemDraw")
 
 
 class CGN_PT_about(Panel):
@@ -3734,6 +3964,15 @@ def register():
         default='SINGLE_COLOR',
         update=_update_bond_style,
     )
+    bpy.types.Scene.cgn_chemdraw = BoolProperty(
+        name="ChemDraw",
+        description=(
+            "Show inferred double/triple bonds and aromatic ring bonds "
+            "from bond lengths and connectivity"
+        ),
+        default=False,
+        update=_update_bond_style,
+    )
     bpy.types.Scene.cgn_bond_color = FloatVectorProperty(
         name="Bond Color",
         description="Color for bonds when using the single-color style",
@@ -3749,7 +3988,7 @@ def register():
         description="Scale the default bond radius for the selected atom model",
         default=_BOND_RADIUS_SCALE_DEFAULT,
         min=0.1,
-        max=5.0,
+        max=2.0,
         precision=2,
         update=_update_bond_radius_scale,
     )
@@ -3840,6 +4079,7 @@ def unregister():
     del bpy.types.Scene.cgn_wire_sticks_radius
     del bpy.types.Scene.cgn_bond_radius_scale
     del bpy.types.Scene.cgn_bond_color
+    del bpy.types.Scene.cgn_chemdraw
     del bpy.types.Scene.cgn_bond_style
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness

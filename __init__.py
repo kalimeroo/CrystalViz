@@ -12,6 +12,7 @@ bl_info = {
 }
 
 import bpy
+import itertools
 import json
 import math
 import os
@@ -1898,6 +1899,9 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
         neighbors.setdefault(second_key, []).append((first_key, edge_index))
 
     aromatic = {}
+    aromatic_rings = []
+    aromatic_double_edges = set()
+    aromatic_double_atoms = set()
     seen_rings = set()
     for edge_index, (start, end, _distance) in enumerate(edges):
         if degrees[start] > 3 or degrees[end] > 3:
@@ -1942,6 +1946,8 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                     ):
                         continue
                     pi_electrons = 0
+                    lone_pair_nodes = set()
+                    unsubstituted_nitrogens = []
                     ring_has_exocyclic_multiple = False
                     for node in ring_nodes:
                         element = elements[node]
@@ -1972,14 +1978,52 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                             pi_electrons += (
                                 2 if has_substituent else 1
                             )
+                            if has_substituent:
+                                lone_pair_nodes.add(node)
+                            else:
+                                unsubstituted_nitrogens.append(node)
                         elif element in {"O", "S"}:
                             pi_electrons += 2
+                    if ring_has_exocyclic_multiple:
+                        continue
                     if (
-                        ring_has_exocyclic_multiple
-                        or pi_electrons < 2
+                        pi_electrons < 2
                         or (pi_electrons - 2) % 4 != 0
                     ):
-                        continue
+                        if (
+                            pi_electrons >= 1
+                            and (pi_electrons - 1) % 4 == 0
+                            and unsubstituted_nitrogens
+                        ):
+                            def mean_nitrogen_bond_length(node):
+                                lengths = [
+                                    math.dist(
+                                        nodes[node],
+                                        nodes[
+                                            edges[index][1]
+                                            if edges[index][0] == node
+                                            else edges[index][0]
+                                        ],
+                                    )
+                                    for index in ring_edges
+                                    if node in edges[index][:2]
+                                ]
+                                return sum(lengths) / len(lengths)
+
+                            lone_pair_node = max(
+                                unsubstituted_nitrogens,
+                                key=lambda node: (
+                                    mean_nitrogen_bond_length(node),
+                                    node,
+                                ),
+                            )
+                            pi_electrons += 1
+                            lone_pair_nodes.add(lone_pair_node)
+                        if (
+                            pi_electrons < 2
+                            or (pi_electrons - 2) % 4 != 0
+                        ):
+                            continue
                     pi_bond_nodes = {
                         node
                         for index in ring_edges
@@ -1992,11 +2036,53 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                         for node in ring_nodes
                     ):
                         continue
+                    target_double_bonds = (
+                        pi_electrons - 2 * len(lone_pair_nodes)
+                    ) // 2
+                    kekule_candidates = []
+                    for index in ring_edges:
+                        first_key, second_key, normalized_length = edges[index]
+                        if (
+                            first_key in lone_pair_nodes
+                            or second_key in lone_pair_nodes
+                            or first_key in aromatic_double_atoms
+                            or second_key in aromatic_double_atoms
+                        ):
+                            continue
+                        edge_key = _bond_edge_key(first_key, second_key)
+                        kekule_candidates.append((
+                            edge_key,
+                            normalized_length,
+                            bond_orders.get(edge_key, 1) > 1,
+                            first_key,
+                            second_key,
+                        ))
+                    best_kekule = min(
+                        (
+                            selected
+                            for selected in itertools.combinations(
+                                kekule_candidates, target_double_bonds
+                            )
+                            if len({
+                                node
+                                for candidate in selected
+                                for node in candidate[3:5]
+                            }) == 2 * target_double_bonds
+                        ),
+                        key=lambda selected: (
+                            -sum(candidate[2] for candidate in selected),
+                            sum(candidate[1] for candidate in selected),
+                            tuple(sorted(
+                                candidate[0] for candidate in selected
+                            )),
+                        ),
+                        default=None,
+                    )
                     coordinates = np.asarray(
                         [nodes[node] for node in ring_nodes], dtype=float
                     )
                     centroid_array = coordinates.mean(axis=0)
-                    _left, singular_values, _right = np.linalg.svd(
+                    _left, singular_values, plane_axes = np.linalg.svd(
                         coordinates - centroid_array, full_matrices=False
                     )
                     if (
@@ -2005,7 +2091,30 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                         > 0.12
                     ):
                         continue
+                    if best_kekule is not None:
+                        for candidate in best_kekule:
+                            aromatic_double_edges.add(candidate[0])
+                            aromatic_double_atoms.update(candidate[3:5])
                     centroid = tuple(float(value) for value in centroid_array)
+                    ring_elements_in = [elements[node] for node in ring_nodes]
+                    ring_element = min(
+                        set(ring_elements_in),
+                        key=lambda element: (
+                            -ring_elements_in.count(element),
+                            element != "C",
+                            element,
+                        ),
+                    )
+                    inner_radius = float(np.linalg.norm(
+                        coordinates - centroid_array, axis=1
+                    ).mean()) * 0.68
+                    aromatic_rings.append((
+                        centroid,
+                        tuple(float(value) for value in plane_axes[0]),
+                        tuple(float(value) for value in plane_axes[1]),
+                        inner_radius,
+                        ring_element,
+                    ))
                     for index in ring_edges:
                         first_key, second_key, _length = edges[index]
                         first_point = nodes[first_key]
@@ -2049,10 +2158,38 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                 path.pop()
 
         find_ring(start)
-    return aromatic
+    return aromatic, aromatic_rings, aromatic_double_edges
 
 
-def _chemdraw_segments(segments, bond_orders, aromatic_directions):
+def _aromatic_torus_segments(aromatic_rings, sample_count=48):
+    rings = []
+    for center, axis_u, axis_v, radius, element in aromatic_rings:
+        points = []
+        for sample in range(sample_count):
+            angle = 2.0 * math.pi * sample / sample_count
+            points.append(tuple(
+                center[axis]
+                + radius * (
+                    math.cos(angle) * axis_u[axis]
+                    + math.sin(angle) * axis_v[axis]
+                )
+                for axis in range(3)
+            ))
+        rings.append([
+            (
+                first,
+                points[(index + 1) % sample_count],
+                element,
+                element,
+            )
+            for index, first in enumerate(points)
+        ])
+    return rings
+
+
+def _chemdraw_segments(
+    segments, bond_orders, aromatic_directions, aromatic_double_edges
+):
     rendered = []
     for first, second, element_a, element_b in segments:
         delta = tuple(
@@ -2066,27 +2203,35 @@ def _chemdraw_segments(segments, bond_orders, aromatic_directions):
         aromatic_direction = aromatic_directions.get(
             _bond_edge_key(first, second)
         )
+        order = bond_orders.get(_bond_edge_key(first, second), 1)
         if aromatic_direction is not None:
+            order = (
+                2
+                if _bond_edge_key(first, second) in aromatic_double_edges
+                else 1
+            )
             rendered.append((first, second, element_a, element_b))
-            rendered.append((
-                tuple(
-                    float(first[axis])
-                    + delta[axis] * 0.18
-                    + aromatic_direction[axis] * 0.24
-                    for axis in range(3)
-                ),
-                tuple(
-                    float(first[axis])
-                    + delta[axis] * 0.82
-                    + aromatic_direction[axis] * 0.24
-                    for axis in range(3)
-                ),
-                element_a,
-                element_b,
-            ))
+            if order > 1:
+                offsets = (0.24,) if order == 2 else (0.16, 0.32)
+                for offset in offsets:
+                    rendered.append((
+                        tuple(
+                            float(first[axis])
+                            + delta[axis] * 0.18
+                            + aromatic_direction[axis] * offset
+                            for axis in range(3)
+                        ),
+                        tuple(
+                            float(first[axis])
+                            + delta[axis] * 0.82
+                            + aromatic_direction[axis] * offset
+                            for axis in range(3)
+                        ),
+                        element_a,
+                        element_b,
+                    ))
             continue
 
-        order = bond_orders.get(_bond_edge_key(first, second), 1)
         if order == 1:
             rendered.append((first, second, element_a, element_b))
             continue
@@ -2293,12 +2438,12 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
         if chemdraw
         else {}
     )
-    aromatic_directions = (
+    aromatic_directions, aromatic_rings, aromatic_double_edges = (
         _aromatic_bond_directions(
             all_segments, covalent_radii, bond_orders
         )
         if chemdraw
-        else {}
+        else ({}, [], set())
     )
     two_color = (
         getattr(scene, "cgn_bond_style", 'SINGLE_COLOR') == 'TWO_COLOR'
@@ -2306,7 +2451,10 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
     for key, segments in sorted(by_pair.items()):
         rendered_segments = (
             _chemdraw_segments(
-                segments, bond_orders, aromatic_directions
+                segments,
+                bond_orders,
+                aromatic_directions,
+                aromatic_double_edges,
             )
             if chemdraw
             else segments
@@ -2401,6 +2549,57 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 obj, node_group, bond_radius, material
             )
         bond_count += len(segments)
+    for ring_index, ring_segments in enumerate(
+        _aromatic_torus_segments(aromatic_rings)
+    ):
+        element = ring_segments[0][2]
+        vdw_radius = vdw_by_element.get(element, _DEFAULT_VDW_RADIUS)
+        torus_bond_radius = _bond_radius(vdw_radius, vdw_radius, model)
+        radius_scale = (
+            1.0
+            if model == 'WIRE_STICKS'
+            else getattr(
+                scene,
+                "cgn_bond_radius_scale",
+                _BOND_RADIUS_SCALE_DEFAULT,
+            )
+        )
+        vertices = [
+            _display_point(first)
+            for first, _second, _first_element, _second_element
+            in ring_segments
+        ]
+        edges = [
+            (index, (index + 1) % len(vertices))
+            for index in range(len(vertices))
+        ]
+        obj_name = f"CGN_Bonds_Aromatic_{ring_index}"
+        mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
+        mesh.from_pydata(vertices, edges, [])
+        mesh.update()
+        obj = bpy.data.objects.new(obj_name, mesh)
+        obj["cgn_role"] = "bonds"
+        obj["cgn_aromatic_torus"] = True
+        obj["cgn_pair"] = f"{element}|{element}"
+        obj["cgn_base_radius"] = (
+            torus_bond_radius / radius_scale
+            if radius_scale
+            else torus_bond_radius
+        )
+        root.objects.link(obj)
+        if two_color:
+            style = _atom_style(scene, element)
+            material = _make_material(
+                f"CGN_Mat_{element}", style.color, style.roughness
+            )
+        else:
+            material = _make_material(
+                f"CGN_Bond_Mat_{element}_{element}",
+                getattr(scene, "cgn_bond_color", _BOND_COLOR_DEFAULT),
+            )
+        _add_geometry_nodes_modifier(
+            obj, node_group, torus_bond_radius, material
+        )
     root["cgn_bond_settings_signature"] = settings_signature
     return bond_count
 

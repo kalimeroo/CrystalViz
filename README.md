@@ -76,16 +76,18 @@ The **Atom Model & Style** sub-panel switches the rendering model:
 The expandable **Bond Style** panel lets bonds use one shared color or color
 each half with the corresponding bonded atom's element color. Single-color
 bonds have an adjustable color. Its **ChemDraw** checkbox adds parallel strokes
-for inferred double/triple bonds and inner strokes for planar, approximately
-regular five- and six-membered rings. Multiple-bond inference compares observed
-lengths with the CIF covalent radii and limits assignments by common valences;
-ring depiction also checks planarity and ring connectivity. It remains a
-geometry-based estimate, not a chemical-structure assignment. Its ring check
-uses a simple 4n+2 electron-count rule, not chemical databases or the
-statistical fragment priors used by comprehensive assignment software. CIFs
-often omit explicit bond orders, and unusual valence, disorder, or metal
-coordination can still make an assignment ambiguous. This conservative fallback
-is inspired by the distinction between bond detection and bond typing in
+for inferred double/triple bonds and, for planar, approximately regular
+five- and six-membered aromatic rings, an inner torus with a valence-limited
+Kekule pattern (two double bonds in five-membered rings and three in
+six-membered rings). Multiple-bond inference compares observed lengths with the
+CIF covalent radii and limits assignments by common valences; ring depiction
+also checks planarity, connectivity, and a simple 4n+2 electron count, including
+a heuristic for pyrrole-like nitrogen lone pairs. It remains a geometry-based
+estimate, not a chemical-structure assignment. It does not use chemical
+databases or the statistical fragment priors used by comprehensive assignment
+software. CIFs often omit explicit bond orders, and unusual valence, disorder,
+or metal coordination can still make an assignment ambiguous. This conservative
+fallback is inspired by the distinction between bond detection and bond typing in
 [Bruno et al. (2011)](https://doi.org/10.1107/S0108768111024608), but does not
 reproduce the CSD-derived statistics in that work. For models other than
 Wire-sticks,

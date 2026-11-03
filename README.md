@@ -121,7 +121,11 @@ seeds, while avoiding every atom already in the finite cluster. Selection
 highlights are cleared after growth so new atoms keep their normal element
 colors and sizes. Growth does not alter the source CIF or its unit
 cell/space group, and creates a finite expanded cluster rather than an
-infinitely periodic structure.
+infinitely periodic structure. Repeated growth reuses the periodic neighbour
+table and visited-atom state while the cell, sites and connectivity settings
+are unchanged. Each shell's atom and bond geometry is stored in its own meshes,
+so existing Blender meshes are not mutated while their Geometry Nodes modifiers
+are being evaluated.
 
 Use **Delete Atoms** to remove atoms. It uses the same viewport selection as
 **Grow Selected Atoms**: click or box-select atoms, click a selected atom to

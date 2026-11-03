@@ -790,7 +790,7 @@ def _periodic_neighbour_table(unit_cell, base_atoms, base_elements,
 
 
 def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
-                     windows):
+                     windows, neighbour_table=None):
     """Return the instance keys of the next coordination shell.
 
     A new atom must lie inside one enabled distance window of a seed atom, so
@@ -811,26 +811,29 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
     if max_distance <= 0.0:
         raise ValueError("Enabled connectivity maximum distances must be positive.")
 
-    reach, cells = _fractional_reach(unit_cell, max_distance)
+    if neighbour_table is None:
+        reach, cells = _fractional_reach(unit_cell, max_distance)
 
-    windows_by_element = {}
-    for (element_a, element_b), bounds in windows.items():
-        windows_by_element.setdefault(element_a, {})[element_b] = bounds
-        windows_by_element.setdefault(element_b, {})[element_a] = bounds
+        windows_by_element = {}
+        for (element_a, element_b), bounds in windows.items():
+            windows_by_element.setdefault(element_a, {})[element_b] = bounds
+            windows_by_element.setdefault(element_b, {})[element_a] = bounds
 
-    base_elements = [atom["element"] for atom in base_atoms]
-    bank, bucket_width = _build_image_bank(
-        unit_cell, base_atoms, base_elements, windows_by_element, reach, cells,
-        canonical,
-    )
-    table = _periodic_neighbour_table(
-        unit_cell, base_atoms, base_elements, windows_by_element,
-        bank, bucket_width, canonical,
-    )
+        base_elements = [atom["element"] for atom in base_atoms]
+        bank, bucket_width = _build_image_bank(
+            unit_cell, base_atoms, base_elements, windows_by_element, reach,
+            cells, canonical,
+        )
+        neighbour_table = _periodic_neighbour_table(
+            unit_cell, base_atoms, base_elements, windows_by_element,
+            bank, bucket_width, canonical,
+        )
+    elif len(neighbour_table) != len(base_atoms):
+        raise ValueError("The cached periodic neighbour table is invalid.")
 
     new_keys = []
     for base_index, translation in sorted(seed_keys):
-        for candidate, ta, tb, tc in table[base_index]:
+        for candidate, ta, tb, tc in neighbour_table[base_index]:
             key = (
                 candidate,
                 (
@@ -843,32 +846,72 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
                 continue
             visited.add(key)
             new_keys.append(key)
-    return new_keys
+    return new_keys, neighbour_table
+
+
+_GROWTH_CACHE = None
+
+
+def _growth_cache_key(unit_cell_parameters, sites, windows):
+    return (
+        tuple(float(value) for value in unit_cell_parameters),
+        tuple(
+            (
+                str(site.get("element", "X")).upper(),
+                tuple(float(value) for value in site["frac"]),
+            )
+            for site in sites
+        ),
+        tuple(sorted(windows.items())),
+    )
 
 
 def grow_connectivity_shell(
     unit_cell_parameters, sites, current_instances, seed_instances, pair_settings
 ):
     """Return the instance keys of the next shell around the seed atoms."""
+    global _GROWTH_CACHE
     if not current_instances:
         raise ValueError("There are no current atoms to grow from.")
     if not seed_instances:
         raise ValueError("Select at least one atom to grow from.")
 
-    unit_cell = _UnitCell([float(value) for value in unit_cell_parameters])
-    base_atoms = _base_atoms(unit_cell, sites)
-    if not base_atoms:
-        raise ValueError("The site table is empty.")
+    windows = _enabled_windows(pair_settings)
+    cache_key = _growth_cache_key(unit_cell_parameters, sites, windows)
+    current_signature = tuple(int(value) for value in current_instances)
+    cache_matches = (
+        _GROWTH_CACHE is not None
+        and _GROWTH_CACHE["key"] == cache_key
+    )
+    if cache_matches:
+        unit_cell = _GROWTH_CACHE["unit_cell"]
+        base_atoms = _GROWTH_CACHE["base_atoms"]
+        canonical = _GROWTH_CACHE["canonical"]
+        neighbour_table = _GROWTH_CACHE["neighbour_table"]
+    else:
+        unit_cell = _UnitCell(unit_cell_parameters)
+        base_atoms = _base_atoms(unit_cell, sites)
+        if not base_atoms:
+            raise ValueError("The site table is empty.")
+        canonical = _canonical_base_indices(base_atoms)
+        neighbour_table = None
 
-    canonical = _canonical_base_indices(base_atoms)
-    visited = _instance_keys(current_instances, canonical)
+    state_matches = (
+        cache_matches
+        and _GROWTH_CACHE["instances"] == current_signature
+    )
+    visited = (
+        _GROWTH_CACHE["visited"]
+        if state_matches
+        else _instance_keys(current_instances, canonical)
+    )
     seed_keys = _instance_keys(seed_instances, canonical)
     if not seed_keys:
         raise ValueError("The selected atoms are not part of the structure.")
 
-    new_keys = _grow_shell_keys(
+    new_keys, neighbour_table = _grow_shell_keys(
         unit_cell, base_atoms, canonical, visited, seed_keys,
-        _enabled_windows(pair_settings),
+        windows, neighbour_table,
     )
 
     new_instances = []
@@ -876,4 +919,13 @@ def grow_connectivity_shell(
         new_instances.extend((
             site_index, translation[0], translation[1], translation[2],
         ))
+    _GROWTH_CACHE = {
+        "key": cache_key,
+        "unit_cell": unit_cell,
+        "base_atoms": base_atoms,
+        "canonical": canonical,
+        "neighbour_table": neighbour_table,
+        "visited": visited,
+        "instances": current_signature + tuple(new_instances),
+    }
     return {"new_instances": new_instances, "grew_by": len(new_keys)}

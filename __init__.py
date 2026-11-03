@@ -116,6 +116,7 @@ _ORTEP_INNER_COLOR = (0.12, 0.12, 0.16, 1.0)
 _ORTEP_ELLIPSE_COLOR = (0.015, 0.015, 0.02, 1.0)
 _ORTEP_ELLIPSE_THICKNESS = 0.018
 _ORTEP_VIEW_SIGNATURES = {}
+_BOND_SPATIAL_CACHE = None
 _MODEL_ITEMS = (
     ('BALL_STICK', "Ball & Stick", "Spheres at quarter van der Waals radius"),
     ('ELLIPSOID', "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
@@ -1374,11 +1375,16 @@ def _make_atom_objects(root, atoms):
             if element == "H" and model in {'ELLIPSOID', 'SPACE_FILLING'}
             else 1.0
         )
+        is_ortep_ellipsoid = ellipsoids and element != "H"
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
-            [_display_point(atom["cart"]) for atom in element_atoms], [], []
+            [
+                _display_point(atom["cart"])
+                for atom in element_atoms
+            ],
+            [],
+            [],
         )
-        is_ortep_ellipsoid = ellipsoids and element != "H"
         if is_ortep_ellipsoid:
             _add_ellipsoid_attributes(mesh, element_atoms)
         mesh.update()
@@ -1752,39 +1758,102 @@ def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
 
 
-def _bond_objects(root, atoms, pair_settings):
-    for obj in list(root.objects):
-        if obj.get("cgn_role") == "bonds":
-            mesh = obj.data
-            bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+def _connectivity_settings_signature(pair_settings):
+    settings = [
+        {
+            "element_a": str(item.element_a).upper(),
+            "element_b": str(item.element_b).upper(),
+            "enabled": bool(item.enabled),
+            "min_distance": float(item.min_distance),
+            "max_distance": float(item.max_distance),
+        }
+        for item in pair_settings
+    ]
+    return json.dumps(settings, sort_keys=True, separators=(",", ":"))
 
+
+def _cached_atoms_for_growth(root, pair_settings, atom_count, new_atoms):
+    cached = _BOND_SPATIAL_CACHE
+    if (
+        cached is None
+        or cached["root_id"] != root.get("cgn_instance_id", root.name)
+        or cached["settings_signature"]
+        != _connectivity_settings_signature(pair_settings)
+        or cached["atom_count"] != atom_count
+    ):
+        return None
+    return cached["atoms"] + new_atoms
+
+
+def _bond_objects(root, atoms, pair_settings, start_index=0):
+    global _BOND_SPATIAL_CACHE
+    start_index = max(0, min(int(start_index), len(atoms)))
     model = _current_model()
-    if model == 'SPACE_FILLING':
-        return 0
-
     enabled = {}
     for setting in pair_settings:
         key = _pair_key(setting.element_a, setting.element_b)
         if setting.enabled and setting.max_distance >= setting.min_distance:
             enabled[key] = (setting.min_distance, setting.max_distance)
-    if not enabled or len(atoms) < 2:
+    settings_signature = _connectivity_settings_signature(pair_settings)
+    if model == 'SPACE_FILLING' or not enabled or len(atoms) < 2:
+        start_index = 0
+    max_distance = max(
+        (pair[1] for pair in enabled.values()), default=0.0
+    )
+    if max_distance <= 0:
+        start_index = 0
+    cell_width = max(max_distance, 1e-6)
+    root_id = root.get("cgn_instance_id", root.name)
+    cached = _BOND_SPATIAL_CACHE
+    cache_matches = (
+        start_index > 0
+        and cached is not None
+        and cached["root_id"] == root_id
+        and cached["settings_signature"] == settings_signature
+        and cached["cell_width"] == cell_width
+        and cached["atom_count"] == start_index
+    )
+    if start_index > 0 and not cache_matches:
+        start_index = 0
+    if start_index == 0:
+        for obj in list(root.objects):
+            if obj.get("cgn_role") == "bonds":
+                mesh = obj.data
+                bpy.data.objects.remove(obj, do_unlink=True)
+                if mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+
+    if model == 'SPACE_FILLING' or not enabled or len(atoms) < 2 or max_distance <= 0:
+        _BOND_SPATIAL_CACHE = None
+        root["cgn_bond_settings_signature"] = settings_signature
         return 0
 
-    max_distance = max(pair[1] for pair in enabled.values())
-    if max_distance <= 0:
-        return 0
-    cell_width = max(max_distance, 1e-6)
-    buckets = {}
+    if cache_matches:
+        buckets = cached["buckets"]
+        vdw_by_element = cached["vdw_by_element"]
+    else:
+        buckets = {}
+        vdw_by_element = {}
+        for index in range(start_index):
+            atom = atoms[index]
+            element = str(atom.get("element", "X")).upper()
+            vdw_by_element.setdefault(
+                element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
+            )
+            x, y, z = atom["cart"]
+            cell = (
+                math.floor(x / cell_width),
+                math.floor(y / cell_width),
+                math.floor(z / cell_width),
+            )
+            buckets.setdefault(cell, []).append(index)
     by_pair = {}
-    vdw_by_element = {}
-    for atom in atoms:
+    for index in range(start_index, len(atoms)):
+        atom = atoms[index]
         element = str(atom.get("element", "X")).upper()
         vdw_by_element.setdefault(
             element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
         )
-    for index, atom in enumerate(atoms):
         x, y, z = atom["cart"]
         cell = (
             math.floor(x / cell_width),
@@ -1794,10 +1863,14 @@ def _bond_objects(root, atoms, pair_settings):
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
-                    neighbor_cell = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
+                    neighbor_cell = (
+                        cell[0] + dx, cell[1] + dy, cell[2] + dz
+                    )
                     for other_index in buckets.get(neighbor_cell, ()):
                         other = atoms[other_index]
-                        key = _pair_key(atom.get("element"), other.get("element"))
+                        key = _pair_key(
+                            atom.get("element"), other.get("element")
+                        )
                         bounds = enabled.get(key)
                         if bounds is None:
                             continue
@@ -1806,20 +1879,31 @@ def _bond_objects(root, atoms, pair_settings):
                             y - other["cart"][1],
                             z - other["cart"][2],
                         )
-                        distance_sq = sum(component * component for component in delta)
-                        if distance_sq <= 1e-12:
+                        distance_squared = sum(
+                            component * component for component in delta
+                        )
+                        if distance_squared <= 1e-12:
                             continue
-                        distance = math.sqrt(distance_sq)
+                        distance = math.sqrt(distance_squared)
                         if bounds[0] <= distance <= bounds[1]:
                             by_pair.setdefault(key, []).append(
                                 (
                                     other["cart"],
                                     atom["cart"],
                                     str(other.get("element", "X")).upper(),
-                                    str(atom.get("element", "X")).upper(),
+                                    element,
                                 )
                             )
         buckets.setdefault(cell, []).append(index)
+    _BOND_SPATIAL_CACHE = {
+        "root_id": root_id,
+        "settings_signature": settings_signature,
+        "cell_width": cell_width,
+        "atom_count": len(atoms),
+        "atoms": atoms,
+        "buckets": buckets,
+        "vdw_by_element": vdw_by_element,
+    }
 
     node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
     bond_count = 0
@@ -1918,6 +2002,7 @@ def _bond_objects(root, atoms, pair_settings):
                 obj, node_group, bond_radius, material
             )
         bond_count += len(segments)
+    root["cgn_bond_settings_signature"] = settings_signature
     return bond_count
 
 
@@ -3174,15 +3259,44 @@ class CGN_OT_grow_further(Operator):
             )
             return {'CANCELLED'}
         try:
+            old_atom_count = len(instances) // 4
             instances = instances + new_instances
-            atoms = _materialize_atoms(
-                sites, cell_matrix, instances, initial_count
+            new_atoms = _materialize_atoms(
+                sites, cell_matrix, new_instances,
+                initial_count + old_atom_count,
             )
-            _rebuild_atom_objects(root, atoms)
-            _update_growth_selection(root, atoms, [])
-            _bond_objects(
-                root, atoms, context.scene.cgn_connectivity_pairs
+            _make_atom_objects(root, new_atoms)
+            _update_growth_selection(root, [], [])
+            bond_start_index = (
+                old_atom_count
+                if root.get("cgn_bond_settings_signature")
+                == _connectivity_settings_signature(
+                    context.scene.cgn_connectivity_pairs
+                )
+                else 0
             )
+            if _current_model(context.scene) == 'SPACE_FILLING':
+                atoms = []
+                _bond_objects(
+                    root, atoms, context.scene.cgn_connectivity_pairs
+                )
+            else:
+                atoms = (
+                    _cached_atoms_for_growth(
+                        root, context.scene.cgn_connectivity_pairs,
+                        old_atom_count, new_atoms,
+                    )
+                    if bond_start_index
+                    else None
+                )
+                if atoms is None:
+                    atoms = _materialize_atoms(
+                        sites, cell_matrix, instances, initial_count
+                    )
+                _bond_objects(
+                    root, atoms, context.scene.cgn_connectivity_pairs,
+                    start_index=bond_start_index,
+                )
             root["cgn_instances"] = json.dumps(instances)
             root["cgn_growth_shells"] = int(
                 root.get("cgn_growth_shells", 0)

@@ -1930,7 +1930,7 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                         for index in ring_edges
                     }
                     if (
-                        max(ring_distances) - min(ring_distances) > 0.08
+                        max(ring_distances) - min(ring_distances) > 0.14
                         or not 0.90
                         <= sum(ring_distances) / len(ring_distances)
                         <= 0.96
@@ -1960,14 +1960,17 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                         if element == "C":
                             pi_electrons += 1
                         elif element == "N":
-                            pi_electrons += (
-                                2
-                                if any(
-                                    other_element == "H"
-                                    for _other, other_element
-                                    in all_neighbors.get(node, ())
+                            has_substituent = any(
+                                other not in ring_nodes
+                                and (
+                                    other_element in _CHEMDRAW_MAX_VALENCE
+                                    or other_element == "H"
                                 )
-                                else 1
+                                for other, other_element
+                                in all_neighbors.get(node, ())
+                            )
+                            pi_electrons += (
+                                2 if has_substituent else 1
                             )
                         elif element in {"O", "S"}:
                             pi_electrons += 2
@@ -1975,6 +1978,18 @@ def _aromatic_bond_directions(segments, covalent_radii, bond_orders):
                         ring_has_exocyclic_multiple
                         or pi_electrons < 2
                         or (pi_electrons - 2) % 4 != 0
+                    ):
+                        continue
+                    pi_bond_nodes = {
+                        node
+                        for index in ring_edges
+                        if edges[index][2] <= 0.96
+                        for node in edges[index][:2]
+                    }
+                    if any(
+                        elements[node] in {"B", "C"}
+                        and node not in pi_bond_nodes
+                        for node in ring_nodes
                     ):
                         continue
                     coordinates = np.asarray(

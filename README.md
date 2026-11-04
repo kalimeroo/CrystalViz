@@ -14,9 +14,16 @@ Blender ignores Python's user site-packages, so install gemmi into Blender's
 local wheel directory (one command, one 2 MB wheel, no dependencies):
 
 ```
-"<Blender>/5.2/python/bin/python.exe" -m pip install --target \
-  "<user>/AppData/Roaming/Blender Foundation/Blender/5.2/extensions/.local/lib/python3.13/site-packages" \
-  gemmi
+**Recommended Windows Installation:**
+1. Close Blender.
+2. Open a terminal (Command Prompt or PowerShell) as **Administrator**.
+3. Run the following command (adjust the path if your Blender version or installation folder is different):
+
+```powershell
+& "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe" -m pip install --upgrade --force-reinstall --ignore-installed gemmi
+```
+
+The `--ignore-installed` flag is crucial; it ensures Gemmi is installed directly into Blender's core folders rather than the Windows user profile, which often causes import conflicts.
 ```
 
 The add-on preferences and the **About** sub-panel show the exact command if

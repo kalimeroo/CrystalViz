@@ -1,0 +1,27 @@
+schema_version = "1.0.0"
+
+id = "crystalviz"
+version = "0.5.6"
+name = "CrystalViz"
+tagline = "Import CIF atoms and render with Geometry Nodes"
+maintainer = "OpenAI"
+type = "add-on"
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+
+tags = ["Import-Export", "Geometry Nodes", "Science"]
+
+blender_version_min = "5.2.0"
+
+platforms = ["windows-x64", "linux-x64", "macos-arm64", "macos-x64"]
+
+wheels = [
+    "./wheels/gemmi-0.7.5-cp313-cp313-win_amd64.whl",
+    "./wheels/gemmi-0.7.5-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+    "./wheels/gemmi-0.7.5-cp313-cp313-macosx_11_0_arm64.whl",
+    "./wheels/gemmi-0.7.5-cp313-cp313-macosx_10_14_x86_64.whl",
+]
+
+[permissions]
+files = "Read CIF files from disk and store imported structures"

@@ -1,37 +1,64 @@
-# CCTBX Geometry Nodes add-on prototype (gemmi branch)
+# CrystalViz
 
-This is a separate experimental Blender add-on; it does not replace or modify
-the existing CCTBX Crystal Structures add-on.
+This Blender extension allows the importation of Crystallographic Information
+Files (CIF) and provides tools to display molecular strucures in Blender.
+It uses the gemmi as a backend (https://github.com/project-gemmi/gemmi).
 
-This branch replaces the external `cctbx-base` interpreter with
-[gemmi](https://github.com/project-gemmi/gemmi), imported directly inside
-Blender's own Python. There is no subprocess, no `worker.py`, and no
-"cctbx Python Executable" preference. The `main` branch keeps the cctbx build.
-
-## Installing gemmi
-
-Blender ignores Python's user site-packages, so install gemmi into Blender's
-local wheel directory (one command, one 2 MB wheel, no dependencies):
-
-```
-**Recommended Windows Installation:**
-1. Close Blender.
-2. Open a terminal (Command Prompt or PowerShell) as **Administrator**.
-3. Run the following command (adjust the path if your Blender version or installation folder is different):
-
-```powershell
-& "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe" -m pip install --upgrade --force-reinstall --ignore-installed gemmi
-```
-
-The `--ignore-installed` flag is crucial; it ensures Gemmi is installed directly into Blender's core folders rather than the Windows user profile, which often causes import conflicts.
-```
-
-The add-on preferences and the **About** sub-panel show the exact command if
-gemmi is missing, and display the detected gemmi version otherwise.
+gemmi is a compiled C extension, so it is **bundled with the add-on** as a
+per-platform wheel. **There is nothing to install** — no pip, no terminal, no
+`--ignore-installed` hacks. Just install the extension archive for your
+operating system.
 
 ## Installing the add-on
 
-Install the `cctbx_geometry_nodes_addon` folder as a Blender add-on, enable it.
+This add-on targets **Blender 5.2** and is distributed as a modern Blender
+**Extension** (`*.zip` built with `build_extension.py`). Install it from
+**Edit > Preferences > Get Extensions > (dropdown) > Install from Disk...**,
+choose the `.zip` that matches your platform, then enable it:
+
+| Platform      | Archive                        |
+| ------------- | ------------------------------ |
+| Windows x64   | `crystalviz-*-windows_x64.zip` |
+| Linux x64     | `crystalviz-*-linux_x64.zip`   |
+| macOS (Apple) | `crystalviz-*-macos_arm64.zip` |
+| macOS (Intel) | `crystalviz-*-macos_x64.zip`   |
+
+Each archive contains the add-on **and** the correct `gemmi` wheel for that
+platform. Since gemmi is a per-platform wheel, use the archive for your own OS
+and CPU architecture.
+
+The **Add-on Preferences** and the **About** sub-panel display the detected,
+bundled gemmi version. If gemmi cannot be loaded it means the extension was
+installed for the wrong platform or an unsupported Blender version, and the
+preferences explain how to fix it.
+
+## Building from source
+
+`build_extension.py` (Python 3.8+, standard library only) both downloads the
+gemmi wheels and packs the per-platform extension archives:
+
+```bash
+python build_extension.py download --gemmi-version 0.7.5   # fetch wheels into wheels/
+python build_extension.py build                            # build dist/*.zip per platform
+python build_extension.py build --platforms macos-arm64    # single platform
+```
+
+- `download` fetches the CPython-3.13 gemmi wheel for each target platform from
+  PyPI (unmodified) into `wheels/` and keeps the `wheels` array in
+  `blender_manifest.toml` in sync. Omit `--gemmi-version` to use the latest
+  release.
+- `build` produces one installable `.zip` per platform in `dist/`, each with
+  only the wheel that runs on that platform — the same output Blender's own
+  `blender --command extension build --split-platforms` produces.
+
+You can also run Blender's own build from this directory to validate the
+manifest:
+
+```bash
+blender --command extension build --split-platforms
+blender --command extension validate
+```
+
 The add-on imports CIF asymmetric-unit atoms and renders them through Geometry
 Nodes. In the default **Ball & Stick** model, atom spheres use a quarter of the
 element's van der Waals radius and bond tubes use 0.1× the mean van der Waals
@@ -48,7 +75,7 @@ Atoms use the JMOL CPK colour scheme (the Science Notes table): colours are
 stored as sRGB hex and converted to linear values so Blender displays the
 intended hue. Elements missing from the table fall back to Jmol's pink.
 
-The **CCTBX GN** sidebar tab is split into collapsible sections: the main panel
+The **CrystalViz** sidebar tab is split into collapsible sections: the main panel
 shows the import button, space group, unit-cell parameters on a three-row,
 two-column grid (a, b, c on the left; α, β, γ on the right) and atom count.
 Cell parameters retain CIF standard uncertainties, for example `7.57360(10)`,
@@ -56,7 +83,7 @@ and exact integer angles display without decimal places;
 **Build** holds Fill, Grow, Delete and a **Show Hydrogens** checkbox that hides
 or shows hydrogen atoms together with their bonds; **Connectivity**,
 **Unit Cell**, **Atom Model & Style** and **About** are collapsed by default.
-The same build actions are available from the **CCTBX** menu in the 3D Viewport
+The same build actions are available from the **CrystalViz** menu in the 3D Viewport
 header, and CIF import is also registered under **File > Import**.
 
 The **Atom Model & Style** sub-panel switches the rendering model:

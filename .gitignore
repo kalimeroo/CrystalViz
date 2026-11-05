@@ -3,3 +3,11 @@ __pycache__/
 *.zip
 .DS_Store
 Thumbs.db
+
+# Bundled gemmi wheels are downloaded from PyPI by build_extension.py
+# (running `download` regenerates both wheels/ and the manifest's wheels
+# array), so they are not committed.
+wheels/*.whl
+
+# Built per-platform extension archives.
+dist/

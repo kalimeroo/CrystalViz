@@ -1,9 +1,9 @@
 bl_info = {
-    "name": "CCTBX Geometry Nodes (gemmi)",
+    "name": "CrystalViz",
     "author": "OpenAI",
     "version": (0, 5, 6),
     "blender": (4, 0, 0),
-    "location": "View3D > Sidebar > CCTBX GN; File > Import",
+    "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
         "Import CIF atoms and render editable connectivity with Geometry "
         "Nodes (gemmi backend, no external Python)"
@@ -11,18 +11,18 @@ bl_info = {
     "category": "Import-Export",
 }
 
-import bpy
 import json
 import math
 import os
 import re
-import sys
 import traceback
 import uuid
+
 import bmesh
+import bpy
 import gpu
 import numpy as np
-from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
+from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -33,7 +33,7 @@ from bpy.props import (
     PointerProperty,
     StringProperty,
 )
-from bpy.app.handlers import persistent
+from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler, Matrix, Vector
 
@@ -47,40 +47,123 @@ def _srgb_to_linear(value):
 
 def _cpk_color(hex_value):
     """Convert a Jmol CPK hex colour to linear RGBA for Blender."""
-    rgb = tuple(int(hex_value[index:index + 2], 16) for index in (0, 2, 4))
+    rgb = tuple(int(hex_value[index : index + 2], 16) for index in (0, 2, 4))
     return tuple(_srgb_to_linear(channel) for channel in rgb) + (1.0,)
 
 
 # Jmol CPK colours (sRGB hex) from the Science Notes JMOL CPK table.
 _JMOL_CPK_HEX = {
-    "H": "FFFFFF", "D": "FFFFC0", "T": "FFFFA0", "HE": "D9FFFF",
-    "LI": "CC80FF", "BE": "C2FF00", "B": "FFB5B5", "C": "909090",
-    "N": "3050F8", "O": "FF0D0D", "F": "90E050", "NE": "B3E3F5",
-    "NA": "AB5CF2", "MG": "8AFF00", "AL": "BFA6A6", "SI": "F0C8A0",
-    "P": "FF8000", "S": "FFFF30", "CL": "1FF01F", "AR": "80D1E3",
-    "K": "8F40D4", "CA": "3DFF00", "SC": "E6E6E6", "TI": "BFC2C7",
-    "V": "A6A6AB", "CR": "8A99C7", "MN": "9C7AC7", "FE": "E06633",
-    "CO": "F090A0", "NI": "50D050", "CU": "C88033", "ZN": "7D80B0",
-    "GA": "C28F8F", "GE": "668F8F", "AS": "BD80E3", "SE": "FFA100",
-    "BR": "A62929", "KR": "5CB8D1", "RB": "702EB0", "SR": "00FF00",
-    "Y": "94FFFF", "ZR": "94E0E0", "NB": "73C2C9", "MO": "54B5B5",
-    "TC": "3B9E9E", "RU": "248F8F", "RH": "0A7D8C", "PD": "006985",
-    "AG": "C0C0C0", "CD": "FFD98F", "IN": "A67573", "SN": "668080",
-    "SB": "9E63B5", "TE": "D47A00", "I": "940094", "XE": "429EB0",
-    "CS": "57178F", "BA": "00C900", "LA": "70D4FF", "CE": "FFFFC7",
-    "PR": "D9FFC7", "ND": "C7FFC7", "PM": "A3FFC7", "SM": "8FFFC7",
-    "EU": "61FFC7", "GD": "45FFC7", "TB": "30FFC7", "DY": "1FFFC7",
-    "HO": "00FF9C", "ER": "00E675", "TM": "00D452", "YB": "00BF38",
-    "LU": "00AB24", "HF": "4DC2FF", "TA": "4DA6FF", "W": "2194D6",
-    "RE": "267DAB", "OS": "266696", "IR": "175487", "PT": "D0D0E0",
-    "AU": "FFD123", "HG": "B8B8D0", "TL": "A6544D", "PB": "575961",
-    "BI": "9E4FB5", "PO": "AB5C00", "AT": "754F45", "RN": "428296",
-    "FR": "420066", "RA": "007D00", "AC": "70ABFA", "TH": "00BAFF",
-    "PA": "00A1FF", "U": "008FFF", "NP": "0080FF", "PU": "006BFF",
-    "AM": "545CF2", "CM": "785CE3", "BK": "8A4FE3", "CF": "A136D4",
-    "ES": "B31FD4", "FM": "B31FBA", "MD": "B30DA6", "NO": "BD0D87",
-    "LR": "C70066", "RF": "CC0059", "DB": "D1004F", "SG": "D90045",
-    "BH": "E00038", "HS": "E6002E", "MT": "EB0026",
+    "H": "FFFFFF",
+    "D": "FFFFC0",
+    "T": "FFFFA0",
+    "HE": "D9FFFF",
+    "LI": "CC80FF",
+    "BE": "C2FF00",
+    "B": "FFB5B5",
+    "C": "909090",
+    "N": "3050F8",
+    "O": "FF0D0D",
+    "F": "90E050",
+    "NE": "B3E3F5",
+    "NA": "AB5CF2",
+    "MG": "8AFF00",
+    "AL": "BFA6A6",
+    "SI": "F0C8A0",
+    "P": "FF8000",
+    "S": "FFFF30",
+    "CL": "1FF01F",
+    "AR": "80D1E3",
+    "K": "8F40D4",
+    "CA": "3DFF00",
+    "SC": "E6E6E6",
+    "TI": "BFC2C7",
+    "V": "A6A6AB",
+    "CR": "8A99C7",
+    "MN": "9C7AC7",
+    "FE": "E06633",
+    "CO": "F090A0",
+    "NI": "50D050",
+    "CU": "C88033",
+    "ZN": "7D80B0",
+    "GA": "C28F8F",
+    "GE": "668F8F",
+    "AS": "BD80E3",
+    "SE": "FFA100",
+    "BR": "A62929",
+    "KR": "5CB8D1",
+    "RB": "702EB0",
+    "SR": "00FF00",
+    "Y": "94FFFF",
+    "ZR": "94E0E0",
+    "NB": "73C2C9",
+    "MO": "54B5B5",
+    "TC": "3B9E9E",
+    "RU": "248F8F",
+    "RH": "0A7D8C",
+    "PD": "006985",
+    "AG": "C0C0C0",
+    "CD": "FFD98F",
+    "IN": "A67573",
+    "SN": "668080",
+    "SB": "9E63B5",
+    "TE": "D47A00",
+    "I": "940094",
+    "XE": "429EB0",
+    "CS": "57178F",
+    "BA": "00C900",
+    "LA": "70D4FF",
+    "CE": "FFFFC7",
+    "PR": "D9FFC7",
+    "ND": "C7FFC7",
+    "PM": "A3FFC7",
+    "SM": "8FFFC7",
+    "EU": "61FFC7",
+    "GD": "45FFC7",
+    "TB": "30FFC7",
+    "DY": "1FFFC7",
+    "HO": "00FF9C",
+    "ER": "00E675",
+    "TM": "00D452",
+    "YB": "00BF38",
+    "LU": "00AB24",
+    "HF": "4DC2FF",
+    "TA": "4DA6FF",
+    "W": "2194D6",
+    "RE": "267DAB",
+    "OS": "266696",
+    "IR": "175487",
+    "PT": "D0D0E0",
+    "AU": "FFD123",
+    "HG": "B8B8D0",
+    "TL": "A6544D",
+    "PB": "575961",
+    "BI": "9E4FB5",
+    "PO": "AB5C00",
+    "AT": "754F45",
+    "RN": "428296",
+    "FR": "420066",
+    "RA": "007D00",
+    "AC": "70ABFA",
+    "TH": "00BAFF",
+    "PA": "00A1FF",
+    "U": "008FFF",
+    "NP": "0080FF",
+    "PU": "006BFF",
+    "AM": "545CF2",
+    "CM": "785CE3",
+    "BK": "8A4FE3",
+    "CF": "A136D4",
+    "ES": "B31FD4",
+    "FM": "B31FBA",
+    "MD": "B30DA6",
+    "NO": "BD0D87",
+    "LR": "C70066",
+    "RF": "CC0059",
+    "DB": "D1004F",
+    "SG": "D90045",
+    "BH": "E00038",
+    "HS": "E6002E",
+    "MT": "EB0026",
 }
 _ELEMENT_COLORS = {
     element: _cpk_color(value) for element, value in _JMOL_CPK_HEX.items()
@@ -101,15 +184,22 @@ _AROMATIC_TORUS_WIDTH_DEFAULT = 0.75
 _AROMATIC_BOND_LENGTH_SPREAD_MAX = 0.06
 _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE = {2: 0.9, 3: 0.85}
 _CHEMDRAW_MAX_VALENCE = {
-    "B": 3, "C": 4, "N": 4, "O": 2, "F": 1, "SI": 4, "P": 5,
-    "S": 6, "CL": 1, "BR": 1, "I": 1,
+    "B": 3,
+    "C": 4,
+    "N": 4,
+    "O": 2,
+    "F": 1,
+    "SI": 4,
+    "P": 5,
+    "S": 6,
+    "CL": 1,
+    "BR": 1,
+    "I": 1,
 }
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
-_DEFAULT_BOND_RADIUS = (
-    _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
-)
+_DEFAULT_BOND_RADIUS = _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
 _BOND_TOLERANCE = 0.4
 _MAX_FILL_REPEATS = 20
 _MAX_FILL_ATOMS = 200000
@@ -128,14 +218,14 @@ _ORTEP_ELLIPSE_THICKNESS = 0.018
 _ORTEP_VIEW_SIGNATURES = {}
 _BOND_SPATIAL_CACHE = None
 _MODEL_ITEMS = (
-    ('BALL_STICK', "Ball & Stick", "Spheres at quarter van der Waals radius"),
-    ('ELLIPSOID', "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
+    ("BALL_STICK", "Ball & Stick", "Spheres at quarter van der Waals radius"),
+    ("ELLIPSOID", "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
     (
-        'SPACE_FILLING',
+        "SPACE_FILLING",
         "Space-filling (Use VdW radii)",
         "Spheres at full van der Waals radius, without bonds",
     ),
-    ('WIRE_STICKS', "Wire-sticks", "Thin atoms and thin bonds"),
+    ("WIRE_STICKS", "Wire-sticks", "Thin atoms and thin bonds"),
 )
 _CIF_CELL_VALUE_RE = re.compile(
     r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$"
@@ -153,15 +243,18 @@ def _gemmi_status():
 
 
 def _gemmi_install_hint():
-    """Command that installs gemmi where Blender's Python can import it."""
-    target = os.path.join(
-        bpy.utils.user_resource('EXTENSIONS'),
-        ".local",
-        "lib",
-        f"python{sys.version_info.major}.{sys.version_info.minor}",
-        "site-packages",
+    """Diagnostic text when the bundled gemmi wheel cannot be imported.
+
+    gemmi is now bundled with the extension, so end users never install it
+    manually. A missing/broken gemmi usually means the extension was installed
+    for the wrong platform or into an unsupported Blender version.
+    """
+    return (
+        "gemmi should already be bundled with this extension. If it is "
+        "missing, reinstall the extension archive that matches your platform "
+        "(Windows, Linux or macOS) and make sure it was downloaded/installed "
+        "from the release for your operating system."
     )
-    return f'"{sys.executable}" -m pip install --target "{target}" gemmi'
 
 
 def _gemmi_worker():
@@ -170,8 +263,7 @@ def _gemmi_worker():
         from . import gemmi_worker
     except ImportError as exc:
         raise RuntimeError(
-            "gemmi is not installed in Blender's Python.\n"
-            "Install it with:\n" + _gemmi_install_hint()
+            "The bundled gemmi library could not be loaded.\n" + _gemmi_install_hint()
         ) from exc
     return gemmi_worker
 
@@ -185,26 +277,34 @@ class CGN_AddonPreferences(AddonPreferences):
         if error:
             layout.label(
                 text="gemmi is not available in Blender's Python.",
-                icon='ERROR',
+                icon="ERROR",
             )
-            layout.label(text="Install it with:")
-            layout.label(text=_gemmi_install_hint())
+            for section in _gemmi_install_hint().split("\n"):
+                layout.label(text=section)
         else:
             layout.label(
-                text=f"gemmi {version} (in-process, no external interpreter)",
-                icon='CHECKMARK',
+                text=f"gemmi {version} (bundled, in-process, no external interpreter)",
+                icon="CHECKMARK",
             )
 
 
 class CGN_ConnectivityPair(PropertyGroup):
-    element_a: StringProperty(options={'HIDDEN'})
-    element_b: StringProperty(options={'HIDDEN'})
+    element_a: StringProperty(options={"HIDDEN"})
+    element_b: StringProperty(options={"HIDDEN"})
     enabled: BoolProperty(name="Connect", default=True)
     min_distance: FloatProperty(
-        name="Min (Å)", default=0.1, min=0.0, max=20.0, precision=3,
+        name="Min (Å)",
+        default=0.1,
+        min=0.0,
+        max=20.0,
+        precision=3,
     )
     max_distance: FloatProperty(
-        name="Max (Å)", default=3.0, min=0.0, max=20.0, precision=3,
+        name="Max (Å)",
+        default=3.0,
+        min=0.0,
+        max=20.0,
+        precision=3,
     )
 
 
@@ -218,28 +318,27 @@ def _update_atom_style(self, context):
         shader.inputs["Base Color"].default_value = self.color
         shader.inputs["Roughness"].default_value = self.roughness
     root = _active_root(context.scene)
-    if root is not None and context.scene.cgn_model == 'BALL_STICK':
+    if root is not None and context.scene.cgn_model == "BALL_STICK":
         for obj in root.objects:
-            if (
-                obj.get("cgn_role") != "atoms"
-                or obj.get("cgn_element") != self.element
-            ):
+            if obj.get("cgn_role") != "atoms" or obj.get("cgn_element") != self.element:
                 continue
             radius = float(obj.get("cgn_vdw_radius", _DEFAULT_VDW_RADIUS))
             for modifier in obj.modifiers:
-                if modifier.type == 'NODES' and modifier.node_group is not None:
+                if modifier.type == "NODES" and modifier.node_group is not None:
                     _set_modifier_input(
-                        modifier, modifier.node_group, "Radius",
+                        modifier,
+                        modifier.node_group,
+                        "Radius",
                         radius * self.size * _DISPLAY_SCALE,
                     )
-            obj.update_tag(refresh={'OBJECT', 'DATA'})
+            obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
 class CGN_AtomStyle(PropertyGroup):
-    element: StringProperty(options={'HIDDEN'})
+    element: StringProperty(options={"HIDDEN"})
     color: FloatVectorProperty(
         name="Color",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -256,7 +355,7 @@ class CGN_AtomStyle(PropertyGroup):
     size: FloatProperty(
         name="Size",
         description="Atom radius as a fraction of its van der Waals radius",
-        subtype='FACTOR',
+        subtype="FACTOR",
         default=0.25,
         min=0.0,
         max=1.0,
@@ -292,12 +391,10 @@ def _update_ortep_ellipse_thickness(scene, context):
     if template is None:
         return
     old_mesh = template.data
-    template.data = _build_ortep_template_mesh(
-        scene.cgn_ortep_ellipse_thickness
-    )
+    template.data = _build_ortep_template_mesh(scene.cgn_ortep_ellipse_thickness)
     if old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
-    template.update_tag(refresh={'OBJECT', 'DATA'})
+    template.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
@@ -322,7 +419,7 @@ class CGN_UnitCellSettings(PropertyGroup):
     face_color: FloatVectorProperty(
         name="Face Color",
         description="Unit-cell face color",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -341,7 +438,7 @@ class CGN_UnitCellSettings(PropertyGroup):
     edge_color: FloatVectorProperty(
         name="Edge Color",
         description="Unit-cell edge color",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -367,13 +464,9 @@ def _active_root(scene):
     return None
 
 
-def _socket_identifier(node_group, name, in_out='INPUT'):
+def _socket_identifier(node_group, name, in_out="INPUT"):
     for item in node_group.interface.items_tree:
-        if (
-            item.item_type == 'SOCKET'
-            and item.in_out == in_out
-            and item.name == name
-        ):
+        if item.item_type == "SOCKET" and item.in_out == in_out and item.name == name:
             return item.identifier
     raise RuntimeError(f"Geometry Nodes socket '{name}' was not created.")
 
@@ -385,7 +478,8 @@ def _ensure_shade_smooth(node_group):
             return
     instance = next(
         (
-            node for node in node_group.nodes
+            node
+            for node in node_group.nodes
             if node.bl_idname == "GeometryNodeInstanceOnPoints"
         ),
         None,
@@ -394,7 +488,8 @@ def _ensure_shade_smooth(node_group):
         return
     link = next(
         (
-            link for link in node_group.links
+            link
+            for link in node_group.links
             if link.to_node == instance and link.to_socket.name == "Instance"
         ),
         None,
@@ -421,19 +516,19 @@ def _make_node_group(name, is_bond_group):
 
     node_group = bpy.data.node_groups.new(name, "GeometryNodeTree")
     geometry_in = node_group.interface.new_socket(
-        name="Geometry", in_out='INPUT', socket_type="NodeSocketGeometry"
+        name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
     )
     radius_in = node_group.interface.new_socket(
-        name="Radius", in_out='INPUT', socket_type="NodeSocketFloat"
+        name="Radius", in_out="INPUT", socket_type="NodeSocketFloat"
     )
     radius_in.default_value = (
         _DEFAULT_BOND_RADIUS if is_bond_group else 0.5 * _DISPLAY_SCALE
     )
     material_in = node_group.interface.new_socket(
-        name="Material", in_out='INPUT', socket_type="NodeSocketMaterial"
+        name="Material", in_out="INPUT", socket_type="NodeSocketMaterial"
     )
     geometry_out = node_group.interface.new_socket(
-        name="Geometry", in_out='OUTPUT', socket_type="NodeSocketGeometry"
+        name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
     )
 
     nodes = node_group.nodes
@@ -452,13 +547,19 @@ def _make_node_group(name, is_bond_group):
         curve_to_mesh.location = (-100, 100)
         set_material.location = (150, 100)
         profile.inputs["Resolution"].default_value = 8
-        links.new(group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"])
+        links.new(
+            group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"]
+        )
         links.new(mesh_to_curve.outputs["Curve"], curve_to_mesh.inputs["Curve"])
         links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
         links.new(group_in.outputs[radius_in.identifier], profile.inputs["Radius"])
         links.new(curve_to_mesh.outputs["Mesh"], set_material.inputs["Geometry"])
-        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
-        links.new(set_material.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
+        links.new(
+            group_in.outputs[material_in.identifier], set_material.inputs["Material"]
+        )
+        links.new(
+            set_material.outputs["Geometry"], group_out.inputs[geometry_out.identifier]
+        )
     else:
         ico = nodes.new("GeometryNodeMeshIcoSphere")
         set_material = nodes.new("GeometryNodeSetMaterial")
@@ -472,10 +573,14 @@ def _make_node_group(name, is_bond_group):
         links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
         links.new(group_in.outputs[radius_in.identifier], ico.inputs["Radius"])
         links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
-        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
+        links.new(
+            group_in.outputs[material_in.identifier], set_material.inputs["Material"]
+        )
         links.new(set_material.outputs["Geometry"], smooth.inputs["Geometry"])
         links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
-        links.new(instance.outputs["Instances"], group_out.inputs[geometry_out.identifier])
+        links.new(
+            instance.outputs["Instances"], group_out.inputs[geometry_out.identifier]
+        )
     return node_group
 
 
@@ -483,9 +588,9 @@ def _current_model(scene=None):
     """Return the active rendering model name."""
     if scene is None:
         scene = getattr(bpy.context, "scene", None)
-    model = getattr(scene, "cgn_model", 'BALL_STICK') if scene else 'BALL_STICK'
+    model = getattr(scene, "cgn_model", "BALL_STICK") if scene else "BALL_STICK"
     if model not in {item[0] for item in _MODEL_ITEMS}:
-        model = 'BALL_STICK'
+        model = "BALL_STICK"
     return model
 
 
@@ -493,13 +598,11 @@ def _atom_radius(vdw_radius, model=None):
     """Display-space atom radius for the active model."""
     if model is None:
         model = _current_model()
-    if model == 'WIRE_STICKS':
+    if model == "WIRE_STICKS":
         scene = getattr(bpy.context, "scene", None)
-        wire_radius = getattr(
-            scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT
-        )
+        wire_radius = getattr(scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT)
         return float(wire_radius) * _DISPLAY_SCALE
-    if model == 'SPACE_FILLING':
+    if model == "SPACE_FILLING":
         factor = _SPACE_FILLING_ATOM_VDW_FACTOR
     else:
         factor = _BALL_ATOM_VDW_FACTOR
@@ -510,14 +613,12 @@ def _bond_radius(vdw_a, vdw_b, model=None):
     """Display-space bond radius for the active model."""
     if model is None:
         model = _current_model()
-    if model == 'WIRE_STICKS':
+    if model == "WIRE_STICKS":
         scene = getattr(bpy.context, "scene", None)
-        wire_radius = getattr(
-            scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT
-        )
+        wire_radius = getattr(scene, "cgn_wire_sticks_radius", _WIRE_RADIUS_DEFAULT)
         return float(wire_radius) * _DISPLAY_SCALE
     mean_vdw = 0.5 * (float(vdw_a) + float(vdw_b))
-    if model == 'ELLIPSOID':
+    if model == "ELLIPSOID":
         factor = _ELLIPSOID_BOND_VDW_FACTOR
     else:
         factor = _BOND_VDW_FACTOR
@@ -530,9 +631,8 @@ def _ellipsoid_probability_factor(probability):
 
     def chi_square_3_cdf(value):
         root = math.sqrt(value / 2.0)
-        return (
-            math.erf(root)
-            - math.sqrt(2.0 * value / math.pi) * math.exp(-value / 2.0)
+        return math.erf(root) - math.sqrt(2.0 * value / math.pi) * math.exp(
+            -value / 2.0
         )
 
     lower = 0.0
@@ -564,7 +664,9 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
         u11, u22, u33, u12, u13, u23 = (float(value) for value in values)
         if (
             all(math.isfinite(value) for value in values)
-            and u11 > 0.0 and u22 > 0.0 and u33 > 0.0
+            and u11 > 0.0
+            and u22 > 0.0
+            and u33 > 0.0
         ):
             tensor = numpy.array(
                 (
@@ -578,12 +680,10 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
                 eigenvalues, eigenvectors = numpy.linalg.eigh(tensor)
                 eigenvalues = numpy.clip(eigenvalues, 0.0, None)
                 axes = numpy.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
-                axes = numpy.maximum(
-                    axes * _DISPLAY_SCALE * size_scale, 1e-4
-                )
+                axes = numpy.maximum(axes * _DISPLAY_SCALE * size_scale, 1e-4)
                 if numpy.linalg.det(eigenvectors) < 0.0:
                     eigenvectors[:, 2] *= -1.0
-                rotation = Matrix(eigenvectors.tolist()).to_euler('XYZ')
+                rotation = Matrix(eigenvectors.tolist()).to_euler("XYZ")
                 return (
                     tuple(float(value) for value in axes),
                     (float(rotation.x), float(rotation.y), float(rotation.z)),
@@ -591,9 +691,7 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
             except Exception:
                 pass
 
-    radius = _atom_radius(
-        atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), 'BALL_STICK'
-    )
+    radius = _atom_radius(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), "BALL_STICK")
     radius *= size_scale
     return (radius, radius, radius), (0.0, 0.0, 0.0)
 
@@ -605,20 +703,19 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     vertices = [(0.0, 0.0, 1.0)]
 
     def ring_index(latitude, longitude):
-        return (
-            1 + (latitude - 1) * longitude_steps
-            + longitude % longitude_steps
-        )
+        return 1 + (latitude - 1) * longitude_steps + longitude % longitude_steps
 
     for latitude in range(1, latitude_steps):
         theta = math.pi * latitude / latitude_steps
         for longitude in range(longitude_steps):
             phi = 2.0 * math.pi * longitude / longitude_steps
-            vertices.append((
-                math.sin(theta) * math.cos(phi),
-                math.sin(theta) * math.sin(phi),
-                math.cos(theta),
-            ))
+            vertices.append(
+                (
+                    math.sin(theta) * math.cos(phi),
+                    math.sin(theta) * math.sin(phi),
+                    math.cos(theta),
+                )
+            )
     south = len(vertices)
     vertices.append((0.0, 0.0, -1.0))
     faces = []
@@ -637,10 +734,13 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
         smooth_faces.append(True)
 
     for longitude in range(longitude_steps):
-        add_sphere_face((
-            0, ring_index(1, longitude),
-            ring_index(1, longitude + 1),
-        ))
+        add_sphere_face(
+            (
+                0,
+                ring_index(1, longitude),
+                ring_index(1, longitude + 1),
+            )
+        )
     for latitude in range(1, latitude_steps - 1):
         for longitude in range(longitude_steps):
             current = ring_index(latitude, longitude)
@@ -650,21 +750,24 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
             add_sphere_face((current, next_latitude, next_both))
             add_sphere_face((current, next_both, next_longitude))
     for longitude in range(longitude_steps):
-        add_sphere_face((
-            ring_index(latitude_steps - 1, longitude),
-            south,
-            ring_index(latitude_steps - 1, longitude + 1),
-        ))
+        add_sphere_face(
+            (
+                ring_index(latitude_steps - 1, longitude),
+                south,
+                ring_index(latitude_steps - 1, longitude + 1),
+            )
+        )
 
     inner_center = len(vertices)
     vertices.append((0.0, 0.0, 0.0))
 
     def add_inner_fan(boundary, reverse=False):
         for index in range(len(boundary) - 1):
-            first, second = boundary[index:index + 2]
+            first, second = boundary[index : index + 2]
             face = (
                 (inner_center, second, first)
-                if reverse else (inner_center, first, second)
+                if reverse
+                else (inner_center, first, second)
             )
             faces.append(face)
             face_types.append((False, True, False))
@@ -676,10 +779,7 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
         ring_index(latitude, quarter_longitude)
         for latitude in range(1, half_latitude + 1)
     ]
-    y_cut = [0] + [
-        ring_index(latitude, 0)
-        for latitude in range(1, half_latitude + 1)
-    ]
+    y_cut = [0] + [ring_index(latitude, 0) for latitude in range(1, half_latitude + 1)]
     z_cut = [
         ring_index(half_latitude, longitude)
         for longitude in range(quarter_longitude + 1)
@@ -715,39 +815,43 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
             point, radial, normal = ellipse(angle)
             for side in range(tube_sides):
                 cross_angle = 2.0 * math.pi * side / tube_sides
-                vertices.append(tuple(
-                    point[axis] * 1.004
-                    + tube_radius * (
-                        math.cos(cross_angle) * radial[axis]
-                        + math.sin(cross_angle) * normal[axis]
+                vertices.append(
+                    tuple(
+                        point[axis] * 1.004
+                        + tube_radius
+                        * (
+                            math.cos(cross_angle) * radial[axis]
+                            + math.sin(cross_angle) * normal[axis]
+                        )
+                        for axis in range(3)
                     )
-                    for axis in range(3)
-                ))
+                )
         for segment in range(tube_segments):
             for side in range(tube_sides):
                 current = start + segment * tube_sides + side
-                next_side = (
-                    start + segment * tube_sides
-                    + (side + 1) % tube_sides
-                )
+                next_side = start + segment * tube_sides + (side + 1) % tube_sides
                 next_segment = (
-                    start + ((segment + 1) % tube_segments) * tube_sides
-                    + side
+                    start + ((segment + 1) % tube_segments) * tube_sides + side
                 )
                 next_both = (
-                    start + ((segment + 1) % tube_segments) * tube_sides
+                    start
+                    + ((segment + 1) % tube_segments) * tube_sides
                     + (side + 1) % tube_sides
                 )
                 if plane_index == 1:
-                    faces.extend((
-                        (current, next_both, next_segment),
-                        (current, next_side, next_both),
-                    ))
+                    faces.extend(
+                        (
+                            (current, next_both, next_segment),
+                            (current, next_side, next_both),
+                        )
+                    )
                 else:
-                    faces.extend((
-                        (current, next_segment, next_both),
-                        (current, next_both, next_side),
-                    ))
+                    faces.extend(
+                        (
+                            (current, next_segment, next_both),
+                            (current, next_both, next_side),
+                        )
+                    )
                 face_types.extend(((False, False, True),) * 2)
                 smooth_faces.extend((True, True))
 
@@ -759,7 +863,7 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
         ("cgn_ortep_inner", 1),
         ("cgn_ortep_ellipse", 2),
     ):
-        attribute = mesh.attributes.new(name, 'BOOLEAN', 'FACE')
+        attribute = mesh.attributes.new(name, "BOOLEAN", "FACE")
         for polygon_index, face_type in enumerate(face_types):
             attribute.data[polygon_index].value = face_type[flag_index]
     for polygon, smooth in zip(mesh.polygons, smooth_faces):
@@ -778,7 +882,7 @@ def _ensure_ortep_template():
             _build_ortep_template_mesh(scene.cgn_ortep_ellipse_thickness),
         )
     elif (
-        obj.type != 'MESH'
+        obj.type != "MESH"
         or obj.data.get("cgn_ortep_template_version") != 3
         or not math.isclose(
             float(obj.data.get("cgn_ortep_ellipse_thickness", -1.0)),
@@ -826,12 +930,10 @@ def _make_ellipsoid_node_group():
     if node_group is not None:
         return node_group
 
-    node_group = bpy.data.node_groups.new(
-        _NODE_GROUP_ELLIPSOIDS, "GeometryNodeTree"
-    )
+    node_group = bpy.data.node_groups.new(_NODE_GROUP_ELLIPSOIDS, "GeometryNodeTree")
     sockets = {}
     sockets["Geometry"] = node_group.interface.new_socket(
-        name="Geometry", in_out='INPUT', socket_type="NodeSocketGeometry"
+        name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
     )
     for name, socket_type in (
         ("Material", "NodeSocketMaterial"),
@@ -841,11 +943,11 @@ def _make_ellipsoid_node_group():
     ):
         sockets[name] = node_group.interface.new_socket(
             name=name,
-            in_out='INPUT',
+            in_out="INPUT",
             socket_type=socket_type,
         )
     output_geometry = node_group.interface.new_socket(
-        name="Geometry", in_out='OUTPUT', socket_type="NodeSocketGeometry"
+        name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
     )
     sockets["Probability Scale"].default_value = 1.0
 
@@ -856,32 +958,34 @@ def _make_ellipsoid_node_group():
     group_in.location = (-1050, 100)
     group_out.location = (800, 100)
     object_info = nodes.new("GeometryNodeObjectInfo")
-    object_info.transform_space = 'ORIGINAL'
+    object_info.transform_space = "ORIGINAL"
     object_info.inputs["Object"].default_value = _ensure_ortep_template()
     object_info.inputs["As Instance"].default_value = False
     object_info.location = (-800, -220)
     scale_attribute = nodes.new("GeometryNodeInputNamedAttribute")
     rotation_attribute = nodes.new("GeometryNodeInputNamedAttribute")
-    scale_attribute.data_type = 'FLOAT_VECTOR'
+    scale_attribute.data_type = "FLOAT_VECTOR"
     scale_attribute.inputs["Name"].default_value = "cgn_scale"
     scale_attribute.location = (-800, 240)
-    rotation_attribute.data_type = 'FLOAT_VECTOR'
+    rotation_attribute.data_type = "FLOAT_VECTOR"
     rotation_attribute.inputs["Name"].default_value = "cgn_rotation"
     rotation_attribute.location = (-800, 450)
     vector_scale = nodes.new("ShaderNodeVectorMath")
-    vector_scale.operation = 'SCALE'
+    vector_scale.operation = "SCALE"
     vector_scale.location = (-350, 240)
     instance = nodes.new("GeometryNodeInstanceOnPoints")
     instance.location = (500, 100)
 
     material_nodes = []
-    for index, (attribute_name, material_name) in enumerate((
-        ("cgn_ortep_surface", "Material"),
-        ("cgn_ortep_inner", "Inner Face Material"),
-        ("cgn_ortep_ellipse", "Ellipse Material"),
-    )):
+    for index, (attribute_name, material_name) in enumerate(
+        (
+            ("cgn_ortep_surface", "Material"),
+            ("cgn_ortep_inner", "Inner Face Material"),
+            ("cgn_ortep_ellipse", "Ellipse Material"),
+        )
+    ):
         named_attribute = nodes.new("GeometryNodeInputNamedAttribute")
-        named_attribute.data_type = 'BOOLEAN'
+        named_attribute.data_type = "BOOLEAN"
         named_attribute.inputs["Name"].default_value = attribute_name
         set_material = nodes.new("GeometryNodeSetMaterial")
         set_material.location = (-400 + index * 220, -220)
@@ -905,10 +1009,10 @@ def _make_ellipsoid_node_group():
         material_nodes[1].outputs["Geometry"],
         material_nodes[2].inputs["Geometry"],
     )
+    links.new(material_nodes[2].outputs["Geometry"], instance.inputs["Instance"])
     links.new(
-        material_nodes[2].outputs["Geometry"], instance.inputs["Instance"]
+        group_in.outputs[sockets["Geometry"].identifier], instance.inputs["Points"]
     )
-    links.new(group_in.outputs[sockets["Geometry"].identifier], instance.inputs["Points"])
     links.new(scale_attribute.outputs["Attribute"], vector_scale.inputs[0])
     links.new(
         group_in.outputs[sockets["Probability Scale"].identifier],
@@ -926,18 +1030,12 @@ def _make_ellipsoid_node_group():
 def _add_ellipsoid_attributes(mesh, atoms):
     """Store per-point semi-axes and rotations on an atom point mesh."""
     scene = getattr(bpy.context, "scene", None)
-    hydrogen_scale = (
-        scene.cgn_hydrogen_scale if scene is not None else 1.0
-    )
-    scale_attribute = mesh.attributes.new("cgn_scale", 'FLOAT_VECTOR', 'POINT')
-    rotation_attribute = mesh.attributes.new(
-        "cgn_rotation", 'FLOAT_VECTOR', 'POINT'
-    )
+    hydrogen_scale = scene.cgn_hydrogen_scale if scene is not None else 1.0
+    scale_attribute = mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
+    rotation_attribute = mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
     for index, atom in enumerate(atoms):
         size_scale = (
-            hydrogen_scale
-            if str(atom.get("element", "")).upper() == "H"
-            else 1.0
+            hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
         )
         axes, rotation = _ellipsoid_base_components(atom, size_scale)
         scale_attribute.data[index].vector = axes
@@ -946,7 +1044,7 @@ def _add_ellipsoid_attributes(mesh, atoms):
 
 def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
     root = _active_root(scene)
-    if root is None or scene.cgn_model != 'ELLIPSOID':
+    if root is None or scene.cgn_model != "ELLIPSOID":
         return
     for obj in root.objects:
         if (
@@ -968,9 +1066,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
                 direction = world_to_object @ view_direction
             else:
                 continue
-            rotation = Euler(
-                rotation_attribute.data[index].vector, 'XYZ'
-            ).to_matrix()
+            rotation = Euler(rotation_attribute.data[index].vector, "XYZ").to_matrix()
             local_direction = rotation.transposed() @ direction
             current = scale_attribute.data[index].vector
             magnitudes = tuple(abs(value) for value in current)
@@ -986,7 +1082,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
                 changed = True
         if changed:
             obj.data.update()
-            obj.update_tag(refresh={'OBJECT', 'DATA'})
+            obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
 @persistent
@@ -997,10 +1093,8 @@ def _orient_ortep_for_render(scene):
 
 
 def _orient_ortep_to_camera(scene, camera):
-    if camera.data.type == 'ORTHO':
-        camera_direction = (
-            camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
-        )
+    if camera.data.type == "ORTHO":
+        camera_direction = camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
         _orient_ortep_openings(scene, view_direction=camera_direction)
     else:
         _orient_ortep_openings(
@@ -1010,18 +1104,18 @@ def _orient_ortep_to_camera(scene, camera):
 
 def _ortep_view_signature(view_direction=None, camera=None):
     if camera is not None:
-        if camera.data.type == 'ORTHO':
+        if camera.data.type == "ORTHO":
             direction = camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
-            return ('ortho', *(round(value, 4) for value in direction))
+            return ("ortho", *(round(value, 4) for value in direction))
         position = camera.matrix_world.translation
-        return ('camera', *(round(value, 4) for value in position))
+        return ("camera", *(round(value, 4) for value in position))
     direction = view_direction.normalized()
-    return ('view', *(round(value, 4) for value in direction))
+    return ("view", *(round(value, 4) for value in direction))
 
 
 def _update_ortep_view_orientation():
     scene = bpy.context.scene
-    if scene is None or scene.cgn_model != 'ELLIPSOID':
+    if scene is None or scene.cgn_model != "ELLIPSOID":
         return 0.25
     view_direction = None
     camera = None
@@ -1032,15 +1126,13 @@ def _update_ortep_view_orientation():
         if screen is None:
             continue
         for area in screen.areas:
-            if area.type != 'VIEW_3D':
+            if area.type != "VIEW_3D":
                 continue
             region = area.spaces.active.region_3d
-            if region.view_perspective == 'CAMERA' and scene.camera is not None:
+            if region.view_perspective == "CAMERA" and scene.camera is not None:
                 camera = scene.camera
             else:
-                view_direction = (
-                    region.view_rotation @ Vector((0.0, 0.0, 1.0))
-                )
+                view_direction = region.view_rotation @ Vector((0.0, 0.0, 1.0))
             break
         if view_direction is not None or camera is not None:
             break
@@ -1111,27 +1203,26 @@ def _atom_style(scene, element):
 
 
 def _add_geometry_nodes_modifier(
-    obj, node_group, radius=None, material=None, probability=None,
-    inner_material=None, ellipse_material=None,
+    obj,
+    node_group,
+    radius=None,
+    material=None,
+    probability=None,
+    inner_material=None,
+    ellipse_material=None,
 ):
-    modifier = obj.modifiers.new("Geometry Nodes", 'NODES')
+    modifier = obj.modifiers.new("Geometry Nodes", "NODES")
     modifier.node_group = node_group
     if radius is not None:
         _set_modifier_input(modifier, node_group, "Radius", radius)
     if material is not None:
         _set_modifier_input(modifier, node_group, "Material", material)
     if probability is not None:
-        _set_modifier_input(
-            modifier, node_group, "Probability Scale", probability
-        )
+        _set_modifier_input(modifier, node_group, "Probability Scale", probability)
     if inner_material is not None:
-        _set_modifier_input(
-            modifier, node_group, "Inner Face Material", inner_material
-        )
+        _set_modifier_input(modifier, node_group, "Inner Face Material", inner_material)
     if ellipse_material is not None:
-        _set_modifier_input(
-            modifier, node_group, "Ellipse Material", ellipse_material
-        )
+        _set_modifier_input(modifier, node_group, "Ellipse Material", ellipse_material)
 
 
 def _clear_collection(collection):
@@ -1168,9 +1259,7 @@ def _materialize_atoms(sites, cell_matrix, instances, initial_count=0):
             int(instances[offset + 2]),
             int(instances[offset + 3]),
         )
-        frac = [
-            float(site["frac"][axis]) + translation[axis] for axis in range(3)
-        ]
+        frac = [float(site["frac"][axis]) + translation[axis] for axis in range(3)]
         cart = [
             frac[0] * cell_matrix[axis]
             + frac[1] * cell_matrix[3 + axis]
@@ -1178,12 +1267,14 @@ def _materialize_atoms(sites, cell_matrix, instances, initial_count=0):
             for axis in range(3)
         ]
         atom = dict(site)
-        atom.update({
-            "frac": frac,
-            "cart": cart,
-            "p1_index": site_index,
-            "growth_translation": list(translation),
-        })
+        atom.update(
+            {
+                "frac": frac,
+                "cart": cart,
+                "p1_index": site_index,
+                "growth_translation": list(translation),
+            }
+        )
         if index >= initial_count:
             atom["label"] = (
                 f"{site.get('source_label', site.get('label', 'X'))} "
@@ -1252,9 +1343,7 @@ def _apply_hydrogen_visibility(root, visible):
 
 
 def _update_show_hydrogens(scene, context):
-    _apply_hydrogen_visibility(
-        _active_root(scene), scene.cgn_show_hydrogens
-    )
+    _apply_hydrogen_visibility(_active_root(scene), scene.cgn_show_hydrogens)
 
 
 def _update_model(scene, context):
@@ -1264,9 +1353,7 @@ def _update_model(scene, context):
         return
     try:
         sites, instances, cell_matrix, initial_count = _structure_tables(root)
-        atoms = _materialize_atoms(
-            sites, cell_matrix, instances, initial_count
-        )
+        atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
         _rebuild_atom_objects(root, atoms)
         _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
         _apply_hydrogen_visibility(root, scene.cgn_show_hydrogens)
@@ -1276,12 +1363,12 @@ def _update_model(scene, context):
 
 
 def _update_hydrogen_scale(scene, context):
-    if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
+    if scene.cgn_model in {"ELLIPSOID", "SPACE_FILLING"}:
         _update_model(scene, context)
 
 
 def _update_wire_sticks_radius(scene, context):
-    if scene.cgn_model != 'WIRE_STICKS':
+    if scene.cgn_model != "WIRE_STICKS":
         return
     root = _active_root(scene)
     if root is None:
@@ -1291,11 +1378,9 @@ def _update_wire_sticks_radius(scene, context):
         if obj.get("cgn_role") not in {"atoms", "bonds"}:
             continue
         for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group is not None:
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Radius", radius
-                )
-                obj.update_tag(refresh={'OBJECT', 'DATA'})
+            if modifier.type == "NODES" and modifier.node_group is not None:
+                _set_modifier_input(modifier, modifier.node_group, "Radius", radius)
+                obj.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
@@ -1303,10 +1388,10 @@ def _update_wire_sticks_radius(scene, context):
 def _update_ellipsoid_probability(scene, context):
     """Rescale existing ellipsoids without rebuilding geometry."""
     root = _active_root(scene)
-    if root is None or _current_model(scene) != 'ELLIPSOID':
+    if root is None or _current_model(scene) != "ELLIPSOID":
         return
     if any(
-        modifier.type == 'NODES'
+        modifier.type == "NODES"
         and modifier.node_group is not None
         and modifier.node_group.name == _LEGACY_NODE_GROUP_ELLIPSOIDS
         for obj in root.objects
@@ -1315,9 +1400,7 @@ def _update_ellipsoid_probability(scene, context):
     ):
         _update_model(scene, context)
         return
-    factor = _ellipsoid_probability_factor(
-        scene.cgn_ellipsoid_probability
-    )
+    factor = _ellipsoid_probability_factor(scene.cgn_ellipsoid_probability)
     for obj in root.objects:
         if obj.get("cgn_role") != "atoms":
             continue
@@ -1326,20 +1409,22 @@ def _update_ellipsoid_probability(scene, context):
         updated = False
         for modifier in obj.modifiers:
             if (
-                modifier.type == 'NODES'
+                modifier.type == "NODES"
                 and modifier.node_group is not None
                 and modifier.node_group.name == _NODE_GROUP_ELLIPSOIDS
             ):
                 try:
                     _set_modifier_input(
-                        modifier, modifier.node_group,
-                        "Probability Scale", atom_factor,
+                        modifier,
+                        modifier.node_group,
+                        "Probability Scale",
+                        atom_factor,
                     )
                     updated = True
                 except Exception:
                     traceback.print_exc()
         if updated:
-            obj.update_tag(refresh={'OBJECT', 'DATA'})
+            obj.update_tag(refresh={"OBJECT", "DATA"})
     try:
         context.view_layer.update()
     except Exception:
@@ -1353,15 +1438,13 @@ def _make_atom_objects(root, atoms):
         by_element.setdefault(element, []).append(atom)
 
     model = _current_model()
-    ellipsoids = model == 'ELLIPSOID'
+    ellipsoids = model == "ELLIPSOID"
     scene = getattr(bpy.context, "scene", None)
     if scene is not None:
         _ORTEP_VIEW_SIGNATURES.pop(scene.as_pointer(), None)
     if ellipsoids:
         node_group = _make_ellipsoid_node_group()
-        hydrogen_node_group = _make_node_group(
-            _NODE_GROUP_ATOMS, is_bond_group=False
-        )
+        hydrogen_node_group = _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False)
         scene = getattr(bpy.context, "scene", None)
         inner_material, ellipse_material = _make_ortep_materials(scene)
         probability = _ellipsoid_probability_factor(
@@ -1378,16 +1461,13 @@ def _make_atom_objects(root, atoms):
         style = _atom_style(scene, element)
         size_scale = (
             scene.cgn_hydrogen_scale
-            if element == "H" and model in {'ELLIPSOID', 'SPACE_FILLING'}
+            if element == "H" and model in {"ELLIPSOID", "SPACE_FILLING"}
             else 1.0
         )
         is_ortep_ellipsoid = ellipsoids and element != "H"
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
-            [
-                _display_point(atom["cart"])
-                for atom in element_atoms
-            ],
+            [_display_point(atom["cart"]) for atom in element_atoms],
             [],
             [],
         )
@@ -1404,9 +1484,7 @@ def _make_atom_objects(root, atoms):
         if element == "H" and not _show_hydrogens():
             obj.hide_viewport = True
             obj.hide_render = True
-        material = _make_material(
-            f"CGN_Mat_{element}", style.color, style.roughness
-        )
+        material = _make_material(f"CGN_Mat_{element}", style.color, style.roughness)
         if is_ortep_ellipsoid:
             _add_geometry_nodes_modifier(
                 obj,
@@ -1425,16 +1503,14 @@ def _make_atom_objects(root, atoms):
                     * size_scale
                     * _DISPLAY_SCALE
                 )
-            elif model == 'BALL_STICK':
+            elif model == "BALL_STICK":
                 node_group_for_atom = node_group
                 radius = obj["cgn_vdw_radius"] * style.size * _DISPLAY_SCALE
             else:
                 node_group_for_atom = node_group
                 radius = _atom_radius(obj["cgn_vdw_radius"], model)
                 radius *= size_scale
-            _add_geometry_nodes_modifier(
-                obj, node_group_for_atom, radius, material
-            )
+            _add_geometry_nodes_modifier(obj, node_group_for_atom, radius, material)
 
 
 def _rebuild_atom_objects(root, atoms):
@@ -1456,24 +1532,23 @@ def _update_growth_selection(root, atoms, indices):
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
     selected_atoms = [
-        atoms[index] for index in sorted(set(indices))
-        if 0 <= index < len(atoms)
+        atoms[index] for index in sorted(set(indices)) if 0 <= index < len(atoms)
     ]
     if not selected_atoms:
         return
 
     mesh = bpy.data.meshes.new("CGN_GrowthSelection_Points")
-    mesh.from_pydata(
-        [_display_point(atom["cart"]) for atom in selected_atoms], [], []
-    )
+    mesh.from_pydata([_display_point(atom["cart"]) for atom in selected_atoms], [], [])
     mesh.update()
     obj = bpy.data.objects.new("CGN_GrowthSelection", mesh)
     obj["cgn_role"] = "growth_selection"
     root.objects.link(obj)
     material = _make_material("CGN_GrowthSelection_Material", (1.0, 0.48, 0.02, 1.0))
     _add_geometry_nodes_modifier(
-        obj, _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False),
-        0.9 * _DISPLAY_SCALE, material,
+        obj,
+        _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False),
+        0.9 * _DISPLAY_SCALE,
+        material,
     )
 
 
@@ -1503,15 +1578,18 @@ def _make_unit_cell_face_material(settings=None):
     shader = material.node_tree.nodes.get("Principled BSDF")
     if shader is not None:
         shader.inputs["Base Color"].default_value = (
-            color[0], color[1], color[2], 1.0,
+            color[0],
+            color[1],
+            color[2],
+            1.0,
         )
         shader.inputs["Roughness"].default_value = 0.5
         if "Alpha" in shader.inputs:
             shader.inputs["Alpha"].default_value = alpha
     if hasattr(material, "surface_render_method"):
-        material.surface_render_method = 'BLENDED'
+        material.surface_render_method = "BLENDED"
     elif hasattr(material, "blend_method"):
-        material.blend_method = 'BLEND'
+        material.blend_method = "BLEND"
     if hasattr(material, "show_transparent_back"):
         material.show_transparent_back = True
     material.use_backface_culling = False
@@ -1534,9 +1612,7 @@ def _make_unit_cell_edge_material(settings=None):
 
 def _cell_corner(cell_matrix, fx, fy, fz):
     return tuple(
-        fx * cell_matrix[axis]
-        + fy * cell_matrix[3 + axis]
-        + fz * cell_matrix[6 + axis]
+        fx * cell_matrix[axis] + fy * cell_matrix[3 + axis] + fz * cell_matrix[6 + axis]
         for axis in range(3)
     )
 
@@ -1544,7 +1620,9 @@ def _cell_corner(cell_matrix, fx, fy, fz):
 def _clear_unit_cell(root):
     for obj in list(root.objects):
         if obj.get("cgn_role") not in {
-            "unit_cell_edge", "unit_cell_face", "unit_cell_marker"
+            "unit_cell_edge",
+            "unit_cell_face",
+            "unit_cell_marker",
         }:
             continue
         data = obj.data
@@ -1572,8 +1650,7 @@ def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
         sphere.faces.ensure_lookup_table()
         sphere_vertices = [vertex.co.copy() for vertex in sphere.verts]
         sphere_faces = [
-            tuple(vertex.index for vertex in face.verts)
-            for face in sphere.faces
+            tuple(vertex.index for vertex in face.verts) for face in sphere.faces
         ]
     finally:
         sphere.free()
@@ -1582,16 +1659,11 @@ def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
     for i in range(repeats[0] + 1):
         for j in range(repeats[1] + 1):
             for k in range(repeats[2] + 1):
-                center = Vector(
-                    _display_point(_cell_corner(cell_matrix, i, j, k))
-                )
+                center = Vector(_display_point(_cell_corner(cell_matrix, i, j, k)))
                 base = len(vertices)
-                vertices.extend(
-                    tuple(center + offset) for offset in sphere_vertices
-                )
+                vertices.extend(tuple(center + offset) for offset in sphere_vertices)
                 faces.extend(
-                    tuple(base + index for index in face)
-                    for face in sphere_faces
+                    tuple(base + index for index in face) for face in sphere_faces
                 )
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
@@ -1625,15 +1697,18 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
         if index < (index ^ (1 << bit))
     ]
     face_corners = (
-        (0, 1, 3, 2), (4, 6, 7, 5),
-        (0, 4, 5, 1), (2, 3, 7, 6),
-        (0, 2, 6, 4), (1, 5, 7, 3),
+        (0, 1, 3, 2),
+        (4, 6, 7, 5),
+        (0, 4, 5, 1),
+        (2, 3, 7, 6),
+        (0, 2, 6, 4),
+        (1, 5, 7, 3),
     )
     corners = []
     faces = []
 
-    curve = bpy.data.curves.new("CGN_UnitCell_Edges", 'CURVE')
-    curve.dimensions = '3D'
+    curve = bpy.data.curves.new("CGN_UnitCell_Edges", "CURVE")
+    curve.dimensions = "3D"
     curve.resolution_u = 1
     curve.bevel_resolution = 2
     curve.bevel_depth = thickness * _DISPLAY_SCALE
@@ -1642,23 +1717,18 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
             for tz in range(repeats[2]):
                 base = len(corners)
                 corners.extend(
-                    _display_point(
-                        _cell_corner(
-                            cell_matrix, i + tx, j + ty, k + tz
-                        )
-                    )
+                    _display_point(_cell_corner(cell_matrix, i + tx, j + ty, k + tz))
                     for i in range(2)
                     for j in range(2)
                     for k in range(2)
                 )
                 for first, second in edge_corners:
-                    spline = curve.splines.new('POLY')
+                    spline = curve.splines.new("POLY")
                     spline.points.add(1)
                     spline.points[0].co = (*corners[base + first], 1.0)
                     spline.points[1].co = (*corners[base + second], 1.0)
                 faces.extend(
-                    tuple(base + index for index in face)
-                    for face in face_corners
+                    tuple(base + index for index in face) for face in face_corners
                 )
     curve.materials.append(_make_unit_cell_edge_material(settings))
     edge_obj = bpy.data.objects.new("CGN_UnitCell_Edges", curve)
@@ -1666,9 +1736,7 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     root.objects.link(edge_obj)
 
     marker_mesh = _unit_cell_marker_mesh(cell_matrix, repeats, settings)
-    marker_obj = bpy.data.objects.new(
-        "CGN_UnitCell_CornerMarkers", marker_mesh
-    )
+    marker_obj = bpy.data.objects.new("CGN_UnitCell_CornerMarkers", marker_mesh)
     marker_obj["cgn_role"] = "unit_cell_marker"
     root.objects.link(marker_obj)
 
@@ -1691,9 +1759,7 @@ def _update_unit_cell_objects(
     marker_radius = float(marker_mesh.get("cgn_marker_radius", -1.0))
     expected_radius = thickness * _DISPLAY_SCALE
     if not math.isclose(marker_radius, expected_radius, abs_tol=1e-9):
-        marker_obj.data = _unit_cell_marker_mesh(
-            cell_matrix, repeats, settings
-        )
+        marker_obj.data = _unit_cell_marker_mesh(cell_matrix, repeats, settings)
         if marker_mesh.users == 0:
             bpy.data.meshes.remove(marker_mesh)
     for obj, material in (
@@ -1723,33 +1789,22 @@ def _apply_unit_cell_settings(scene):
     try:
         repeats = tuple(
             max(1, min(_MAX_FILL_REPEATS, int(value)))
-            for value in json.loads(
-                root.get("cgn_cell_pack_repeats", "[1, 1, 1]")
-            )
+            for value in json.loads(root.get("cgn_cell_pack_repeats", "[1, 1, 1]"))
         )
     except (TypeError, ValueError):
         repeats = (1, 1, 1)
     if len(repeats) != 3:
         repeats = (1, 1, 1)
     edge_obj = next(
-        (
-            obj for obj in root.objects
-            if obj.get("cgn_role") == "unit_cell_edge"
-        ),
+        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_edge"),
         None,
     )
     face_obj = next(
-        (
-            obj for obj in root.objects
-            if obj.get("cgn_role") == "unit_cell_face"
-        ),
+        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_face"),
         None,
     )
     marker_obj = next(
-        (
-            obj for obj in root.objects
-            if obj.get("cgn_role") == "unit_cell_marker"
-        ),
+        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_marker"),
         None,
     )
     if edge_obj is None or face_obj is None or marker_obj is None:
@@ -1803,25 +1858,18 @@ def _chemdraw_bond_orders(segments, covalent_radii):
             or radius_b <= 0.0
         ):
             continue
-        distance = math.sqrt(sum(
-            (float(first[axis]) - float(second[axis])) ** 2
-            for axis in range(3)
-        ))
+        distance = math.sqrt(
+            sum((float(first[axis]) - float(second[axis])) ** 2 for axis in range(3))
+        )
         normalized_length = distance / (radius_a + radius_b)
         order = (
-            3 if normalized_length <= 0.83
-            else 2 if normalized_length <= 0.90
-            else 1
+            3 if normalized_length <= 0.83 else 2 if normalized_length <= 0.90 else 1
         )
         if order > 1:
             confidence = (
-                0.83 - normalized_length
-                if order == 3
-                else 0.90 - normalized_length
+                0.83 - normalized_length if order == 3 else 0.90 - normalized_length
             )
-            candidates.append(
-                (confidence, edge_key, order, element_a, element_b)
-            )
+            candidates.append((confidence, edge_key, order, element_a, element_b))
 
     remaining = {
         node: max(
@@ -1871,22 +1919,15 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
         elements[second_key] = element_b
         degrees[first_key] = degrees.get(first_key, 0) + 1
         degrees[second_key] = degrees.get(second_key, 0) + 1
-        all_neighbors.setdefault(first_key, []).append(
-            (second_key, element_b)
+        all_neighbors.setdefault(first_key, []).append((second_key, element_b))
+        all_neighbors.setdefault(second_key, []).append((first_key, element_a))
+        distance = math.sqrt(
+            sum((float(first[axis]) - float(second[axis])) ** 2 for axis in range(3))
         )
-        all_neighbors.setdefault(second_key, []).append(
-            (first_key, element_a)
-        )
-        distance = math.sqrt(sum(
-            (float(first[axis]) - float(second[axis])) ** 2
-            for axis in range(3)
-        ))
         radius_a = float(covalent_radii.get(first_key, 0.0))
         radius_b = float(covalent_radii.get(second_key, 0.0))
         normalized_length = (
-            distance / (radius_a + radius_b)
-            if radius_a + radius_b > 0.0
-            else 0.0
+            distance / (radius_a + radius_b) if radius_a + radius_b > 0.0 else 0.0
         )
         if (
             element_a not in ring_elements
@@ -1917,16 +1958,13 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                 if neighbor != end and degrees[neighbor] > 3:
                     continue
                 if neighbor == end and len(path_edges) in (3, 4):
-                    ring_edges = tuple(sorted((*path_edges, next_edge,
-                                               edge_index)))
+                    ring_edges = tuple(sorted((*path_edges, next_edge, edge_index)))
                     if ring_edges in seen_rings:
                         continue
                     seen_rings.add(ring_edges)
                     ring_distances = [edges[index][2] for index in ring_edges]
                     ring_nodes = {
-                        node
-                        for index in ring_edges
-                        for node in edges[index][:2]
+                        node for index in ring_edges for node in edges[index][:2]
                     }
                     ring_edge_keys = {
                         _bond_edge_key(edges[index][0], edges[index][1])
@@ -1935,12 +1973,9 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                     if (
                         max(ring_distances) - min(ring_distances)
                         > _AROMATIC_BOND_LENGTH_SPREAD_MAX
-                        or not 0.90
-                        <= sum(ring_distances) / len(ring_distances)
-                        <= 0.96
+                        or not 0.90 <= sum(ring_distances) / len(ring_distances) <= 0.96
                         or any(
-                            degrees[node] > 3
-                            or elements[node] not in ring_elements
+                            degrees[node] > 3 or elements[node] not in ring_elements
                             for node in ring_nodes
                         )
                     ):
@@ -1951,9 +1986,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                     ring_has_exocyclic_multiple = False
                     for node in ring_nodes:
                         element = elements[node]
-                        for other, _other_element in all_neighbors.get(
-                            node, ()
-                        ):
+                        for other, _other_element in all_neighbors.get(node, ()):
                             edge_key = tuple(sorted((node, other)))
                             if (
                                 edge_key not in ring_edge_keys
@@ -1972,12 +2005,9 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                                     other_element in _CHEMDRAW_MAX_VALENCE
                                     or other_element == "H"
                                 )
-                                for other, other_element
-                                in all_neighbors.get(node, ())
+                                for other, other_element in all_neighbors.get(node, ())
                             )
-                            pi_electrons += (
-                                2 if has_substituent else 1
-                            )
+                            pi_electrons += 2 if has_substituent else 1
                             if has_substituent:
                                 lone_pair_nodes.add(node)
                             else:
@@ -1986,15 +2016,13 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                             pi_electrons += 2
                     if ring_has_exocyclic_multiple:
                         continue
-                    if (
-                        pi_electrons < 2
-                        or (pi_electrons - 2) % 4 != 0
-                    ):
+                    if pi_electrons < 2 or (pi_electrons - 2) % 4 != 0:
                         if (
                             pi_electrons >= 1
                             and (pi_electrons - 1) % 4 == 0
                             and unsubstituted_nitrogens
                         ):
+
                             def mean_nitrogen_bond_length(node):
                                 lengths = [
                                     math.dist(
@@ -2019,10 +2047,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                             )
                             pi_electrons += 1
                             lone_pair_nodes.add(lone_pair_node)
-                        if (
-                            pi_electrons < 2
-                            or (pi_electrons - 2) % 4 != 0
-                        ):
+                        if pi_electrons < 2 or (pi_electrons - 2) % 4 != 0:
                             continue
                     pi_bond_nodes = {
                         node
@@ -2031,8 +2056,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                         for node in edges[index][:2]
                     }
                     if any(
-                        elements[node] in {"B", "C"}
-                        and node not in pi_bond_nodes
+                        elements[node] in {"B", "C"} and node not in pi_bond_nodes
                         for node in ring_nodes
                     ):
                         continue
@@ -2045,8 +2069,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                     )
                     if (
                         len(singular_values) < 3
-                        or singular_values[-1] / math.sqrt(len(ring_nodes))
-                        > 0.12
+                        or singular_values[-1] / math.sqrt(len(ring_nodes)) > 0.12
                     ):
                         continue
                     centroid = tuple(float(value) for value in centroid_array)
@@ -2059,20 +2082,20 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                             element,
                         ),
                     )
-                    inner_radius = float(np.linalg.norm(
-                        coordinates - centroid_array, axis=1
-                    ).mean())
-                    aromatic_rings.append((
-                        centroid,
-                        tuple(float(value) for value in plane_axes[0]),
-                        tuple(float(value) for value in plane_axes[1]),
-                        inner_radius,
-                        ring_element,
-                    ))
-                    aromatic_edges.update(
-                        _bond_edge_key(
-                            nodes[edges[index][0]], nodes[edges[index][1]]
+                    inner_radius = float(
+                        np.linalg.norm(coordinates - centroid_array, axis=1).mean()
+                    )
+                    aromatic_rings.append(
+                        (
+                            centroid,
+                            tuple(float(value) for value in plane_axes[0]),
+                            tuple(float(value) for value in plane_axes[1]),
+                            inner_radius,
+                            ring_element,
                         )
+                    )
+                    aromatic_edges.update(
+                        _bond_edge_key(nodes[edges[index][0]], nodes[edges[index][1]])
                         for index in ring_edges
                     )
                     continue
@@ -2089,7 +2112,8 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
 
 
 def _aromatic_torus_segments(
-    aromatic_rings, radius_scale=_AROMATIC_TORUS_SIZE_DEFAULT,
+    aromatic_rings,
+    radius_scale=_AROMATIC_TORUS_SIZE_DEFAULT,
     sample_count=48,
 ):
     rings = []
@@ -2097,23 +2121,26 @@ def _aromatic_torus_segments(
         points = []
         for sample in range(sample_count):
             angle = 2.0 * math.pi * sample / sample_count
-            points.append(tuple(
-                center[axis]
-                + radius * radius_scale * (
-                    math.cos(angle) * axis_u[axis]
-                    + math.sin(angle) * axis_v[axis]
+            points.append(
+                tuple(
+                    center[axis]
+                    + radius
+                    * radius_scale
+                    * (math.cos(angle) * axis_u[axis] + math.sin(angle) * axis_v[axis])
+                    for axis in range(3)
                 )
-                for axis in range(3)
-            ))
-        rings.append([
-            (
-                first,
-                points[(index + 1) % sample_count],
-                element,
-                element,
             )
-            for index, first in enumerate(points)
-        ])
+        rings.append(
+            [
+                (
+                    first,
+                    points[(index + 1) % sample_count],
+                    element,
+                    element,
+                )
+                for index, first in enumerate(points)
+            ]
+        )
     return rings
 
 
@@ -2144,26 +2171,18 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         if length <= 1e-8:
             continue
         axis = tuple(value / length for value in delta)
-        midpoint = tuple(
-            0.5 * (first[index] + second[index]) for index in range(3)
-        )
+        midpoint = tuple(0.5 * (first[index] + second[index]) for index in range(3))
         neighbor_vectors = []
-        for node, opposite in (
-            (first_key, second_key), (second_key, first_key)
-        ):
+        for node, opposite in ((first_key, second_key), (second_key, first_key)):
             for neighbor in neighbors.get(node, ()):
                 if neighbor == opposite:
                     continue
                 vector = tuple(
-                    points[neighbor][index] - midpoint[index]
-                    for index in range(3)
+                    points[neighbor][index] - midpoint[index] for index in range(3)
                 )
-                projection = sum(
-                    vector[index] * axis[index] for index in range(3)
-                )
+                projection = sum(vector[index] * axis[index] for index in range(3))
                 vector = tuple(
-                    vector[index] - projection * axis[index]
-                    for index in range(3)
+                    vector[index] - projection * axis[index] for index in range(3)
                 )
                 if sum(value * value for value in vector) > 1e-12:
                     neighbor_vectors.append(vector)
@@ -2174,21 +2193,16 @@ def _multiple_bond_plane_directions(segments, bond_orders):
             )
             perpendicular = tuple(float(value) for value in right[0])
         else:
-            reference_axis = min(
-                range(3), key=lambda index: abs(axis[index])
-            )
+            reference_axis = min(range(3), key=lambda index: abs(axis[index]))
             reference = tuple(
-                1.0 if index == reference_axis else 0.0
-                for index in range(3)
+                1.0 if index == reference_axis else 0.0 for index in range(3)
             )
             perpendicular = (
                 axis[1] * reference[2] - axis[2] * reference[1],
                 axis[2] * reference[0] - axis[0] * reference[2],
                 axis[0] * reference[1] - axis[1] * reference[0],
             )
-        perpendicular_length = math.sqrt(
-            sum(value * value for value in perpendicular)
-        )
+        perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
         if perpendicular_length > 1e-8:
             directions[edge_key] = tuple(
                 value / perpendicular_length for value in perpendicular
@@ -2206,9 +2220,7 @@ def _chemdraw_segments(
     multiple_bond_directions = multiple_bond_directions or {}
     rendered = []
     for first, second, element_a, element_b in segments:
-        delta = tuple(
-            float(second[axis]) - float(first[axis]) for axis in range(3)
-        )
+        delta = tuple(float(second[axis]) - float(first[axis]) for axis in range(3))
         length = math.sqrt(sum(value * value for value in delta))
         if length <= 1e-8:
             rendered.append((first, second, element_a, element_b, 1))
@@ -2221,18 +2233,13 @@ def _chemdraw_segments(
             continue
 
         if order == 1:
-            rendered.append((
-                first, second, element_a, element_b, order
-            ))
+            rendered.append((first, second, element_a, element_b, order))
             continue
         perpendicular = multiple_bond_directions.get(edge_key)
         if perpendicular is None:
-            reference_axis = min(
-                range(3), key=lambda axis: abs(direction[axis])
-            )
+            reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
             reference = tuple(
-                1.0 if axis == reference_axis else 0.0
-                for axis in range(3)
+                1.0 if axis == reference_axis else 0.0 for axis in range(3)
             )
             perpendicular = (
                 direction[1] * reference[2] - direction[2] * reference[1],
@@ -2247,24 +2254,24 @@ def _chemdraw_segments(
             )
         spacing = float(bond_spacing)
         offsets = (
-            (-spacing / 2.0, spacing / 2.0)
-            if order == 2
-            else (-spacing, 0.0, spacing)
+            (-spacing / 2.0, spacing / 2.0) if order == 2 else (-spacing, 0.0, spacing)
         )
         for offset in offsets:
-            rendered.append((
-                tuple(
-                    float(first[axis]) + perpendicular[axis] * offset
-                    for axis in range(3)
-                ),
-                tuple(
-                    float(second[axis]) + perpendicular[axis] * offset
-                    for axis in range(3)
-                ),
-                element_a,
-                element_b,
-                order,
-            ))
+            rendered.append(
+                (
+                    tuple(
+                        float(first[axis]) + perpendicular[axis] * offset
+                        for axis in range(3)
+                    ),
+                    tuple(
+                        float(second[axis]) + perpendicular[axis] * offset
+                        for axis in range(3)
+                    ),
+                    element_a,
+                    element_b,
+                    order,
+                )
+            )
     return rendered
 
 
@@ -2309,11 +2316,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
         if setting.enabled and setting.max_distance >= setting.min_distance:
             enabled[key] = (setting.min_distance, setting.max_distance)
     settings_signature = _connectivity_settings_signature(pair_settings)
-    if model == 'SPACE_FILLING' or not enabled or len(atoms) < 2:
+    if model == "SPACE_FILLING" or not enabled or len(atoms) < 2:
         start_index = 0
-    max_distance = max(
-        (pair[1] for pair in enabled.values()), default=0.0
-    )
+    max_distance = max((pair[1] for pair in enabled.values()), default=0.0)
     if max_distance <= 0:
         start_index = 0
     cell_width = max(max_distance, 1e-6)
@@ -2337,7 +2342,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 if mesh.users == 0:
                     bpy.data.meshes.remove(mesh)
 
-    if model == 'SPACE_FILLING' or not enabled or len(atoms) < 2 or max_distance <= 0:
+    if model == "SPACE_FILLING" or not enabled or len(atoms) < 2 or max_distance <= 0:
         _BOND_SPATIAL_CACHE = None
         root["cgn_bond_settings_signature"] = settings_signature
         return 0
@@ -2377,14 +2382,10 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
-                    neighbor_cell = (
-                        cell[0] + dx, cell[1] + dy, cell[2] + dz
-                    )
+                    neighbor_cell = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
                     for other_index in buckets.get(neighbor_cell, ()):
                         other = atoms[other_index]
-                        key = _pair_key(
-                            atom.get("element"), other.get("element")
-                        )
+                        key = _pair_key(atom.get("element"), other.get("element"))
                         bounds = enabled.get(key)
                         if bounds is None:
                             continue
@@ -2421,35 +2422,23 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
 
     node_group = _make_node_group(_NODE_GROUP_BONDS, is_bond_group=True)
     bond_count = 0
-    all_segments = [
-        segment for segments in by_pair.values() for segment in segments
-    ]
+    all_segments = [segment for segments in by_pair.values() for segment in segments]
     covalent_radii = {
-        _bond_point_key(atom["cart"]): float(
-            atom.get("covalent_radius", 0.0)
-        )
+        _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0))
         for atom in atoms
     }
     bond_orders = (
-        _chemdraw_bond_orders(all_segments, covalent_radii)
-        if chemdraw
-        else {}
+        _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
     )
     aromatic_edges, aromatic_rings = (
-        _classify_aromatic_rings(
-            all_segments, covalent_radii, bond_orders
-        )
+        _classify_aromatic_rings(all_segments, covalent_radii, bond_orders)
         if chemdraw
         else ({}, [])
     )
     multiple_bond_directions = (
-        _multiple_bond_plane_directions(all_segments, bond_orders)
-        if chemdraw
-        else {}
+        _multiple_bond_plane_directions(all_segments, bond_orders) if chemdraw else {}
     )
-    two_color = (
-        getattr(scene, "cgn_bond_style", 'SINGLE_COLOR') == 'TWO_COLOR'
-    )
+    two_color = getattr(scene, "cgn_bond_style", "SINGLE_COLOR") == "TWO_COLOR"
     for key, segments in sorted(by_pair.items()):
         rendered_segments = (
             _chemdraw_segments(
@@ -2478,14 +2467,12 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 (first, second, first_element, second_element)
             )
         for order, order_segments in sorted(segments_by_order.items()):
-            order_scale = _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE.get(
-                order, 1.0
-            )
+            order_scale = _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE.get(order, 1.0)
             order_bond_radius = bond_radius * order_scale
             order_base_radius = bond_radius * order_scale
             if order == 1:
                 radius_scale = 1.0
-                if model != 'WIRE_STICKS':
+                if model != "WIRE_STICKS":
                     radius_scale = getattr(
                         scene,
                         "cgn_bond_radius_scale",
@@ -2503,8 +2490,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 segments_by_element = {}
                 for first, second, first_element, second_element in order_segments:
                     midpoint = tuple(
-                        0.5 * (first[axis] + second[axis])
-                        for axis in range(3)
+                        0.5 * (first[axis] + second[axis]) for axis in range(3)
                     )
                     segments_by_element.setdefault(first_element, []).append(
                         (first, midpoint)
@@ -2512,20 +2498,14 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                     segments_by_element.setdefault(second_element, []).append(
                         (midpoint, second)
                     )
-                for element, element_segments in sorted(
-                    segments_by_element.items()
-                ):
+                for element, element_segments in sorted(segments_by_element.items()):
                     vertices = []
                     edges = []
                     for first, second in element_segments:
                         start = len(vertices)
-                        vertices.extend(
-                            (_display_point(first), _display_point(second))
-                        )
+                        vertices.extend((_display_point(first), _display_point(second)))
                         edges.append((start, start + 1))
-                    obj_name = (
-                        f"CGN_Bonds_{pair_name}_{element}{order_suffix}"
-                    )
+                    obj_name = f"CGN_Bonds_{pair_name}_{element}{order_suffix}"
                     mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
                     mesh.from_pydata(vertices, edges, [])
                     mesh.update()
@@ -2552,9 +2532,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 edges = []
                 for first, second, _first_element, _second_element in order_segments:
                     start = len(vertices)
-                    vertices.extend(
-                        (_display_point(first), _display_point(second))
-                    )
+                    vertices.extend((_display_point(first), _display_point(second)))
                     edges.append((start, start + 1))
                 obj_name = f"CGN_Bonds_{pair_name}{order_suffix}"
                 mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
@@ -2593,19 +2571,13 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
     ):
         center, axis_u, axis_v, ring_radius, element = ring
         vdw_radius = vdw_by_element.get(element, _DEFAULT_VDW_RADIUS)
-        torus_base_bond_radius = _bond_radius(
-            vdw_radius, vdw_radius, model
-        )
+        torus_base_bond_radius = _bond_radius(vdw_radius, vdw_radius, model)
         torus_bond_radius = torus_base_bond_radius * torus_width
         vertices = [
             _display_point(first)
-            for first, _second, _first_element, _second_element
-            in ring_segments
+            for first, _second, _first_element, _second_element in ring_segments
         ]
-        edges = [
-            (index, (index + 1) % len(vertices))
-            for index in range(len(vertices))
-        ]
+        edges = [(index, (index + 1) % len(vertices)) for index in range(len(vertices))]
         obj_name = f"CGN_Bonds_Aromatic_{ring_index}"
         mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
         mesh.from_pydata(vertices, edges, [])
@@ -2629,9 +2601,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
                 _BOND_COLOR_DEFAULT,
             ),
         )
-        _add_geometry_nodes_modifier(
-            obj, node_group, torus_bond_radius, material
-        )
+        _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
     root["cgn_bond_settings_signature"] = settings_signature
     return bond_count
 
@@ -2653,9 +2623,7 @@ def _update_aromatic_torus_style(scene, context):
     root = _active_root(scene)
     if root is None:
         return
-    material = _make_material(
-        "CGN_Aromatic_Torus_Mat", scene.cgn_aromatic_torus_color
-    )
+    material = _make_material("CGN_Aromatic_Torus_Mat", scene.cgn_aromatic_torus_color)
     for obj in root.objects:
         if not obj.get("cgn_aromatic_torus"):
             continue
@@ -2666,39 +2634,33 @@ def _update_aromatic_torus_style(scene, context):
             float(obj["cgn_aromatic_ring_radius"]),
             str(obj["cgn_pair"]).split("|", 1)[0],
         )
-        segments = _aromatic_torus_segments(
-            [ring], scene.cgn_aromatic_torus_size
-        )[0]
+        segments = _aromatic_torus_segments([ring], scene.cgn_aromatic_torus_size)[0]
         for vertex, segment in zip(obj.data.vertices, segments):
             vertex.co = _display_point(segment[0])
         obj.data.update()
         base_radius = (
-            float(obj["cgn_aromatic_base_bond_radius"])
-            * scene.cgn_aromatic_torus_width
+            float(obj["cgn_aromatic_base_bond_radius"]) * scene.cgn_aromatic_torus_width
         )
         obj["cgn_base_radius"] = base_radius
         radius = base_radius
         for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group is not None:
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Radius", radius
-                )
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Material", material
-                )
-        obj.update_tag(refresh={'OBJECT', 'DATA'})
+            if modifier.type == "NODES" and modifier.node_group is not None:
+                _set_modifier_input(modifier, modifier.node_group, "Radius", radius)
+                _set_modifier_input(modifier, modifier.node_group, "Material", material)
+        obj.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
 
 def _update_bond_radius_scale(scene, context):
-    if scene.cgn_model in {'WIRE_STICKS', 'SPACE_FILLING'}:
+    if scene.cgn_model in {"WIRE_STICKS", "SPACE_FILLING"}:
         return
     root = _active_root(scene)
     if root is None:
         return
     bonds = [
-        obj for obj in root.objects
+        obj
+        for obj in root.objects
         if obj.get("cgn_role") == "bonds"
         and not obj.get("cgn_aromatic_torus")
         and int(obj.get("cgn_bond_order", 1)) == 1
@@ -2707,7 +2669,8 @@ def _update_bond_radius_scale(scene, context):
         _update_bond_style(scene, context)
         root = _active_root(scene)
         bonds = [
-            obj for obj in root.objects
+            obj
+            for obj in root.objects
             if obj.get("cgn_role") == "bonds"
             and not obj.get("cgn_aromatic_torus")
             and int(obj.get("cgn_bond_order", 1)) == 1
@@ -2715,11 +2678,9 @@ def _update_bond_radius_scale(scene, context):
     for obj in bonds:
         radius = float(obj["cgn_base_radius"]) * scene.cgn_bond_radius_scale
         for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group is not None:
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Radius", radius
-                )
-                obj.update_tag(refresh={'OBJECT', 'DATA'})
+            if modifier.type == "NODES" and modifier.node_group is not None:
+                _set_modifier_input(modifier, modifier.node_group, "Radius", radius)
+                obj.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
@@ -2729,35 +2690,30 @@ def _update_multiple_bond_radius_scale(scene, context):
     if root is None:
         return
     bonds = [
-        obj for obj in root.objects
-        if obj.get("cgn_role") == "bonds"
-        and int(obj.get("cgn_bond_order", 1)) > 1
+        obj
+        for obj in root.objects
+        if obj.get("cgn_role") == "bonds" and int(obj.get("cgn_bond_order", 1)) > 1
     ]
     if any("cgn_base_radius" not in obj for obj in bonds):
         _update_bond_style(scene, context)
         root = _active_root(scene)
         bonds = [
-            obj for obj in root.objects
-            if obj.get("cgn_role") == "bonds"
-            and int(obj.get("cgn_bond_order", 1)) > 1
+            obj
+            for obj in root.objects
+            if obj.get("cgn_role") == "bonds" and int(obj.get("cgn_bond_order", 1)) > 1
         ]
     for obj in bonds:
-        radius = (
-            float(obj["cgn_base_radius"])
-            * scene.cgn_multiple_bond_radius_scale
-        )
+        radius = float(obj["cgn_base_radius"]) * scene.cgn_multiple_bond_radius_scale
         for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group is not None:
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Radius", radius
-                )
-                obj.update_tag(refresh={'OBJECT', 'DATA'})
+            if modifier.type == "NODES" and modifier.node_group is not None:
+                _set_modifier_input(modifier, modifier.node_group, "Radius", radius)
+                obj.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
 
 def _update_bond_color(scene, context):
-    if scene.cgn_bond_style != 'SINGLE_COLOR':
+    if scene.cgn_bond_style != "SINGLE_COLOR":
         return
     root = _active_root(scene)
     if root is None:
@@ -2772,15 +2728,11 @@ def _update_bond_color(scene, context):
         pair_name = str(obj.get("cgn_pair", "")).replace("|", "_")
         if not pair_name:
             continue
-        material = _make_material(
-            f"CGN_Bond_Mat_{pair_name}", scene.cgn_bond_color
-        )
+        material = _make_material(f"CGN_Bond_Mat_{pair_name}", scene.cgn_bond_color)
         for modifier in obj.modifiers:
-            if modifier.type == 'NODES' and modifier.node_group is not None:
-                _set_modifier_input(
-                    modifier, modifier.node_group, "Material", material
-                )
-                obj.update_tag(refresh={'OBJECT', 'DATA'})
+            if modifier.type == "NODES" and modifier.node_group is not None:
+                _set_modifier_input(modifier, modifier.node_group, "Material", material)
+                obj.update_tag(refresh={"OBJECT", "DATA"})
     if context.view_layer is not None:
         context.view_layer.update()
 
@@ -2788,9 +2740,9 @@ def _update_bond_color(scene, context):
 def _set_scene_units(scene):
     """Display the scene at 1 Å = 1 cm (1 Blender unit = 10 Å)."""
     units = scene.unit_settings
-    units.system = 'METRIC'
+    units.system = "METRIC"
     units.scale_length = 0.1
-    units.length_unit = 'CENTIMETERS'
+    units.length_unit = "CENTIMETERS"
 
 
 def _import_result(scene, result, cif_path):
@@ -2805,17 +2757,13 @@ def _import_result(scene, result, cif_path):
         raise ValueError("The selected CIF contains no atoms.")
 
     old_root = _active_root(scene)
-    root = bpy.data.collections.new("CCTBX_GN_Structure")
+    root = bpy.data.collections.new("CrystalViz_Structure")
     root["cgn_role"] = "structure"
     root["cgn_instance_id"] = uuid.uuid4().hex
     root["cgn_space_group"] = result.get("space_group", "unknown")
-    root["cgn_space_group_ops"] = json.dumps(
-        result.get("space_group_ops", [])
-    )
+    root["cgn_space_group_ops"] = json.dumps(result.get("space_group_ops", []))
     root["cgn_unit_cell"] = json.dumps(result.get("unit_cell", []))
-    root["cgn_unit_cell_display"] = json.dumps(
-        result.get("unit_cell_display", [])
-    )
+    root["cgn_unit_cell_display"] = json.dumps(result.get("unit_cell_display", []))
     root["cgn_cif_block"] = result.get("label", "")
     root["cgn_cif_path"] = cif_path
     root["cgn_sites"] = json.dumps(sites)
@@ -2830,8 +2778,11 @@ def _import_result(scene, result, cif_path):
     scene.collection.children.link(root)
     old_pairs = [
         (
-            pair.element_a, pair.element_b, pair.enabled,
-            pair.min_distance, pair.max_distance,
+            pair.element_a,
+            pair.element_b,
+            pair.enabled,
+            pair.min_distance,
+            pair.max_distance,
         )
         for pair in scene.cgn_connectivity_pairs
     ]
@@ -2889,7 +2840,8 @@ def _unwrapped_cell_instances(
     for setting in pair_settings:
         if setting.enabled and setting.max_distance >= setting.min_distance:
             windows[_pair_key(setting.element_a, setting.element_b)] = (
-                setting.min_distance, setting.max_distance,
+                setting.min_distance,
+                setting.max_distance,
             )
     if not windows:
         return None
@@ -2902,20 +2854,20 @@ def _unwrapped_cell_instances(
         return None
 
     try:
-        matrix = Matrix((
-            (cell_matrix[0], cell_matrix[3], cell_matrix[6]),
-            (cell_matrix[1], cell_matrix[4], cell_matrix[7]),
-            (cell_matrix[2], cell_matrix[5], cell_matrix[8]),
-        ))
+        matrix = Matrix(
+            (
+                (cell_matrix[0], cell_matrix[3], cell_matrix[6]),
+                (cell_matrix[1], cell_matrix[4], cell_matrix[7]),
+                (cell_matrix[2], cell_matrix[5], cell_matrix[8]),
+            )
+        )
         inverse = matrix.inverted()
     except (ValueError, ZeroDivisionError):
         return None
 
     # A Cartesian move of max_distance cannot change a fractional coordinate
     # by more than max_distance times the length of that row of the inverse.
-    reach = [
-        max_distance * inverse.row[axis].length for axis in range(3)
-    ]
+    reach = [max_distance * inverse.row[axis].length for axis in range(3)]
     cells = [max(1, int(math.ceil(value))) for value in reach]
 
     fracs = [Vector(site["frac"]) for site in sites]
@@ -2928,18 +2880,20 @@ def _unwrapped_cell_instances(
         for tx in range(-cells[0], cells[0] + 1):
             for ty in range(-cells[1], cells[1] + 1):
                 for tz in range(-cells[2], cells[2] + 1):
-                    image_frac = Vector((
-                        frac.x + tx, frac.y + ty, frac.z + tz,
-                    ))
+                    image_frac = Vector(
+                        (
+                            frac.x + tx,
+                            frac.y + ty,
+                            frac.z + tz,
+                        )
+                    )
                     image_cart = matrix @ image_frac
                     key = (
                         math.floor(image_cart.x / width),
                         math.floor(image_cart.y / width),
                         math.floor(image_cart.z / width),
                     )
-                    bank.setdefault(key, []).append(
-                        (index, (tx, ty, tz), image_cart)
-                    )
+                    bank.setdefault(key, []).append((index, (tx, ty, tz), image_cart))
 
     adjacency = [[] for _ in sites]
     seen = set()
@@ -2953,9 +2907,7 @@ def _unwrapped_cell_instances(
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
                     neighbour = (key[0] + dx, key[1] + dy, key[2] + dz)
-                    for other_index, translation, image_cart in bank.get(
-                        neighbour, ()
-                    ):
+                    for other_index, translation, image_cart in bank.get(neighbour, ()):
                         bounds = windows.get(
                             _pair_key(elements[index], elements[other_index])
                         )
@@ -2966,18 +2918,15 @@ def _unwrapped_cell_instances(
                             continue
                         if not (bounds[0] <= distance <= bounds[1]):
                             continue
-                        if (
-                            other_index == index
-                            and translation == (0, 0, 0)
-                        ):
+                        if other_index == index and translation == (0, 0, 0):
                             continue
                         edge = (index, other_index, translation)
                         if edge in seen:
                             continue
                         reverse = (
-                            other_index, index,
-                            (-translation[0], -translation[1],
-                             -translation[2]),
+                            other_index,
+                            index,
+                            (-translation[0], -translation[1], -translation[2]),
                         )
                         seen.add(edge)
                         seen.add(reverse)
@@ -3023,96 +2972,86 @@ def _unwrapped_cell_instances(
             instances.update((index, 0, 0, 0) for index in component)
             continue
         anchors = {
-            (-translations[index][0], -translations[index][1],
-             -translations[index][2])
+            (-translations[index][0], -translations[index][1], -translations[index][2])
             for index in component
         }
         center = tuple(
             sum(
-                float(sites[index]["frac"][axis])
-                + translations[index][axis]
+                float(sites[index]["frac"][axis]) + translations[index][axis]
                 for index in component
-            ) / len(component)
+            )
+            / len(component)
             for axis in range(3)
         )
         anchor = min(
             anchors,
             key=lambda value: (
-                sum(
-                    (center[axis] + value[axis] - 0.5) ** 2
-                    for axis in range(3)
-                ),
+                sum((center[axis] + value[axis] - 0.5) ** 2 for axis in range(3)),
                 value,
             ),
         )
         for index in component:
             translation = translations[index]
-            instances.add((
-                index,
-                translation[0] + anchor[0],
-                translation[1] + anchor[1],
-                translation[2] + anchor[2],
-            ))
+            instances.add(
+                (
+                    index,
+                    translation[0] + anchor[0],
+                    translation[1] + anchor[1],
+                    translation[2] + anchor[2],
+                )
+            )
             if len(instances) > max_instances:
                 raise ValueError(
-                    f"Molecule completion exceeds the "
-                    f"{max_instances}-atom fill limit."
+                    f"Molecule completion exceeds the {max_instances}-atom fill limit."
                 )
 
-    return [
-        value
-        for instance in sorted(instances)
-        for value in instance
-    ]
+    return [value for instance in sorted(instances) for value in instance]
 
 
 def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
     """Replace displayed atoms with the ASU, completed cell, or packed cells."""
     root = _active_root(context.scene)
     if root is None:
-        operator.report({'ERROR'}, "Import a CIF before filling the structure.")
-        return {'CANCELLED'}
+        operator.report({"ERROR"}, "Import a CIF before filling the structure.")
+        return {"CANCELLED"}
     try:
         sites, _instances, cell_matrix, _initial_count = _structure_tables(root)
     except (ValueError, TypeError) as exc:
-        operator.report({'ERROR'}, str(exc))
-        return {'CANCELLED'}
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
     if not sites:
-        operator.report({'ERROR'}, "The stored site table is empty.")
-        return {'CANCELLED'}
+        operator.report({"ERROR"}, "The stored site table is empty.")
+        return {"CANCELLED"}
 
-    if mode == 'ASU':
+    if mode == "ASU":
         baseline = root.get("cgn_asu_instances", "")
         if not baseline:
             operator.report(
-                {'ERROR'},
+                {"ERROR"},
                 "Re-import this CIF once to enable the Fill menu.",
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
         try:
             new_instances = json.loads(baseline)
         except (ValueError, TypeError) as exc:
             operator.report(
-                {'ERROR'}, f"Stored asymmetric-unit table is invalid: {exc}"
+                {"ERROR"}, f"Stored asymmetric-unit table is invalid: {exc}"
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
         if not new_instances:
             operator.report(
-                {'ERROR'},
+                {"ERROR"},
                 "Re-import this CIF once to enable the Fill menu.",
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
         repeats = (1, 1, 1)
         description = "asymmetric unit"
     else:
-        if mode == 'PACK':
+        if mode == "PACK":
             repeats = tuple(
-                max(1, min(_MAX_FILL_REPEATS, int(value)))
-                for value in repeats
+                max(1, min(_MAX_FILL_REPEATS, int(value))) for value in repeats
             )
-            description = (
-                f"{repeats[0]}×{repeats[1]}×{repeats[2]} unit cells"
-            )
+            description = f"{repeats[0]}×{repeats[1]}×{repeats[2]} unit cells"
         else:
             repeats = (1, 1, 1)
             description = "one unit cell"
@@ -3124,8 +3063,8 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                 context.scene.cgn_connectivity_pairs,
             )
         except ValueError as exc:
-            operator.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            operator.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         if cell_instances is None:
             cell_instances = [
                 value
@@ -3151,19 +3090,19 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                         seen.add(key)
                         if len(seen) > _MAX_FILL_ATOMS:
                             operator.report(
-                                {'ERROR'},
+                                {"ERROR"},
                                 f"This fill would create more than "
                                 f"{_MAX_FILL_ATOMS} atoms; reduce the repeats.",
                             )
-                            return {'CANCELLED'}
+                            return {"CANCELLED"}
                         new_instances.extend(key)
 
     atoms = _materialize_atoms(
         sites, cell_matrix, new_instances, len(new_instances) // 4
     )
     if not atoms:
-        operator.report({'ERROR'}, "The fill produced no atoms.")
-        return {'CANCELLED'}
+        operator.report({"ERROR"}, "The fill produced no atoms.")
+        return {"CANCELLED"}
     try:
         _rebuild_atom_objects(root, atoms)
         _update_growth_selection(root, atoms, [])
@@ -3171,27 +3110,25 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         _apply_unit_cell_settings(context.scene)
     except Exception as exc:
         traceback.print_exc()
-        operator.report({'ERROR'}, str(exc))
-        return {'CANCELLED'}
+        operator.report({"ERROR"}, str(exc))
+        return {"CANCELLED"}
 
     root["cgn_instances"] = json.dumps(new_instances)
     root["cgn_initial_count"] = len(atoms)
     root["cgn_fill_mode"] = mode
-    if mode != 'ASU':
+    if mode != "ASU":
         root["cgn_cell_atoms"] = cell_atom_count
-    if mode == 'PACK':
+    if mode == "PACK":
         root["cgn_fill_repeats"] = json.dumps(list(repeats))
     root["cgn_growth_shells"] = 0
-    operator.report(
-        {'INFO'}, f"Filled {len(atoms)} atoms ({description})."
-    )
-    return {'FINISHED'}
+    operator.report({"INFO"}, f"Filled {len(atoms)} atoms ({description}).")
+    return {"FINISHED"}
 
 
 class CGN_OT_import_cif(Operator):
     bl_idname = "cgn.import_cif"
     bl_label = "Import CIF"
-    bl_options = {'REGISTER'}
+    bl_options = {"REGISTER"}
 
     filepath: StringProperty(subtype="FILE_PATH")
     block_name: StringProperty(
@@ -3201,17 +3138,17 @@ class CGN_OT_import_cif(Operator):
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+        return {"RUNNING_MODAL"}
 
     def execute(self, context):
         if not os.path.isfile(self.filepath):
-            self.report({'ERROR'}, "The selected CIF file does not exist.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "The selected CIF file does not exist.")
+            return {"CANCELLED"}
         try:
             worker = _gemmi_worker()
         except RuntimeError as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         try:
             result = worker.load_structure(
                 bpy.path.abspath(self.filepath), self.block_name or None
@@ -3219,14 +3156,14 @@ class CGN_OT_import_cif(Operator):
             root = _import_result(context.scene, result, self.filepath)
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         self.report(
-            {'INFO'},
+            {"INFO"},
             f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
             f"({root.get('cgn_space_group')}).",
         )
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class CGN_OT_rebuild_connectivity(Operator):
@@ -3237,26 +3174,28 @@ class CGN_OT_rebuild_connectivity(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, "Import a CIF before rebuilding connectivity.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Import a CIF before rebuilding connectivity.")
+            return {"CANCELLED"}
         try:
             atoms = _structure_atoms(root)
         except (ValueError, TypeError) as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         count = _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
-        self.report({'INFO'}, f"Built {count} bonds using the current distance windows.")
-        return {'FINISHED'}
+        self.report(
+            {"INFO"}, f"Built {count} bonds using the current distance windows."
+        )
+        return {"FINISHED"}
 
 
 class CGN_OT_fill_asu(Operator):
     bl_idname = "cgn.fill_asu"
     bl_label = "Fill Asymmetric Unit-cell"
     bl_description = "Show only the atoms of the CIF asymmetric unit"
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        return _fill_structure(self, context, 'ASU')
+        return _fill_structure(self, context, "ASU")
 
 
 class CGN_OT_fill_cell(Operator):
@@ -3265,10 +3204,10 @@ class CGN_OT_fill_cell(Operator):
     bl_description = (
         "Show one unit cell and complete finite molecules across its boundaries"
     )
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        return _fill_structure(self, context, 'CELL')
+        return _fill_structure(self, context, "CELL")
 
 
 class CGN_OT_fill_pack(Operator):
@@ -3277,7 +3216,7 @@ class CGN_OT_fill_pack(Operator):
     bl_description = (
         "Show repeated unit cells with finite molecules completed at the edges"
     )
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     repeat_a: IntProperty(
         name="a",
@@ -3306,22 +3245,15 @@ class CGN_OT_fill_pack(Operator):
         if root is not None:
             try:
                 repeats = [
-                    int(value) for value in json.loads(
-                        root.get("cgn_fill_repeats", "[]")
-                    )
+                    int(value)
+                    for value in json.loads(root.get("cgn_fill_repeats", "[]"))
                 ]
             except (ValueError, TypeError):
                 repeats = []
             if len(repeats) == 3:
-                self.repeat_a = max(
-                    1, min(_MAX_FILL_REPEATS, repeats[0])
-                )
-                self.repeat_b = max(
-                    1, min(_MAX_FILL_REPEATS, repeats[1])
-                )
-                self.repeat_c = max(
-                    1, min(_MAX_FILL_REPEATS, repeats[2])
-                )
+                self.repeat_a = max(1, min(_MAX_FILL_REPEATS, repeats[0]))
+                self.repeat_b = max(1, min(_MAX_FILL_REPEATS, repeats[1]))
+                self.repeat_c = max(1, min(_MAX_FILL_REPEATS, repeats[2]))
         return context.window_manager.invoke_props_dialog(self, width=320)
 
     def draw(self, context):
@@ -3339,15 +3271,14 @@ class CGN_OT_fill_pack(Operator):
                 sites = []
             if sites:
                 cell_atoms = int(root.get("cgn_cell_atoms", len(sites)))
-                count = (
-                    cell_atoms * self.repeat_a * self.repeat_b
-                    * self.repeat_c
-                )
+                count = cell_atoms * self.repeat_a * self.repeat_b * self.repeat_c
                 layout.label(text=f"Atoms (approx.): {count}")
 
     def execute(self, context):
         return _fill_structure(
-            self, context, 'PACK',
+            self,
+            context,
+            "PACK",
             (self.repeat_a, self.repeat_b, self.repeat_c),
         )
 
@@ -3355,10 +3286,8 @@ class CGN_OT_fill_pack(Operator):
 class CGN_OT_pack_cell_boxes(Operator):
     bl_idname = "cgn.pack_cell_boxes"
     bl_label = "Pack Unit-Cells (Faces & Edges)"
-    bl_description = (
-        "Show a packed unit-cell grid without adding or changing atoms"
-    )
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_description = "Show a packed unit-cell grid without adding or changing atoms"
+    bl_options = {"REGISTER", "UNDO"}
 
     repeat_a: IntProperty(name="a", default=2, min=1, max=_MAX_FILL_REPEATS)
     repeat_b: IntProperty(name="b", default=2, min=1, max=_MAX_FILL_REPEATS)
@@ -3369,7 +3298,8 @@ class CGN_OT_pack_cell_boxes(Operator):
         if root is not None:
             try:
                 repeats = [
-                    int(value) for value in json.loads(
+                    int(value)
+                    for value in json.loads(
                         root.get("cgn_cell_pack_repeats", "[2, 2, 2]")
                     )
                 ]
@@ -3377,8 +3307,7 @@ class CGN_OT_pack_cell_boxes(Operator):
                 repeats = []
             if len(repeats) == 3:
                 self.repeat_a, self.repeat_b, self.repeat_c = (
-                    max(1, min(_MAX_FILL_REPEATS, value))
-                    for value in repeats
+                    max(1, min(_MAX_FILL_REPEATS, value)) for value in repeats
                 )
         return context.window_manager.invoke_props_dialog(self, width=320)
 
@@ -3394,12 +3323,12 @@ class CGN_OT_pack_cell_boxes(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, "Import a CIF before packing unit cells.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Import a CIF before packing unit cells.")
+            return {"CANCELLED"}
         cell_matrix = _stored_cell_matrix(root)
         if cell_matrix is None:
-            self.report({'ERROR'}, "The structure has no valid unit-cell data.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "The structure has no valid unit-cell data.")
+            return {"CANCELLED"}
         repeats = tuple(
             max(1, min(_MAX_FILL_REPEATS, int(value)))
             for value in (self.repeat_a, self.repeat_b, self.repeat_c)
@@ -3409,10 +3338,10 @@ class CGN_OT_pack_cell_boxes(Operator):
         settings.show_unit_cell = True
         _show_unit_cell(root, cell_matrix, settings, repeats)
         self.report(
-            {'INFO'},
+            {"INFO"},
             f"Displayed {repeats[0]}×{repeats[1]}×{repeats[2]} unit-cell boxes.",
         )
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class CGN_MT_fill(Menu):
@@ -3483,10 +3412,7 @@ def _project_points(coords, matrix, width, height):
     ndc = clip[front, :3] / w[front, None]
     x = width * 0.5 * (ndc[:, 0] + 1.0)
     y = height * 0.5 * (ndc[:, 1] + 1.0)
-    inside = (
-        (x >= 0.0) & (x < width)
-        & (y >= 0.0) & (y < height)
-    )
+    inside = (x >= 0.0) & (x < width) & (y >= 0.0) & (y < height)
     selected = front[inside]
     points = np.column_stack((x[inside], y[inside]))
     return selected, points, ndc[inside, 2]
@@ -3504,9 +3430,7 @@ def _click_candidate(indices, points, depths, visible, origin, max_distance):
     if candidates.size == 0:
         return None
     # lexsort uses the last key first: depth, then pixel distance.
-    best = candidates[
-        np.lexsort((distance[candidates], depths[candidates]))[0]
-    ]
+    best = candidates[np.lexsort((distance[candidates], depths[candidates]))[0]]
     return int(indices[best])
 
 
@@ -3533,35 +3457,35 @@ class _CGN_OT_select_atoms(Operator):
     keep_stored_selection = True
 
     def invoke(self, context, event):
-        if context.area is None or context.area.type != 'VIEW_3D':
-            self.report({'ERROR'}, "Run atom selection from the 3D Viewport.")
-            return {'CANCELLED'}
+        if context.area is None or context.area.type != "VIEW_3D":
+            self.report({"ERROR"}, "Run atom selection from the 3D Viewport.")
+            return {"CANCELLED"}
         root = _active_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, self.select_error)
-            return {'CANCELLED'}
+            self.report({"ERROR"}, self.select_error)
+            return {"CANCELLED"}
         self._region = next(
-            (region for region in context.area.regions if region.type == 'WINDOW'),
+            (region for region in context.area.regions if region.type == "WINDOW"),
             None,
         )
         if self._region is None:
-            self.report({'ERROR'}, "The 3D Viewport window region is unavailable.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "The 3D Viewport window region is unavailable.")
+            return {"CANCELLED"}
 
         self._root_name = root.name
         self._root_id = root.get("cgn_instance_id")
         try:
             self._atoms = _structure_atoms(root)
         except (ValueError, TypeError) as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         try:
-            self._initial_selection = set(json.loads(
-                root.get("cgn_selected_indices", "[]")
-            ))
+            self._initial_selection = set(
+                json.loads(root.get("cgn_selected_indices", "[]"))
+            )
         except (ValueError, TypeError) as exc:
-            self.report({'ERROR'}, f"Stored atom selection is invalid: {exc}")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, f"Stored atom selection is invalid: {exc}")
+            return {"CANCELLED"}
         self._selected = (
             set(self._initial_selection) if self.keep_stored_selection else set()
         )
@@ -3578,47 +3502,39 @@ class _CGN_OT_select_atoms(Operator):
         self._projection_cache = None
         _update_growth_selection(root, self._atoms, self._selected)
         self._draw_handle = bpy.types.SpaceView3D.draw_handler_add(
-            self._draw_box, (), 'WINDOW', 'POST_PIXEL'
+            self._draw_box, (), "WINDOW", "POST_PIXEL"
         )
         context.workspace.status_text_set(self.status_text)
-        context.window.cursor_set('CROSSHAIR')
+        context.window.cursor_set("CROSSHAIR")
         context.window_manager.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
+        return {"RUNNING_MODAL"}
 
     def _finish(self, context, cancel=False):
         if cancel:
             self._selected = set(self._initial_selection)
             root = bpy.data.collections.get(self._root_name)
-            if (
-                root is not None
-                and root.get("cgn_instance_id") == self._root_id
-            ):
-                _update_growth_selection(
-                    root, self._atoms, self._selected
-                )
+            if root is not None and root.get("cgn_instance_id") == self._root_id:
+                _update_growth_selection(root, self._atoms, self._selected)
         if getattr(self, "_draw_handle", None) is not None:
-            bpy.types.SpaceView3D.draw_handler_remove(
-                self._draw_handle, 'WINDOW'
-            )
+            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, "WINDOW")
             self._draw_handle = None
         context.workspace.status_text_set(None)
-        context.window.cursor_set('DEFAULT')
+        context.window.cursor_set("DEFAULT")
         if context.area is not None:
             context.area.tag_redraw()
 
     def _region_mouse(self, event, clamp=False):
-        point = Vector((
-            event.mouse_x - self._region.x,
-            event.mouse_y - self._region.y,
-        ))
+        point = Vector(
+            (
+                event.mouse_x - self._region.x,
+                event.mouse_y - self._region.y,
+            )
+        )
         if clamp:
             point.x = min(max(point.x, 0), self._region.width - 1)
             point.y = min(max(point.y, 0), self._region.height - 1)
             return point
-        if (
-            0 <= point.x < self._region.width
-            and 0 <= point.y < self._region.height
-        ):
+        if 0 <= point.x < self._region.width and 0 <= point.y < self._region.height:
             return point
         return None
 
@@ -3660,8 +3576,8 @@ class _CGN_OT_select_atoms(Operator):
             (x_min, y_min),
         )
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
-        batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": points})
-        gpu.state.blend_set('ALPHA')
+        batch = batch_for_shader(shader, "LINE_STRIP", {"pos": points})
+        gpu.state.blend_set("ALPHA")
         gpu.state.line_width_set(2.0)
         try:
             shader.bind()
@@ -3669,17 +3585,14 @@ class _CGN_OT_select_atoms(Operator):
             batch.draw(shader)
         finally:
             gpu.state.line_width_set(1.0)
-            gpu.state.blend_set('NONE')
+            gpu.state.blend_set("NONE")
 
     def _apply_selection(self, context):
         if self._drag_start is None or self._drag_end is None:
             return
         root = bpy.data.collections.get(self._root_name)
-        if (
-            root is None
-            or root.get("cgn_instance_id") != self._root_id
-        ):
-            self.report({'ERROR'}, "The active structure changed during selection.")
+        if root is None or root.get("cgn_instance_id") != self._root_id:
+            self.report({"ERROR"}, "The active structure changed during selection.")
             return
 
         if self._dragging:
@@ -3689,15 +3602,21 @@ class _CGN_OT_select_atoms(Operator):
             y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
             indices, points, _depths, _visible = self._project_atoms(context)
             boxed = (
-                (points[:, 0] >= x_min) & (points[:, 0] <= x_max)
-                & (points[:, 1] >= y_min) & (points[:, 1] <= y_max)
+                (points[:, 0] >= x_min)
+                & (points[:, 0] <= x_max)
+                & (points[:, 1] >= y_min)
+                & (points[:, 1] <= y_max)
             )
             self._selected.update(int(index) for index in indices[boxed])
         else:
             indices, points, depths, visible = self._project_atoms(context)
             nearest = _click_candidate(
-                indices, points, depths, visible,
-                self._drag_start, self.max_pixel_distance,
+                indices,
+                points,
+                depths,
+                visible,
+                self._drag_start,
+                self.max_pixel_distance,
             )
             _select_click(self._selected, nearest, self._drag_additive)
 
@@ -3705,31 +3624,34 @@ class _CGN_OT_select_atoms(Operator):
         context.area.tag_redraw()
 
     def modal(self, context, event):
-        if event.type == 'ESC':
+        if event.type == "ESC":
             self._finish(context, cancel=True)
-            return {'CANCELLED'}
-        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
+            return {"CANCELLED"}
+        if event.type in {"RET", "NUMPAD_ENTER"} and event.value == "PRESS":
             return self._confirm(context)
-        if event.type == 'RIGHTMOUSE' and event.value == 'PRESS':
+        if event.type == "RIGHTMOUSE" and event.value == "PRESS":
             return self._confirm(context)
 
-        if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+        if event.type == "LEFTMOUSE" and event.value == "PRESS":
             point = self._region_mouse(event)
             if point is not None:
                 self._drag_start = point
                 self._drag_end = point.copy()
                 self._drag_additive = event.shift
                 self._dragging = False
-            return {'RUNNING_MODAL'}
-        if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'} and self._drag_start is not None:
+            return {"RUNNING_MODAL"}
+        if (
+            event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}
+            and self._drag_start is not None
+        ):
             point = self._region_mouse(event, clamp=True)
             self._drag_end = point
             if (self._drag_end - self._drag_start).length >= self.box_drag_threshold:
                 self._dragging = True
             if context.area is not None:
                 context.area.tag_redraw()
-            return {'RUNNING_MODAL'}
-        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            return {"RUNNING_MODAL"}
+        if event.type == "LEFTMOUSE" and event.value == "RELEASE":
             if self._drag_start is not None:
                 point = self._region_mouse(event, clamp=True)
                 if point is not None:
@@ -3738,16 +3660,16 @@ class _CGN_OT_select_atoms(Operator):
                 self._drag_start = None
                 self._drag_end = None
                 self._dragging = False
-            return {'RUNNING_MODAL'}
-        return {'PASS_THROUGH'}
+            return {"RUNNING_MODAL"}
+        return {"PASS_THROUGH"}
 
 
 def _grow_from_selection():
     """Run the grow operator after the selection modal has fully finished."""
     try:
-        bpy.ops.cgn.grow_further('INVOKE_DEFAULT', all_atoms=False)
+        bpy.ops.cgn.grow_further("INVOKE_DEFAULT", all_atoms=False)
     except RuntimeError as exc:
-        print(f"CCTBX Geometry Nodes: grow failed: {exc}")
+        print(f"CrystalViz: grow failed: {exc}")
     return None
 
 
@@ -3768,14 +3690,14 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
     def _confirm(self, context):
         if not self._selected:
             self._finish(context)
-            self.report({'ERROR'}, "Select one or more atoms before growing.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Select one or more atoms before growing.")
+            return {"CANCELLED"}
         self._finish(context)
         # The grow operator is modal on the cctbx build, and starting a modal
         # operator from inside this modal does not receive events. Defer it
         # until the selection operator has returned.
         bpy.app.timers.register(_grow_from_selection, first_interval=0.01)
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
@@ -3785,7 +3707,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         "Click atoms or drag a box around them, then confirm to delete; "
         "click a selected atom to remove it, Shift adds to the selection"
     )
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {"REGISTER", "UNDO"}
 
     select_error = "Import a CIF before deleting atoms."
     status_text = (
@@ -3797,49 +3719,49 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
     def _confirm(self, context):
         if not self._selected:
             self._finish(context)
-            self.report({'ERROR'}, "Select one or more atoms before deleting.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Select one or more atoms before deleting.")
+            return {"CANCELLED"}
         root = bpy.data.collections.get(self._root_name)
         if root is None or root.get("cgn_instance_id") != self._root_id:
             self._finish(context)
-            self.report({'ERROR'}, "The active structure changed during selection.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "The active structure changed during selection.")
+            return {"CANCELLED"}
         try:
             sites, instances, cell_matrix, initial_count = _structure_tables(root)
         except (ValueError, TypeError) as exc:
             self._finish(context)
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
         atom_count = len(instances) // 4
-        removed = sorted({
-            index for index in self._selected
-            if isinstance(index, int) and 0 <= index < atom_count
-        })
+        removed = sorted(
+            {
+                index
+                for index in self._selected
+                if isinstance(index, int) and 0 <= index < atom_count
+            }
+        )
         if not removed:
             self._finish(context)
-            self.report({'ERROR'}, "Select one or more atoms before deleting.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Select one or more atoms before deleting.")
+            return {"CANCELLED"}
         if len(removed) >= atom_count:
             self._finish(context)
             self.report(
-                {'ERROR'},
+                {"ERROR"},
                 "Deleting every atom is not supported; re-import the CIF instead.",
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
 
         removed_offsets = {index * 4 for index in removed}
         new_instances = [
-            value for offset, value in enumerate(instances)
+            value
+            for offset, value in enumerate(instances)
             if (offset - offset % 4) not in removed_offsets
         ]
-        removed_below_initial = sum(
-            1 for index in removed if index < initial_count
-        )
+        removed_below_initial = sum(1 for index in removed if index < initial_count)
         new_initial_count = max(0, initial_count - removed_below_initial)
-        atoms = _materialize_atoms(
-            sites, cell_matrix, new_instances, new_initial_count
-        )
+        atoms = _materialize_atoms(sites, cell_matrix, new_instances, new_initial_count)
 
         self._finish(context)
         root["cgn_instances"] = json.dumps(new_instances)
@@ -3847,97 +3769,91 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         try:
             _rebuild_atom_objects(root, atoms)
             _update_growth_selection(root, atoms, [])
-            _bond_objects(
-                root, atoms, context.scene.cgn_connectivity_pairs
-            )
+            _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         try:
             bpy.ops.ed.undo_push(message="Delete Atoms")
         except RuntimeError:
             pass
         self.report(
-            {'INFO'},
-            f"Deleted {len(removed)} atoms; structure now contains "
-            f"{len(atoms)} atoms.",
+            {"INFO"},
+            f"Deleted {len(removed)} atoms; structure now contains {len(atoms)} atoms.",
         )
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class CGN_OT_grow_further(Operator):
     bl_idname = "cgn.grow_further"
     bl_label = "Grow Structure"
-    bl_description = (
-        "Add one shell around all atoms or the selected growth atoms"
-    )
+    bl_description = "Add one shell around all atoms or the selected growth atoms"
 
     all_atoms: BoolProperty(
         name="Grow from all atoms",
         description="Use every atom as a growth seed",
         default=True,
-        options={'HIDDEN'},
+        options={"HIDDEN"},
     )
 
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({'ERROR'}, "Import a CIF before growing the structure.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Import a CIF before growing the structure.")
+            return {"CANCELLED"}
         enabled_pairs = [
-            item for item in context.scene.cgn_connectivity_pairs
+            item
+            for item in context.scene.cgn_connectivity_pairs
             if item.enabled and item.max_distance >= item.min_distance
         ]
         if not enabled_pairs:
-            self.report({'ERROR'}, "Enable at least one valid connectivity pair.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "Enable at least one valid connectivity pair.")
+            return {"CANCELLED"}
         try:
             sites, instances, cell_matrix, initial_count = _structure_tables(root)
         except (ValueError, TypeError) as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         try:
-            selected_indices = json.loads(
-                root.get("cgn_selected_indices", "[]")
-            )
+            selected_indices = json.loads(root.get("cgn_selected_indices", "[]"))
         except (ValueError, TypeError) as exc:
-            self.report({'ERROR'}, f"Stored growth selection is invalid: {exc}")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, f"Stored growth selection is invalid: {exc}")
+            return {"CANCELLED"}
         atom_count = len(instances) // 4
         if not atom_count:
-            self.report({'ERROR'}, "The active structure contains no atoms.")
-            return {'CANCELLED'}
+            self.report({"ERROR"}, "The active structure contains no atoms.")
+            return {"CANCELLED"}
         if self.all_atoms:
             selected_indices = list(range(atom_count))
         else:
-            selected_indices = sorted({
-                index for index in selected_indices
-                if isinstance(index, int) and 0 <= index < atom_count
-            })
+            selected_indices = sorted(
+                {
+                    index
+                    for index in selected_indices
+                    if isinstance(index, int) and 0 <= index < atom_count
+                }
+            )
         if not selected_indices:
             self.report(
-                {'ERROR'},
+                {"ERROR"},
                 "Select one or more atoms before growing the structure.",
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
         seed_instances = []
         for index in selected_indices:
             offset = index * 4
-            seed_instances.extend(instances[offset:offset + 4])
+            seed_instances.extend(instances[offset : offset + 4])
 
         try:
             worker = _gemmi_worker()
         except RuntimeError as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         try:
             result = worker.grow_connectivity_shell(
                 json.loads(root.get("cgn_unit_cell", "[]")),
-                [
-                    {"element": site["element"], "frac": site["frac"]}
-                    for site in sites
-                ],
+                [{"element": site["element"], "frac": site["frac"]} for site in sites],
                 instances,
                 seed_instances,
                 [
@@ -3953,27 +3869,29 @@ class CGN_OT_grow_further(Operator):
             )
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
         grew_by = int(result.get("grew_by", 0))
         if grew_by == 0:
             self.report(
-                {'INFO'},
+                {"INFO"},
                 "No additional atoms match the current connectivity settings.",
             )
-            return {'FINISHED'}
+            return {"FINISHED"}
         new_instances = result.get("new_instances", [])
         if len(new_instances) < grew_by * 4:
             self.report(
-                {'ERROR'}, "The gemmi worker returned an invalid growth result."
+                {"ERROR"}, "The gemmi worker returned an invalid growth result."
             )
-            return {'CANCELLED'}
+            return {"CANCELLED"}
         try:
             old_atom_count = len(instances) // 4
             instances = instances + new_instances
             new_atoms = _materialize_atoms(
-                sites, cell_matrix, new_instances,
+                sites,
+                cell_matrix,
+                new_instances,
                 initial_count + old_atom_count,
             )
             _make_atom_objects(root, new_atoms)
@@ -3986,16 +3904,16 @@ class CGN_OT_grow_further(Operator):
                 )
                 else 0
             )
-            if _current_model(context.scene) == 'SPACE_FILLING':
+            if _current_model(context.scene) == "SPACE_FILLING":
                 atoms = []
-                _bond_objects(
-                    root, atoms, context.scene.cgn_connectivity_pairs
-                )
+                _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
             else:
                 atoms = (
                     _cached_atoms_for_growth(
-                        root, context.scene.cgn_connectivity_pairs,
-                        old_atom_count, new_atoms,
+                        root,
+                        context.scene.cgn_connectivity_pairs,
+                        old_atom_count,
+                        new_atoms,
                     )
                     if bond_start_index
                     else None
@@ -4005,23 +3923,22 @@ class CGN_OT_grow_further(Operator):
                         sites, cell_matrix, instances, initial_count
                     )
                 _bond_objects(
-                    root, atoms, context.scene.cgn_connectivity_pairs,
+                    root,
+                    atoms,
+                    context.scene.cgn_connectivity_pairs,
                     start_index=bond_start_index,
                 )
             root["cgn_instances"] = json.dumps(instances)
-            root["cgn_growth_shells"] = int(
-                root.get("cgn_growth_shells", 0)
-            ) + 1
+            root["cgn_growth_shells"] = int(root.get("cgn_growth_shells", 0)) + 1
         except Exception as exc:
             traceback.print_exc()
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
         self.report(
-            {'INFO'},
-            f"Added {grew_by} atoms; structure now contains "
-            f"{len(atoms)} atoms.",
+            {"INFO"},
+            f"Added {grew_by} atoms; structure now contains {len(atoms)} atoms.",
         )
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 def _format_cell_parameter(value, cif_value="", angle=False):
@@ -4040,16 +3957,16 @@ def _format_cell_parameter(value, cif_value="", angle=False):
 
 
 class CGN_PT_panel(Panel):
-    bl_label = "CCTBX Geometry Nodes"
+    bl_label = "CrystalViz"
     bl_idname = "CGN_PT_panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_order = 0
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("cgn.import_cif", icon='IMPORT')
+        layout.operator("cgn.import_cif", icon="IMPORT")
         root = _active_root(context.scene)
         if root is None:
             layout.label(text="Import a CIF to begin.")
@@ -4059,32 +3976,24 @@ class CGN_PT_panel(Panel):
         filename = os.path.splitext(os.path.basename(cif_path))[0]
         if filename:
             layout.label(text=filename)
-        layout.label(
-            text=f"Space group: {root.get('cgn_space_group', 'unknown')}"
-        )
+        layout.label(text=f"Space group: {root.get('cgn_space_group', 'unknown')}")
         try:
             parameters = json.loads(root.get("cgn_unit_cell", "[]"))
         except (ValueError, TypeError):
             parameters = []
         try:
-            cell_display = json.loads(
-                root.get("cgn_unit_cell_display", "[]")
-            )
+            cell_display = json.loads(root.get("cgn_unit_cell_display", "[]"))
         except (ValueError, TypeError):
             cell_display = []
         if len(parameters) >= 6:
-            a, b, c, alpha, beta, gamma = (
-                float(value) for value in parameters[:6]
-            )
+            a, b, c, alpha, beta, gamma = (float(value) for value in parameters[:6])
             displayed = [
                 _format_cell_parameter(
                     value,
                     cell_display[index] if index < len(cell_display) else "",
                     angle=index >= 3,
                 )
-                for index, value in enumerate(
-                    (a, b, c, alpha, beta, gamma)
-                )
+                for index, value in enumerate((a, b, c, alpha, beta, gamma))
             ]
             grid = layout.grid_flow(
                 row_major=True, columns=2, even_columns=True, align=True
@@ -4098,21 +4007,21 @@ class CGN_PT_panel(Panel):
         if root.get("cgn_instances", ""):
             layout.label(
                 text=f"Atoms: {_structure_atom_count(root)}",
-                icon='MESH_UVSPHERE',
+                icon="MESH_UVSPHERE",
             )
         else:
             layout.label(
                 text="Re-import this CIF (old structure format).",
-                icon='ERROR',
+                icon="ERROR",
             )
 
 
 class CGN_PT_build(Panel):
     bl_label = "Build"
     bl_idname = "CGN_PT_build"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_order = 1
 
@@ -4122,34 +4031,34 @@ class CGN_PT_build(Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
+        layout.menu("CGN_MT_fill", text="Fill", icon="MESH_GRID")
         layout.operator(
-            "cgn.grow_further", text="Grow Structure", icon='ADD'
+            "cgn.grow_further", text="Grow Structure", icon="ADD"
         ).all_atoms = True
         layout.operator(
             "cgn.select_growth_atoms",
             text="Grow Selected Atoms",
-            icon='RESTRICT_SELECT_OFF',
+            icon="RESTRICT_SELECT_OFF",
         )
         layout.separator()
-        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon='X')
+        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon="X")
         layout.separator()
         layout.prop(
             context.scene,
             "cgn_show_hydrogens",
             text="Show Hydrogens",
-            icon='HIDE_OFF' if context.scene.cgn_show_hydrogens else 'HIDE_ON',
+            icon="HIDE_OFF" if context.scene.cgn_show_hydrogens else "HIDE_ON",
         )
 
 
 class CGN_PT_connectivity(Panel):
     bl_label = "Connectivity"
     bl_idname = "CGN_PT_connectivity"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {"DEFAULT_CLOSED"}
     bl_order = 2
 
     @classmethod
@@ -4169,17 +4078,17 @@ class CGN_PT_connectivity(Panel):
             row.label(text=f"{item.element_a} — {item.element_b}")
             row.prop(item, "min_distance", text="Min")
             row.prop(item, "max_distance", text="Max")
-        layout.operator("cgn.rebuild_connectivity", icon='FILE_REFRESH')
+        layout.operator("cgn.rebuild_connectivity", icon="FILE_REFRESH")
 
 
 class CGN_PT_unit_cell(Panel):
     bl_label = "Unit Cell"
     bl_idname = "CGN_PT_unit_cell"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {"DEFAULT_CLOSED"}
     bl_order = 3
 
     @classmethod
@@ -4189,13 +4098,11 @@ class CGN_PT_unit_cell(Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.scene.cgn_unit_cell_settings
-        layout.prop(
-            settings, "show_unit_cell", text="Show Unit Cell", icon='MESH_CUBE'
-        )
+        layout.prop(settings, "show_unit_cell", text="Show Unit Cell", icon="MESH_CUBE")
         layout.operator(
             "cgn.pack_cell_boxes",
             text="Pack Unit-Cells (Faces & Edges)...",
-            icon='MESH_CUBE',
+            icon="MESH_CUBE",
         )
         if not settings.show_unit_cell:
             return
@@ -4209,11 +4116,11 @@ class CGN_PT_unit_cell(Panel):
 class CGN_PT_model_style(Panel):
     bl_label = "Atom Model & Style"
     bl_idname = "CGN_PT_model_style"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {"DEFAULT_CLOSED"}
     bl_order = 4
 
     @classmethod
@@ -4224,14 +4131,14 @@ class CGN_PT_model_style(Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "cgn_model", text="Model")
-        if scene.cgn_model == 'WIRE_STICKS':
+        if scene.cgn_model == "WIRE_STICKS":
             layout.prop(
                 scene,
                 "cgn_wire_sticks_radius",
                 text="Atom & Bond Radius (Å)",
                 slider=True,
             )
-        if scene.cgn_model == 'ELLIPSOID':
+        if scene.cgn_model == "ELLIPSOID":
             layout.prop(
                 scene,
                 "cgn_ellipsoid_probability",
@@ -4241,9 +4148,7 @@ class CGN_PT_model_style(Panel):
             ortep_box = layout.box()
             ortep_box.label(text="ORTEP Cutaway")
             ortep_box.prop(scene, "cgn_ortep_inner_color", text="Inner Faces")
-            ortep_box.prop(
-                scene, "cgn_ortep_inner_roughness", text="Inner Roughness"
-            )
+            ortep_box.prop(scene, "cgn_ortep_inner_roughness", text="Inner Roughness")
             ortep_box.prop(scene, "cgn_ortep_ellipse_color", text="Ellipses")
             ortep_box.prop(
                 scene, "cgn_ortep_ellipse_roughness", text="Ellipse Roughness"
@@ -4254,7 +4159,7 @@ class CGN_PT_model_style(Panel):
                 text="Ellipse Thickness",
                 slider=True,
             )
-        if scene.cgn_model in {'ELLIPSOID', 'SPACE_FILLING'}:
+        if scene.cgn_model in {"ELLIPSOID", "SPACE_FILLING"}:
             layout.prop(
                 scene,
                 "cgn_hydrogen_scale",
@@ -4277,28 +4182,28 @@ class CGN_PT_model_style(Panel):
                 row.label(text=element)
                 row.prop(style, "color", text="")
                 row.prop(style, "roughness", text="Roughness")
-                if scene.cgn_model == 'BALL_STICK':
+                if scene.cgn_model == "BALL_STICK":
                     box.prop(
                         style,
                         "size",
                         text=f"{element} Size (× VdW)",
                         slider=True,
                     )
-        if scene.cgn_model == 'SPACE_FILLING':
+        if scene.cgn_model == "SPACE_FILLING":
             layout.label(
                 text="Full van der Waals radii; bonds are hidden.",
-                icon='INFO',
+                icon="INFO",
             )
 
 
 class CGN_PT_bond_style(Panel):
     bl_label = "Bond Style"
     bl_idname = "CGN_PT_bond_style"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {"DEFAULT_CLOSED"}
     bl_order = 5
 
     @classmethod
@@ -4309,14 +4214,14 @@ class CGN_PT_bond_style(Panel):
         layout = self.layout
         scene = context.scene
         layout.prop(scene, "cgn_bond_style", text="Style")
-        if scene.cgn_bond_style == 'SINGLE_COLOR':
+        if scene.cgn_bond_style == "SINGLE_COLOR":
             layout.prop(scene, "cgn_bond_color", text="Color")
-        if scene.cgn_model == 'WIRE_STICKS':
+        if scene.cgn_model == "WIRE_STICKS":
             layout.label(
                 text="Bond radius follows the Wire-sticks atom radius.",
-                icon='INFO',
+                icon="INFO",
             )
-        elif scene.cgn_model != 'SPACE_FILLING':
+        elif scene.cgn_model != "SPACE_FILLING":
             layout.prop(
                 scene,
                 "cgn_bond_radius_scale",
@@ -4325,7 +4230,7 @@ class CGN_PT_bond_style(Panel):
             )
         layout.prop(scene, "cgn_chemdraw", text="ChemDraw")
         if scene.cgn_chemdraw:
-            if scene.cgn_model != 'SPACE_FILLING':
+            if scene.cgn_model != "SPACE_FILLING":
                 layout.prop(
                     scene,
                     "cgn_multiple_bond_radius_scale",
@@ -4333,67 +4238,61 @@ class CGN_PT_bond_style(Panel):
                     slider=True,
                 )
             layout.prop(
-                scene, "cgn_bond_spacing",
-                text="Bond Spacing", slider=True,
+                scene,
+                "cgn_bond_spacing",
+                text="Bond Spacing",
+                slider=True,
             )
-            layout.prop(
-                scene, "cgn_aromatic_torus_size", slider=True
-            )
-            layout.prop(
-                scene, "cgn_aromatic_torus_width", slider=True
-            )
-            layout.prop(
-                scene, "cgn_aromatic_torus_color", text="Torus Color"
-            )
+            layout.prop(scene, "cgn_aromatic_torus_size", slider=True)
+            layout.prop(scene, "cgn_aromatic_torus_width", slider=True)
+            layout.prop(scene, "cgn_aromatic_torus_color", text="Torus Color")
 
 
 class CGN_PT_about(Panel):
     bl_label = "About"
     bl_idname = "CGN_PT_about"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "CCTBX GN"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    bl_options = {"DEFAULT_CLOSED"}
     bl_order = 6
 
     def draw(self, context):
         layout = self.layout
         version = ".".join(str(part) for part in bl_info["version"])
-        layout.label(text=f"Version {version}", icon='INFO')
+        layout.label(text=f"Version {version}", icon="INFO")
         gemmi_version, error = _gemmi_status()
         if error:
-            layout.label(text="gemmi not available", icon='ERROR')
+            layout.label(text="gemmi not available", icon="ERROR")
         else:
-            layout.label(text=f"gemmi {gemmi_version}", icon='PYTHON')
-        layout.operator(
-            "wm.url_open", text="Documentation", icon='URL'
-        ).url = _DOCS_URL
+            layout.label(text=f"gemmi {gemmi_version} (bundled)", icon="PYTHON")
+        layout.operator("wm.url_open", text="Documentation", icon="URL").url = _DOCS_URL
 
 
 class CGN_MT_viewport(Menu):
     bl_idname = "CGN_MT_viewport"
-    bl_label = "CCTBX"
+    bl_label = "CrystalViz"
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("cgn.import_cif", text="Import CIF...", icon='IMPORT')
+        layout.operator("cgn.import_cif", text="Import CIF...", icon="IMPORT")
         if _active_root(context.scene) is None:
             return
         layout.separator()
-        layout.menu("CGN_MT_fill", text="Fill", icon='MESH_GRID')
+        layout.menu("CGN_MT_fill", text="Fill", icon="MESH_GRID")
         layout.operator(
-            "cgn.grow_further", text="Grow Structure", icon='ADD'
+            "cgn.grow_further", text="Grow Structure", icon="ADD"
         ).all_atoms = True
         layout.operator(
             "cgn.select_growth_atoms",
             text="Grow Selected Atoms",
-            icon='RESTRICT_SELECT_OFF',
+            icon="RESTRICT_SELECT_OFF",
         )
-        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon='X')
+        layout.operator("cgn.delete_atoms", text="Delete Atoms", icon="X")
         layout.separator()
         layout.operator(
-            "cgn.rebuild_connectivity", text="Rebuild Bonds", icon='FILE_REFRESH'
+            "cgn.rebuild_connectivity", text="Rebuild Bonds", icon="FILE_REFRESH"
         )
 
 
@@ -4402,7 +4301,7 @@ def _draw_viewport_menu(self, context):
 
 
 def _draw_file_import(self, context):
-    self.layout.operator("cgn.import_cif", text="CIF (.cif)", icon='IMPORT')
+    self.layout.operator("cgn.import_cif", text="CIF (.cif)", icon="IMPORT")
 
 
 _CLASSES = (
@@ -4437,41 +4336,35 @@ def register():
     bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(
         type=CGN_ConnectivityPair
     )
-    bpy.types.Scene.cgn_atom_styles = CollectionProperty(
-        type=CGN_AtomStyle
-    )
-    bpy.types.Scene.cgn_active_structure = StringProperty(options={'HIDDEN'})
+    bpy.types.Scene.cgn_atom_styles = CollectionProperty(type=CGN_AtomStyle)
+    bpy.types.Scene.cgn_active_structure = StringProperty(options={"HIDDEN"})
     bpy.types.Scene.cgn_show_hydrogens = BoolProperty(
         name="Show Hydrogens",
         description="Show hydrogen atoms and their bonds",
         default=True,
         update=_update_show_hydrogens,
     )
-    bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(
-        type=CGN_UnitCellSettings
-    )
+    bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(type=CGN_UnitCellSettings)
     bpy.types.Scene.cgn_model = EnumProperty(
         name="Model",
         description="Rendering model for atoms and bonds",
         items=_MODEL_ITEMS,
-        default='BALL_STICK',
+        default="BALL_STICK",
         update=_update_model,
     )
     bpy.types.Scene.cgn_bond_style = EnumProperty(
         name="Bond Style",
         description="Use one shared color or color each half by its bonded atom",
         items=(
-            ('SINGLE_COLOR', "Single Color", "Use one color for every bond"),
-            ('TWO_COLOR', "Two Colors", "Color each bond half by its atom"),
+            ("SINGLE_COLOR", "Single Color", "Use one color for every bond"),
+            ("TWO_COLOR", "Two Colors", "Color each bond half by its atom"),
         ),
-        default='SINGLE_COLOR',
+        default="SINGLE_COLOR",
         update=_update_bond_style,
     )
     bpy.types.Scene.cgn_chemdraw = BoolProperty(
         name="ChemDraw",
-        description=(
-            "Show localized multiple bonds and delocalized aromatic rings"
-        ),
+        description=("Show localized multiple bonds and delocalized aromatic rings"),
         default=False,
         update=_update_bond_style,
     )
@@ -4496,7 +4389,7 @@ def register():
     bpy.types.Scene.cgn_aromatic_torus_color = FloatVectorProperty(
         name="Torus Color",
         description="Color for aromatic inner tori",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -4506,7 +4399,7 @@ def register():
     bpy.types.Scene.cgn_bond_color = FloatVectorProperty(
         name="Bond Color",
         description="Color for bonds when using the single-color style",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -4576,7 +4469,7 @@ def register():
     )
     bpy.types.Scene.cgn_ortep_inner_color = FloatVectorProperty(
         name="Inner Face Color",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,
@@ -4592,7 +4485,7 @@ def register():
     )
     bpy.types.Scene.cgn_ortep_ellipse_color = FloatVectorProperty(
         name="Ellipse Color",
-        subtype='COLOR',
+        subtype="COLOR",
         size=4,
         min=0.0,
         max=1.0,

@@ -2,7 +2,7 @@ bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
     "version": (0, 5, 6),
-    "blender": (4, 0, 0),
+    "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
         "Import CIF atoms and render editable connectivity with Geometry "

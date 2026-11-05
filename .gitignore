@@ -8,6 +8,3 @@ Thumbs.db
 # (running `download` regenerates both wheels/ and the manifest's wheels
 # array), so they are not committed.
 wheels/*.whl
-
-# Built per-platform extension archives.
-dist/

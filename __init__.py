@@ -18,7 +18,6 @@ import re
 import traceback
 import uuid
 
-import bmesh
 import bpy
 import gpu
 import numpy as np
@@ -1881,45 +1880,6 @@ def _clear_unit_cell(root):
         elif isinstance(data, bpy.types.Mesh):
             bpy.data.meshes.remove(data)
 
-
-def _unit_cell_marker_mesh(cell_matrix, repeats, settings=None):
-    _face, _alpha, _edge, thickness = _unit_cell_values(settings)
-    radius = thickness * _DISPLAY_SCALE
-    mesh = bpy.data.meshes.new("CGN_UnitCell_CornerMarkers")
-    mesh["cgn_marker_radius"] = radius
-    if radius <= 0.0:
-        return mesh
-    sphere = bmesh.new()
-    try:
-        bmesh.ops.create_icosphere(sphere, subdivisions=2, radius=radius)
-        sphere.verts.ensure_lookup_table()
-        sphere.verts.index_update()
-        sphere.faces.ensure_lookup_table()
-        sphere_vertices = [vertex.co.copy() for vertex in sphere.verts]
-        sphere_faces = [
-            tuple(vertex.index for vertex in face.verts) for face in sphere.faces
-        ]
-    finally:
-        sphere.free()
-    vertices = []
-    faces = []
-    for i in range(repeats[0] + 1):
-        for j in range(repeats[1] + 1):
-            for k in range(repeats[2] + 1):
-                center = Vector(_display_point(_cell_corner(cell_matrix, i, j, k)))
-                base = len(vertices)
-                vertices.extend(tuple(center + offset) for offset in sphere_vertices)
-                faces.extend(
-                    tuple(base + index for index in face) for face in sphere_faces
-                )
-    mesh.from_pydata(vertices, [], faces)
-    mesh.update()
-    for polygon in mesh.polygons:
-        polygon.use_smooth = True
-    mesh.materials.append(_make_unit_cell_edge_material(settings))
-    return mesh
-
-
 def _stored_cell_matrix(root):
     raw = root.get("cgn_cell_matrix", "")
     if not raw:
@@ -2181,59 +2141,6 @@ def _disabled_pair_keys(pair_settings):
                 float(setting.max_distance),
             )
     return enabled
-
-
-def _atom_contacts(atoms, enabled):
-    """Map every atom index to the indices of its bonded neighbours.
-
-    Uses the same distance windows and spatial bucketing as bond building, so
-    polyhedron edges follow exactly the currently connected ligand atoms.
-    """
-    if not enabled or len(atoms) < 2:
-        return {}
-    max_distance = max(pair[1] for pair in enabled.values())
-    if max_distance <= 0:
-        return {}
-    cell_width = max(max_distance, 1e-6)
-    contacts = {}
-    buckets = {}
-    for index, atom in enumerate(atoms):
-        x, y, z = atom["cart"]
-        cell = (
-            math.floor(x / cell_width),
-            math.floor(y / cell_width),
-            math.floor(z / cell_width),
-        )
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for dz in (-1, 0, 1):
-                    for other_index in buckets.get(
-                        (cell[0] + dx, cell[1] + dy, cell[2] + dz), ()
-                    ):
-                        other = atoms[other_index]
-                        bounds = enabled.get(
-                            _pair_key(atom.get("element"), other.get("element"))
-                        )
-                        if bounds is None:
-                            continue
-                        delta = (
-                            x - other["cart"][0],
-                            y - other["cart"][1],
-                            z - other["cart"][2],
-                        )
-                        distance_squared = sum(
-                            component * component for component in delta
-                        )
-                        if distance_squared <= 1e-12:
-                            continue
-                        distance = math.sqrt(distance_squared)
-                        if not bounds[0] <= distance <= bounds[1]:
-                            continue
-                        contacts.setdefault(index, []).append(other_index)
-                        contacts.setdefault(other_index, []).append(index)
-        buckets.setdefault(cell, []).append(index)
-    return contacts
-
 
 def _p1_pool(root):
     """P1 site list as atom dicts (cart in Angstrom), for coordination search."""
@@ -5697,29 +5604,6 @@ class CGN_PT_quality(Panel):
             layout.prop(scene, "cgn_atom_subdivisions", text="Atom Subdivisions")
             layout.prop(scene, "cgn_bond_resolution", text="Bond Resolution")
 
-
-class CGN_PT_about(Panel):
-    bl_label = "About"
-    bl_idname = "CGN_PT_about"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "CrystalViz"
-    bl_parent_id = "CGN_PT_panel"
-    bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 8
-
-    def draw(self, context):
-        layout = self.layout
-        version = ".".join(str(part) for part in bl_info["version"])
-        layout.label(text=f"CrystalViz {version}", icon="INFO")
-        gemmi_version, error = _gemmi_status()
-        if error:
-            layout.label(text="gemmi not available", icon="ERROR")
-        else:
-            layout.label(text=f"gemmi {gemmi_version} (bundled)", icon="PYTHON")
-        layout.operator("wm.url_open", text="Documentation", icon="URL").url = _DOCS_URL
-
-
 class CGN_MT_viewport(Menu):
     bl_idname = "CGN_MT_viewport"
     bl_label = "CrystalViz"
@@ -5783,7 +5667,6 @@ _CLASSES = (
     CGN_PT_bond_style,
     CGN_PT_polyhedra,
     CGN_PT_quality,
-    CGN_PT_about,
 )
 
 

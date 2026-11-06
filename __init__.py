@@ -651,6 +651,13 @@ def _make_node_group(name, is_bond_group):
     if node_group is not None:
         if not is_bond_group:
             _ensure_shade_smooth(node_group)
+            for node in node_group.nodes:
+                if node.bl_idname == "GeometryNodeMeshIcoSphere":
+                    node.inputs["Subdivisions"].default_value = 3
+        else:
+            for node in node_group.nodes:
+                if node.bl_idname == "GeometryNodeCurvePrimitiveCircle":
+                    node.inputs["Resolution"].default_value = 12
         return node_group
 
     node_group = bpy.data.node_groups.new(name, "GeometryNodeTree")
@@ -685,7 +692,7 @@ def _make_node_group(name, is_bond_group):
         profile.location = (-350, -150)
         curve_to_mesh.location = (-100, 100)
         set_material.location = (150, 100)
-        profile.inputs["Resolution"].default_value = 8
+        profile.inputs["Resolution"].default_value = 12
         links.new(
             group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"]
         )
@@ -708,7 +715,7 @@ def _make_node_group(name, is_bond_group):
         set_material.location = (-100, -150)
         smooth.location = (0, -150)
         instance.location = (150, 100)
-        ico.inputs["Subdivisions"].default_value = 2
+        ico.inputs["Subdivisions"].default_value = 3
         links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
         links.new(group_in.outputs[radius_in.identifier], ico.inputs["Radius"])
         links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
@@ -790,7 +797,7 @@ def _make_unit_cell_node_group():
     smooth.location = (-100, -400)
     instance.location = (150, -300)
     realize.location = (350, -300)
-    ico.inputs["Subdivisions"].default_value = 2
+    ico.inputs["Subdivisions"].default_value = 3
     links.new(group_in.outputs[marker_radius_in.identifier], ico.inputs["Radius"])
     links.new(ico.outputs["Mesh"], ico_mat.inputs["Geometry"])
     links.new(group_in.outputs[edge_material_in.identifier], ico_mat.inputs["Material"])
@@ -2073,6 +2080,77 @@ def _apply_unit_cell_settings(scene):
         _show_unit_cell(root, cell_matrix, settings, repeats)
         return
     _update_unit_cell_objects(obj, cell_matrix, repeats, settings)
+
+
+# --------------------------------------------------------------------------
+# Render quality: sphere/bond resolution presets.
+# --------------------------------------------------------------------------
+
+_APPLYING_QUALITY = False
+
+
+def _quality_preset_values(preset):
+    if preset == "LOW":
+        return (2, 8)
+    if preset == "HIGH":
+        return (4, 16)
+    return (3, 12)
+
+
+def _apply_quality_settings(scene):
+    global _APPLYING_QUALITY
+    if scene is None:
+        return
+    preset = getattr(scene, "cgn_quality_preset", "MEDIUM")
+    if preset in ("LOW", "MEDIUM", "HIGH"):
+        atom_subdiv, bond_res = _quality_preset_values(preset)
+    else:
+        atom_subdiv = int(getattr(scene, "cgn_atom_subdivisions", 3))
+        bond_res = int(getattr(scene, "cgn_bond_resolution", 12))
+    for name, bl_id, attr, val in (
+        (_NODE_GROUP_ATOMS, "GeometryNodeMeshIcoSphere", "Subdivisions", atom_subdiv),
+        (_NODE_GROUP_BONDS, "GeometryNodeCurvePrimitiveCircle", "Resolution", bond_res),
+    ):
+        node_group = bpy.data.node_groups.get(name)
+        if node_group is None:
+            continue
+        for node in node_group.nodes:
+            if node.bl_idname == bl_id:
+                node.inputs[attr].default_value = val
+    unit_cell_group = bpy.data.node_groups.get("CGN_GN_UnitCell")
+    if unit_cell_group is not None:
+        for node in unit_cell_group.nodes:
+            if node.bl_idname == "GeometryNodeMeshIcoSphere":
+                node.inputs["Subdivisions"].default_value = atom_subdiv
+
+
+def _update_quality_preset(self, context):
+    global _APPLYING_QUALITY
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    preset = str(getattr(self, "cgn_quality_preset", "MEDIUM"))
+    if preset in ("LOW", "MEDIUM", "HIGH"):
+        atom_subdiv, bond_res = _quality_preset_values(preset)
+        _APPLYING_QUALITY = True
+        try:
+            scene.cgn_atom_subdivisions = atom_subdiv
+            scene.cgn_bond_resolution = bond_res
+        finally:
+            _APPLYING_QUALITY = False
+    _apply_quality_settings(scene)
+
+
+def _update_quality_manual(self, context):
+    global _APPLYING_QUALITY
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    if _APPLYING_QUALITY:
+        return
+    if getattr(scene, "cgn_quality_preset", "MEDIUM") in ("LOW", "MEDIUM", "HIGH"):
+        scene.cgn_quality_preset = "CUSTOM"
+    _apply_quality_settings(scene)
 
 
 # --------------------------------------------------------------------------
@@ -5597,6 +5675,29 @@ class CGN_PT_polyhedra(Panel):
             )
 
 
+class CGN_PT_quality(Panel):
+    bl_label = "Render Quality"
+    bl_idname = "CGN_PT_quality"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 7
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.prop(scene, "cgn_quality_preset", text="Preset")
+        if scene.cgn_quality_preset == "CUSTOM":
+            layout.prop(scene, "cgn_atom_subdivisions", text="Atom Subdivisions")
+            layout.prop(scene, "cgn_bond_resolution", text="Bond Resolution")
+
+
 class CGN_PT_about(Panel):
     bl_label = "About"
     bl_idname = "CGN_PT_about"
@@ -5605,12 +5706,12 @@ class CGN_PT_about(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 7
+    bl_order = 8
 
     def draw(self, context):
         layout = self.layout
         version = ".".join(str(part) for part in bl_info["version"])
-        layout.label(text=f"Version {version}", icon="INFO")
+        layout.label(text=f"CrystalViz {version}", icon="INFO")
         gemmi_version, error = _gemmi_status()
         if error:
             layout.label(text="gemmi not available", icon="ERROR")
@@ -5681,6 +5782,7 @@ _CLASSES = (
     CGN_PT_model_style,
     CGN_PT_bond_style,
     CGN_PT_polyhedra,
+    CGN_PT_quality,
     CGN_PT_about,
 )
 
@@ -5705,6 +5807,34 @@ def register():
     )
     bpy.types.Scene.cgn_polyhedron_styles = CollectionProperty(
         type=CGN_PolyhedronStyle
+    )
+    bpy.types.Scene.cgn_quality_preset = EnumProperty(
+        name="Quality",
+        description="Sphere and bond tube resolution preset",
+        items=(
+            ("LOW", "Low", "Icosphere 2, bond circle 8"),
+            ("MEDIUM", "Medium", "Icosphere 3, bond circle 12"),
+            ("HIGH", "High", "Icosphere 4, bond circle 16"),
+            ("CUSTOM", "Custom", "Use the manual values below"),
+        ),
+        default="MEDIUM",
+        update=_update_quality_preset,
+    )
+    bpy.types.Scene.cgn_atom_subdivisions = IntProperty(
+        name="Atom Subdivisions",
+        description="Icosphere subdivisions for atom spheres",
+        default=3,
+        min=1,
+        max=6,
+        update=_update_quality_manual,
+    )
+    bpy.types.Scene.cgn_bond_resolution = IntProperty(
+        name="Bond Resolution",
+        description="Circle resolution for bond tubes",
+        default=12,
+        min=4,
+        max=32,
+        update=_update_quality_manual,
     )
     bpy.types.Scene.cgn_model = EnumProperty(
         name="Model",
@@ -5898,6 +6028,9 @@ def unregister():
     del bpy.types.Scene.cgn_unit_cell_settings
     del bpy.types.Scene.cgn_polyhedron_settings
     del bpy.types.Scene.cgn_polyhedron_styles
+    del bpy.types.Scene.cgn_quality_preset
+    del bpy.types.Scene.cgn_atom_subdivisions
+    del bpy.types.Scene.cgn_bond_resolution
     del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_active_structure
     del bpy.types.Scene.cgn_atom_styles

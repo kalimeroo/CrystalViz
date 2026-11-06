@@ -207,6 +207,12 @@ _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
 _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
+_POLY_FACE_COLOR = (0.85, 0.55, 0.15, 1.0)
+_POLY_FACE_ALPHA = 0.25
+_POLY_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
+_POLY_EDGE_THICKNESS = 0.04
+_POLY_MIN_LIGANDS = 4
+_POLY_ELEMENTS_CACHE = None
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
@@ -453,6 +459,139 @@ class CGN_UnitCellSettings(PropertyGroup):
         max=1.0,
         precision=3,
         update=_unit_cell_settings_updated,
+    )
+
+
+def _polyhedron_element_items(_self, context):
+    """Enum items: structure elements able to carry four or more bonds.
+
+    Elements qualify when at least one of their atoms currently has four or
+    more connected neighbours under the enabled connectivity windows, which is
+    the weakest arrangement that still forms a closed polyhedron.
+    """
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return (("", "No eligible element", "No structure is active"),)
+    root = _active_root(scene)
+    elements = _cached_polyhedron_elements(root, scene)
+    if not elements:
+        return (
+            (
+                "",
+                "No eligible element",
+                "Import a structure and enable connectivity windows; listed "
+                "elements need at least one atom with four bonded neighbours",
+            ),
+        )
+    return tuple(
+        (
+            element,
+            element,
+            f"Build polyhedra around every {element} site with "
+            f"{_POLY_MIN_LIGANDS} or more bonded neighbours",
+        )
+        for element in elements
+    )
+
+
+def _polyhedron_element_changed(self, context):
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    element = str(getattr(self, "element", ""))
+    if element:
+        _polyhedron_style(scene, element)
+
+
+class CGN_PolyhedronSettings(PropertyGroup):
+    element: EnumProperty(
+        name="Element",
+        description=(
+            "Coordination center element; only elements that currently have "
+            "atoms with four or more bonded neighbours are offered"
+        ),
+        items=_polyhedron_element_items,
+        update=_polyhedron_element_changed,
+    )
+
+
+def _update_polyhedron_style(self, context):
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return
+    root = _active_root(scene)
+    if root is None:
+        return
+    element = str(getattr(self, "element", ""))
+    if not element:
+        return
+    face_material = _make_polyhedron_face_material(element, self)
+    edge_material = _make_polyhedron_edge_material(element, self)
+    _face, _edge, thickness = _polyhedron_style_values(self)
+    for obj in list(root.objects):
+        if str(obj.get("cgn_poly_element", "")) != element:
+            continue
+        if obj.get("cgn_role") == "polyhedron_face":
+            if obj.data.materials:
+                obj.data.materials[0] = face_material
+            else:
+                obj.data.materials.append(face_material)
+        elif obj.get("cgn_role") == "polyhedron_edge":
+            if obj.data.materials:
+                obj.data.materials[0] = edge_material
+            else:
+                obj.data.materials.append(edge_material)
+            if isinstance(obj.data, bpy.types.Curve):
+                obj.data.bevel_depth = thickness * _DISPLAY_SCALE
+
+class CGN_PolyhedronStyle(PropertyGroup):
+    element: StringProperty(options={"HIDDEN"})
+    face_color: FloatVectorProperty(
+        name="Face Color",
+        description="Polyhedron face color (defaults to the central atom colour)",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+        update=_update_polyhedron_style,
+    )
+    face_transparency: FloatProperty(
+        name="Transparency",
+        description="Polyhedron face transparency (1 is fully transparent)",
+        default=1.0 - _POLY_FACE_ALPHA,
+        min=0.0,
+        max=1.0,
+        precision=2,
+        update=_update_polyhedron_style,
+    )
+    edge_color: FloatVectorProperty(
+        name="Edge Color",
+        description="Polyhedron edge color",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=_POLY_EDGE_COLOR,
+        update=_update_polyhedron_style,
+    )
+    edge_transparency: FloatProperty(
+        name="Edge Transparency",
+        description="Polyhedron edge transparency (1 is fully transparent)",
+        default=0.0,
+        min=0.0,
+        max=1.0,
+        precision=2,
+        update=_update_polyhedron_style,
+    )
+    edge_width: FloatProperty(
+        name="Edge Width",
+        description="Polyhedron edge width",
+        default=_POLY_EDGE_THICKNESS,
+        min=0.0,
+        max=0.25,
+        precision=3,
+        update=_update_polyhedron_style,
     )
 
 
@@ -1829,6 +1968,706 @@ def _apply_unit_cell_settings(scene):
     )
 
 
+# --------------------------------------------------------------------------
+# Coordination polyhedra: convex hulls around connected ligand atoms.
+# Faces and edges reuse the unit-cell rendering (transparent face mesh plus
+# beveled edge curves) so both stay visually consistent.
+# --------------------------------------------------------------------------
+
+_POLY_ROLE_ROLES = ("polyhedron_face", "polyhedron_edge")
+
+
+def _enabled_pair_windows(pair_settings):
+    """Enabled element-pair (min, max) distance windows from the panel."""
+    enabled = {}
+    for setting in pair_settings:
+        if setting.enabled and setting.max_distance >= setting.min_distance:
+            enabled[_pair_key(setting.element_a, setting.element_b)] = (
+                float(setting.min_distance),
+                float(setting.max_distance),
+            )
+    return enabled
+
+
+def _atom_contacts(atoms, enabled):
+    """Map every atom index to the indices of its bonded neighbours.
+
+    Uses the same distance windows and spatial bucketing as bond building, so
+    polyhedron edges follow exactly the currently connected ligand atoms.
+    """
+    if not enabled or len(atoms) < 2:
+        return {}
+    max_distance = max(pair[1] for pair in enabled.values())
+    if max_distance <= 0:
+        return {}
+    cell_width = max(max_distance, 1e-6)
+    contacts = {}
+    buckets = {}
+    for index, atom in enumerate(atoms):
+        x, y, z = atom["cart"]
+        cell = (
+            math.floor(x / cell_width),
+            math.floor(y / cell_width),
+            math.floor(z / cell_width),
+        )
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for other_index in buckets.get(
+                        (cell[0] + dx, cell[1] + dy, cell[2] + dz), ()
+                    ):
+                        other = atoms[other_index]
+                        bounds = enabled.get(
+                            _pair_key(atom.get("element"), other.get("element"))
+                        )
+                        if bounds is None:
+                            continue
+                        delta = (
+                            x - other["cart"][0],
+                            y - other["cart"][1],
+                            z - other["cart"][2],
+                        )
+                        distance_squared = sum(
+                            component * component for component in delta
+                        )
+                        if distance_squared <= 1e-12:
+                            continue
+                        distance = math.sqrt(distance_squared)
+                        if not bounds[0] <= distance <= bounds[1]:
+                            continue
+                        contacts.setdefault(index, []).append(other_index)
+                        contacts.setdefault(other_index, []).append(index)
+        buckets.setdefault(cell, []).append(index)
+    return contacts
+
+
+def _p1_pool(root):
+    """P1 site list as atom dicts (cart in Angstrom), for coordination search."""
+    try:
+        sites = json.loads(root.get("cgn_sites", "[]"))
+    except (TypeError, ValueError):
+        return []
+    cell_matrix = _stored_cell_matrix(root)
+    if not cell_matrix:
+        return []
+    pool = []
+    for site in sites:
+        try:
+            frac = [float(value) for value in site["frac"]]
+        except (TypeError, ValueError, KeyError):
+            continue
+        cart = [
+            frac[0] * cell_matrix[axis]
+            + frac[1] * cell_matrix[3 + axis]
+            + frac[2] * cell_matrix[6 + axis]
+            for axis in range(3)
+        ]
+        pool.append(
+            {
+                "element": str(site.get("element", "X")).upper(),
+                "frac": frac,
+                "cart": cart,
+                "covalent_radius": float(site.get("covalent_radius", 0.0))
+                or _DEFAULT_VDW_RADIUS * 0.5,
+            }
+        )
+    return pool, cell_matrix
+
+
+def _polyhedron_ligands_for_center(center_cart, center_covalent, pool, cell_matrix, tolerance=0.8):
+    """Ligand display positions for one center, including periodic images.
+
+    Image translations are chosen relative to the center's own cell, so
+    coordination spheres are found for atoms anywhere in a grown/packed
+    structure, not just near the origin.
+    """
+    if not pool or not cell_matrix:
+        return []
+    if center_covalent is None or center_covalent <= 0:
+        center_covalent = _DEFAULT_VDW_RADIUS * 0.5
+
+    M = [
+        [cell_matrix[0], cell_matrix[1], cell_matrix[2]],
+        [cell_matrix[3], cell_matrix[4], cell_matrix[5]],
+        [cell_matrix[6], cell_matrix[7], cell_matrix[8]],
+    ]
+    det = (
+        M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1])
+        - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
+        + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])
+    )
+    if abs(det) < 1e-12:
+        return []
+    inv = [
+        [
+            (M[1][1] * M[2][2] - M[1][2] * M[2][1]) / det,
+            (M[0][2] * M[2][1] - M[0][1] * M[2][2]) / det,
+            (M[0][1] * M[1][2] - M[0][2] * M[1][1]) / det,
+        ],
+        [
+            (M[1][2] * M[2][0] - M[1][0] * M[2][2]) / det,
+            (M[0][0] * M[2][2] - M[0][2] * M[2][0]) / det,
+            (M[0][2] * M[1][0] - M[0][0] * M[1][2]) / det,
+        ],
+        [
+            (M[1][0] * M[2][1] - M[1][1] * M[2][0]) / det,
+            (M[0][1] * M[2][0] - M[0][0] * M[2][1]) / det,
+            (M[0][0] * M[1][1] - M[0][1] * M[1][0]) / det,
+        ],
+    ]
+    fcx = inv[0][0] * center_cart[0] + inv[0][1] * center_cart[1] + inv[0][2] * center_cart[2]
+    fcy = inv[1][0] * center_cart[0] + inv[1][1] * center_cart[1] + inv[1][2] * center_cart[2]
+    fcz = inv[2][0] * center_cart[0] + inv[2][1] * center_cart[1] + inv[2][2] * center_cart[2]
+
+    c0 = (cell_matrix[0], cell_matrix[3], cell_matrix[6])
+    c1 = (cell_matrix[1], cell_matrix[4], cell_matrix[7])
+    c2 = (cell_matrix[2], cell_matrix[5], cell_matrix[8])
+
+    def translate(pos, tx, ty, tz):
+        return (
+            pos[0] + tx * c0[0] + ty * c1[0] + tz * c2[0],
+            pos[1] + tx * c0[1] + ty * c1[1] + tz * c2[1],
+            pos[2] + tx * c0[2] + ty * c1[2] + tz * c2[2],
+        )
+
+    ligands = []
+    seen = set()
+    for atom in pool:
+        cj = atom["cart"]
+        rj = atom["covalent_radius"]
+        threshold = center_covalent + rj + tolerance
+        pj = atom["frac"]
+        tx0 = int(round(fcx - pj[0]))
+        ty0 = int(round(fcy - pj[1]))
+        tz0 = int(round(fcz - pj[2]))
+        for tx in (tx0 - 1, tx0, tx0 + 1):
+            for ty in (ty0 - 1, ty0, ty0 + 1):
+                for tz in (tz0 - 1, tz0, tz0 + 1):
+                    img = translate(cj, tx, ty, tz)
+                    delta = (center_cart[0] - img[0], center_cart[1] - img[1], center_cart[2] - img[2])
+                    d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
+                    if d2 <= 1e-12:
+                        continue
+                    if math.sqrt(d2) > threshold:
+                        continue
+                    pos = _display_point(img)
+                    key = tuple(round(v, 6) for v in pos)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    site_index = pool.index(atom)
+                    ligands.append((pos, site_index, (tx, ty, tz)))
+    return ligands
+
+
+def _polyhedron_style_values(style):
+    """Return (face_rgba, edge_rgba, thickness) from a per-element style."""
+    face_color = tuple(float(channel) for channel in style.face_color)
+    face_alpha = max(0.0, min(1.0, 1.0 - float(style.face_transparency)))
+    face_rgba = (*face_color[:3], face_alpha)
+    edge_color = tuple(float(channel) for channel in style.edge_color)
+    edge_alpha = max(0.0, min(1.0, 1.0 - float(style.edge_transparency)))
+    edge_rgba = (*edge_color[:3], edge_alpha)
+    thickness = max(0.0, min(0.25, float(style.edge_width)))
+    return face_rgba, edge_rgba, thickness
+
+
+def _polyhedron_style(scene, element):
+    """Look up or create the style for an element (defaults to atom colour)."""
+    for style in scene.cgn_polyhedron_styles:
+        if style.element == element:
+            return style
+    color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
+    style = scene.cgn_polyhedron_styles.add()
+    style.element = element
+    style.face_color = color
+    style.face_transparency = 1.0 - _POLY_FACE_ALPHA
+    style.edge_color = _POLY_EDGE_COLOR
+    style.edge_transparency = 0.0
+    style.edge_width = _POLY_EDGE_THICKNESS
+    return style
+
+
+def _existing_polyhedron_style(scene, element):
+    for style in scene.cgn_polyhedron_styles:
+        if style.element == element:
+            return style
+    return None
+
+
+def _make_polyhedron_face_material(element, style):
+    material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}")
+    if material is None:
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Face_Material_{element}")
+    material.use_nodes = True
+    face_rgba, _edge, _thickness = _polyhedron_style_values(style)
+    color, alpha = face_rgba[:3], face_rgba[3]
+    material.diffuse_color = (*color, alpha)
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = (*color, 1.0)
+        shader.inputs["Roughness"].default_value = 0.4
+        if "Alpha" in shader.inputs:
+            shader.inputs["Alpha"].default_value = alpha
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = "BLENDED"
+    elif hasattr(material, "blend_method"):
+        material.blend_method = "BLEND"
+    if hasattr(material, "show_transparent_back"):
+        material.show_transparent_back = True
+    material.use_backface_culling = False
+    return material
+
+
+def _make_polyhedron_edge_material(element, style):
+    material = bpy.data.materials.get(f"CGN_Polyhedron_Edge_Material_{element}")
+    if material is None:
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Edge_Material_{element}")
+    material.use_nodes = True
+    _face, edge_rgba, _thickness = _polyhedron_style_values(style)
+    color, alpha = edge_rgba[:3], edge_rgba[3]
+    material.diffuse_color = (*color, alpha)
+    shader = material.node_tree.nodes.get("Principled BSDF")
+    if shader is not None:
+        shader.inputs["Base Color"].default_value = (*color, 1.0)
+        shader.inputs["Roughness"].default_value = 0.5
+        if "Alpha" in shader.inputs:
+            shader.inputs["Alpha"].default_value = alpha
+    if hasattr(material, "surface_render_method"):
+        material.surface_render_method = "BLENDED"
+    elif hasattr(material, "blend_method"):
+        material.blend_method = "BLEND"
+    material.use_backface_culling = False
+    return material
+
+
+def _cached_polyhedron_elements(root, scene):
+    """Eligible center elements based on P1 sites + periodic images."""
+    global _POLY_ELEMENTS_CACHE
+    if root is None or not root.get("cgn_sites"):
+        return []
+    try:
+        pool, cell_matrix = _p1_pool(root)
+    except Exception:
+        return []
+    if not pool:
+        return []
+    cache_key = (
+        root.get("cgn_instance_id", root.name),
+        len(pool),
+    )
+    cached = _POLY_ELEMENTS_CACHE
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+    eligible = set()
+    for site in pool:
+        ligands = _polyhedron_ligands_for_center(
+            site["cart"], site["covalent_radius"], pool, cell_matrix, 0.8
+        )
+        if len(ligands) >= _POLY_MIN_LIGANDS:
+            eligible.add(site["element"])
+    elements = sorted(eligible)
+    _POLY_ELEMENTS_CACHE = (cache_key, elements)
+    return elements
+
+
+def _clear_polyhedra(root, element=None):
+    """Remove polyhedra objects; pass an element to keep the others."""
+    for obj in list(root.objects):
+        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
+            continue
+        if element is not None and str(obj.get("cgn_poly_element", "")) != element:
+            continue
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is None or data.users != 0:
+            continue
+        if isinstance(data, bpy.types.Curve):
+            bpy.data.curves.remove(data)
+        elif isinstance(data, bpy.types.Mesh):
+            bpy.data.meshes.remove(data)
+    """Remove polyhedra objects; pass an element to keep the others."""
+    for obj in list(root.objects):
+        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
+            continue
+        if element is not None and str(obj.get("cgn_poly_element", "")) != element:
+            continue
+        data = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is None or data.users != 0:
+            continue
+        if isinstance(data, bpy.types.Curve):
+            bpy.data.curves.remove(data)
+        elif isinstance(data, bpy.types.Mesh):
+            bpy.data.meshes.remove(data)
+
+
+
+
+def _remap_polyhedra(root, removed_indices):
+    """Shift polyhedra center/ligand indices after atoms were deleted."""
+    removed = sorted({int(index) for index in removed_indices})
+    if not removed:
+        return
+    for obj in list(root.objects):
+        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
+            continue
+        raw = obj.get("cgn_poly_map", "")
+        try:
+            poly_map = json.loads(raw)
+        except (TypeError, ValueError):
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        shifted = {}
+        for center, ligands in poly_map.items():
+            center = int(center)
+            if center in removed:
+                continue
+            drop = center - sum(1 for index in removed if index < center)
+            shifted[str(drop)] = [
+                int(ligand) - sum(1 for index in removed if index < int(ligand))
+                for ligand in ligands
+                if int(ligand) not in removed
+            ]
+        obj["cgn_poly_map"] = json.dumps(shifted)
+
+
+def _vec_sub(u, v):
+    return (u[0] - v[0], u[1] - v[1], u[2] - v[2])
+
+
+def _vec_add(u, v):
+    return (u[0] + v[0], u[1] + v[1], u[2] + v[2])
+
+
+def _vec_scale(u, factor):
+    return (u[0] * factor, u[1] * factor, u[2] * factor)
+
+
+def _vec_cross(u, v):
+    return (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+
+
+def _vec_dot(u, v):
+    return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+
+
+def _vec_distance_squared(u, v):
+    d = _vec_sub(u, v)
+    return _vec_dot(d, d)
+
+
+def _polygon_newell(loop, vertices):
+    """Newell normal and plane offset for a polygon index loop."""
+    normal = (0.0, 0.0, 0.0)
+    count = len(loop)
+    for position in range(count):
+        u = vertices[loop[position]]
+        v = vertices[loop[(position + 1) % count]]
+        normal = _vec_add(
+            normal,
+            (
+                (u[1] - v[1]) * (u[2] + v[2]),
+                (u[2] - v[2]) * (u[0] + v[0]),
+                (u[0] - v[0]) * (u[1] + v[1]),
+            ),
+        )
+    length = math.sqrt(_vec_dot(normal, normal))
+    if length <= 1e-12:
+        return (0.0, 0.0, 0.0), 0.0
+    unit = _vec_scale(normal, 1.0 / length)
+    offset = _vec_dot(unit, vertices[loop[0]])
+    return unit, offset
+
+
+def _convex_hull_faces(vertices):
+    """Convex hull faces of deduplicated display-unit positions.
+
+    Returns index triples wound outward. The hull grows from an initial
+    tetrahedron; every inserted point flips the visible faces over its
+    horizon edges. All faces are re-oriented against the current interior
+    centroid after each insertion, so winding never depends on input order.
+    """
+    n = len(vertices)
+    if n < 4:
+        return []
+    index0 = 0
+    index1 = max(
+        range(n), key=lambda i: _vec_distance_squared(vertices[i], vertices[index0])
+    )
+    if _vec_distance_squared(vertices[index1], vertices[index0]) <= 1e-12:
+        return []
+    axis = _vec_sub(vertices[index1], vertices[index0])
+    index2 = max(
+        range(n), key=lambda i: _vec_dot(
+            _vec_cross(_vec_sub(vertices[i], vertices[index0]), axis),
+            _vec_cross(_vec_sub(vertices[i], vertices[index0]), axis),
+        )
+    )
+    if index2 == index0 or index2 == index1:
+        if _vec_distance_squared(vertices[index2], vertices[index0]) <= 1e-12:
+            return []
+    plane_normal = _vec_cross(
+        _vec_sub(vertices[index1], vertices[index0]),
+        _vec_sub(vertices[index2], vertices[index0]),
+    )
+    plane_length = math.sqrt(_vec_dot(plane_normal, plane_normal))
+    if plane_length <= 1e-12:
+        return []
+    index3 = max(
+        range(n),
+        key=lambda i: abs(
+            _vec_dot(_vec_sub(vertices[i], vertices[index0]), plane_normal)
+        ),
+    )
+    if abs(_vec_dot(_vec_sub(vertices[index3], vertices[index0]), plane_normal)) <= 1e-9:
+        return []  # all positions coplanar; no volume to enclose
+
+    seeds = (index0, index1, index2, index3)
+    faces = [
+        (index0, index1, index2),
+        (index0, index1, index3),
+        (index0, index2, index3),
+        (index1, index2, index3),
+    ]
+    tetra_centroid = _vec_scale(
+        _vec_add(
+            _vec_add(vertices[index0], vertices[index1]),
+            _vec_add(vertices[index2], vertices[index3]),
+        ),
+        0.25,
+    )
+    faces = [
+        (
+            face
+            if _vec_dot(
+                _vec_cross(
+                    _vec_sub(vertices[face[1]], vertices[face[0]]),
+                    _vec_sub(vertices[face[2]], vertices[face[0]]),
+                ),
+                _vec_sub(
+                    _vec_scale(
+                        _vec_add(
+                            _vec_add(vertices[face[0]], vertices[face[1]]),
+                            vertices[face[2]],
+                        ),
+                        1.0 / 3.0,
+                    ),
+                    tetra_centroid,
+                ),
+            )
+            > 0.0
+            else (face[0], face[2], face[1])
+        )
+        for face in faces
+    ]
+    eps = 1e-6
+    processed = list(seeds)
+    for point_index in range(n):
+        if point_index in seeds:
+            continue
+        point = vertices[point_index]
+        visible = []
+        for face in faces:
+            a, b, c = (vertices[i] for i in face)
+            if (
+                _vec_dot(
+                    _vec_cross(_vec_sub(b, a), _vec_sub(c, a)),
+                    _vec_sub(point, a),
+                )
+                > eps
+            ):
+                visible.append(face)
+        if not visible:
+            processed.append(point_index)
+            continue
+        edge_counts = {}
+        for face in visible:
+            for position in range(3):
+                edge = tuple(sorted((face[position], face[(position + 1) % 3])))
+                edge_counts[edge] = edge_counts.get(edge, 0) + 1
+        horizon = [edge for edge, count in edge_counts.items() if count == 1]
+        if not horizon:  # defensive; cannot happen for a proper horizon
+            continue
+        visible_set = set(visible)
+        faces = [face for face in faces if face not in visible_set] + [
+            (edge[0], edge[1], point_index) for edge in horizon
+        ]
+        # Pivot strictly inside the current hull: the centroid of every point
+        # processed so far (each lies in, or on, the current hull).
+        pivot = _vec_scale(
+            (
+                sum(vertices[i][0] for i in processed) / len(processed),
+                sum(vertices[i][1] for i in processed) / len(processed),
+                sum(vertices[i][2] for i in processed) / len(processed),
+            ),
+            1.0,
+        )
+        oriented = []
+        for face in faces:
+            a, b, c = (vertices[i] for i in face)
+            face_center = _vec_scale(
+                _vec_add(_vec_add(a, b), c), 1.0 / 3.0
+            )
+            if (
+                _vec_dot(
+                    _vec_cross(_vec_sub(b, a), _vec_sub(c, a)),
+                    _vec_sub(face_center, pivot),
+                )
+                > 0.0
+            ):
+                oriented.append(face)
+            else:
+                oriented.append((face[0], face[2], face[1]))
+        faces = oriented
+        processed.append(point_index)
+    return faces
+
+
+def _merge_coplanar_faces(faces, vertices):
+    """Merge coplanar triangles into n-gons so square faces lose diagonals.
+
+    Returns (polygon_loops, undirected_edge_set) over the input vertex list.
+    """
+    groups = {}
+    for face in faces:
+        unit, offset = _polygon_newell(face, vertices)
+        key = (
+            round(unit[0], 4),
+            round(unit[1], 4),
+            round(unit[2], 4),
+            round(offset, 4),
+        )
+        groups.setdefault(key, []).append(face)
+    merged = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        # Coplanar triangles are wound consistently, so shared interior edges
+        # appear in both directions; boundary edges chain into polygon loops.
+        directed = []
+        for face in group:
+            for position in range(3):
+                directed.append((face[position], face[(position + 1) % 3]))
+        directed_set = set(directed)
+        boundary = [
+            (start, end) for (start, end) in directed
+            if (end, start) not in directed_set
+        ]
+        next_vertex = {}
+        for start, end in boundary:
+            existing = next_vertex.get(start)
+            # two boundary edges may share a start vertex in non-simple
+            # groups; keep pairing unambiguous by falling back
+            if existing is not None and existing != end:
+                next_vertex = None
+                break
+            next_vertex[start] = end
+        if next_vertex is None:
+            merged.extend(group)
+            continue
+        remaining = set(boundary)
+        loops = []
+        while remaining:
+            start = next(iter(remaining))[0]
+            loop = [start]
+            while True:
+                follower = next_vertex.get(loop[-1])
+                if follower is None or (loop[-1], follower) not in remaining:
+                    loop = None
+                    break
+                remaining.discard((loop[-1], follower))
+                if follower == start:
+                    break
+                loop.append(follower)
+            if loop is None or len(loop) < 3:
+                loops = None
+                break
+            loops.append(loop)
+        if loops is None:
+            merged.extend(group)
+            continue
+        merged.extend(loops)
+    return merged, {
+        tuple(sorted((loop[i], loop[(i + 1) % len(loop)])))
+        for loop in merged
+        for i in range(len(loop))
+    }
+
+
+def _polyhedron_topology(points):
+    """Return (vertices, faces, edges) for coordination polyhedron faces.
+
+    ``points`` are display-unit positions. Coplanar hull triangles are merged
+    into n-gons; the returned edges are the true polyhedron creases (no
+    diagonals inside planar faces). Returns None when the positions do not
+    enclose a volume.
+    """
+    deduplicated = []
+    kept = []
+    for index, point in enumerate(points):
+        if any(
+            _vec_distance_squared(point, previous) <= 1e-9
+            for previous in deduplicated
+        ):
+            continue
+        deduplicated.append(point)
+        kept.append(index)
+    faces = _convex_hull_faces(deduplicated)
+    if not faces:
+        return None
+    faces, edges = _merge_coplanar_faces(faces, deduplicated)
+    if not faces or not edges:
+        return None
+    pivot = _vec_scale(
+        (
+            sum(point[0] for point in deduplicated) / len(deduplicated),
+            sum(point[1] for point in deduplicated) / len(deduplicated),
+            sum(point[2] for point in deduplicated) / len(deduplicated),
+        ),
+        1.0,
+    )
+    oriented = []
+    for loop in faces:
+        unit, _offset = _polygon_newell(loop, deduplicated)
+        center = _vec_scale(
+            (
+                sum(deduplicated[i][0] for i in loop) / len(loop),
+                sum(deduplicated[i][1] for i in loop) / len(loop),
+                sum(deduplicated[i][2] for i in loop) / len(loop),
+            ),
+            1.0,
+        )
+        if _vec_dot(unit, _vec_sub(center, pivot)) > 0.0:
+            oriented.append(loop)
+        else:
+            oriented.append(tuple(reversed(loop)))
+    edges = [
+        (first, second)
+        for first, second in edges
+        if first < len(deduplicated) and second < len(deduplicated)
+    ]
+    # Drop vertices that never appear in a face or edge (interior points).
+    used = sorted(
+        {index for loop in oriented for index in loop}
+        | {index for first, second in edges for index in (first, second)}
+    )
+    if not used:
+        return None
+    index_map = {old: new for new, old in enumerate(used)}
+    compact_vertices = [deduplicated[index] for index in used]
+    compact_kept = [kept[index] for index in used]
+    compact_faces = [tuple(index_map[index] for index in loop) for loop in oriented]
+    compact_edges = [(index_map[first], index_map[second]) for first, second in edges]
+    return (compact_vertices, compact_kept, compact_faces, compact_edges)
+
+
+
 def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
 
@@ -3121,6 +3960,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         _rebuild_atom_objects(root, atoms)
         _update_growth_selection(root, atoms, [])
         _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+        _clear_polyhedra(root)
         _apply_unit_cell_settings(context.scene)
     except Exception as exc:
         traceback.print_exc()
@@ -3788,6 +4628,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             _rebuild_atom_objects(root, atoms)
             _update_growth_selection(root, atoms, [])
             _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+            _remap_polyhedra(root, removed)
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
@@ -3953,6 +4794,296 @@ class CGN_OT_grow_further(Operator):
             {"INFO"},
             f"Added {grew_by} atoms; structure now contains {len(instances) // 4} atoms.",
         )
+        return {"FINISHED"}
+
+
+def _build_polyhedra_objects(root, atoms, center_indices, scene):
+    """Build polyhedra, grouping centers by element so each element keeps
+    its own style and materials.  Ligands come from the P1 site pool plus
+    periodic images, so coordination spheres are complete even when the
+    displayed structure is only the asymmetric unit.  Returns (built, skipped).
+    """
+    if scene is None:
+        scene = bpy.context.scene
+    pool, cell_matrix = _p1_pool(root)
+    if not pool or not cell_matrix:
+        return 0, len(center_indices)
+
+    new_ligand_keys = set()
+    new_ligand_quads = []
+    groups = {}
+    for center in center_indices:
+        element = str(atoms[center].get("element", "X")).upper()
+        groups.setdefault(element, []).append(center)
+
+    built_total = 0
+    skipped_total = 0
+    for element, centers in groups.items():
+        style = _polyhedron_style(scene, element)
+        _clear_polyhedra(root, element)
+        poly_map = {}
+        vertices = []
+        faces = []
+        edges = []
+        for center in centers:
+            center_cart = atoms[center]["cart"]
+            center_covalent = float(atoms[center].get("covalent_radius", 0.0)) or _DEFAULT_VDW_RADIUS * 0.5
+            ligands = _polyhedron_ligands_for_center(
+                center_cart, center_covalent, pool, cell_matrix, 0.8
+            )
+            if len(ligands) < _POLY_MIN_LIGANDS:
+                skipped_total += 1
+                continue
+            ligand_positions = [item[0] for item in ligands]
+            topology = _polyhedron_topology(ligand_positions)
+            if topology is None:
+                skipped_total += 1
+                continue
+            local_vertices, kept, local_faces, local_edges = topology
+            base = len(vertices)
+            vertices.extend(local_vertices)
+            faces.extend(
+                tuple(base + index for index in loop) for loop in local_faces
+            )
+            edges.extend(
+                (base + first, base + second) for first, second in local_edges
+            )
+            poly_map[str(center)] = []
+            for _pos, site_index, (tx, ty, tz) in ligands:
+                key = (site_index, tx, ty, tz)
+                if key not in new_ligand_keys:
+                    new_ligand_keys.add(key)
+                    new_ligand_quads.append((site_index, tx, ty, tz))
+            built_total += 1
+        if not vertices or not faces:
+            continue
+
+        face_material = _make_polyhedron_face_material(element, style)
+        mesh = bpy.data.meshes.new(f"CGN_Polyhedra_Faces_{element}")
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update()
+        for polygon in mesh.polygons:
+            polygon.use_smooth = False
+        mesh.materials.append(face_material)
+        face_obj = bpy.data.objects.new(mesh.name, mesh)
+        face_obj["cgn_role"] = "polyhedron_face"
+        face_obj["cgn_poly_element"] = element
+        face_obj["cgn_poly_map"] = json.dumps(poly_map)
+        root.objects.link(face_obj)
+
+        _face, _edge, thickness = _polyhedron_style_values(style)
+        curve = bpy.data.curves.new(f"CGN_Polyhedra_Edges_{element}", "CURVE")
+        curve.dimensions = "3D"
+        curve.resolution_u = 1
+        curve.bevel_resolution = 2
+        curve.bevel_depth = thickness * _DISPLAY_SCALE
+        for first, second in edges:
+            spline = curve.splines.new("POLY")
+            spline.points.add(1)
+            spline.points[0].co = (*vertices[first], 1.0)
+            spline.points[1].co = (*vertices[second], 1.0)
+        curve.materials.append(_make_polyhedron_edge_material(element, style))
+        edge_obj = bpy.data.objects.new(curve.name, curve)
+        edge_obj["cgn_role"] = "polyhedron_edge"
+        edge_obj["cgn_poly_element"] = element
+        edge_obj["cgn_poly_map"] = json.dumps(poly_map)
+        root.objects.link(edge_obj)
+
+    # Add the ligand atoms (polyhedron vertices) to the displayed structure
+    # so the polyhedron edges connect to real atoms.
+    if new_ligand_quads:
+        try:
+            sites, instances, cell_matrix, initial_count = _structure_tables(root)
+        except (ValueError, TypeError):
+            sites, instances, cell_matrix, initial_count = None, None, None, 0
+        if sites is not None:
+            existing = set()
+            count = len(instances) - len(instances) % 4
+            for offset in range(0, count, 4):
+                existing.add(
+                    (int(instances[offset]), int(instances[offset + 1]),
+                     int(instances[offset + 2]), int(instances[offset + 3]))
+                )
+            added = False
+            for quad in new_ligand_quads:
+                if quad in existing:
+                    continue
+                instances.extend(quad)
+                existing.add(quad)
+                added = True
+            if added:
+                atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
+                try:
+                    _rebuild_atom_objects(root, atoms)
+                    _update_growth_selection(root, atoms, [])
+                    _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+                    _apply_unit_cell_settings(scene)
+                except Exception:
+                    traceback.print_exc()
+                root["cgn_instances"] = json.dumps(instances)
+                root["cgn_initial_count"] = initial_count
+    return built_total, skipped_total
+
+
+class CGN_OT_create_polyhedra(Operator):
+    bl_idname = "cgn.create_polyhedra"
+    bl_label = "Create Polyhedra"
+    bl_description = (
+        "Build convex polyhedra around every atom of the selected element "
+        "that has four or more bonded neighbours"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def execute(self, context):
+        scene = context.scene
+        root = _active_root(scene)
+        if root is None:
+            self.report({"ERROR"}, "Import a CIF before creating polyhedra.")
+            return {"CANCELLED"}
+        try:
+            atoms = _structure_atoms(root)
+        except (ValueError, TypeError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        element = str(getattr(scene.cgn_polyhedron_settings, "element", ""))
+        if not element:
+            self.report(
+                {"ERROR"},
+                "No eligible element is available; enable connectivity "
+                "windows so an element gains four or more neighbours.",
+            )
+            return {"CANCELLED"}
+        centers = [
+            index
+            for index, atom in enumerate(atoms)
+            if str(atom.get("element", "X")).upper() == element
+        ]
+        if not centers:
+            self.report({"ERROR"}, f"The structure contains no {element} atoms.")
+            return {"CANCELLED"}
+        try:
+            built, skipped = _build_polyhedra_objects(
+                root, atoms, centers, scene
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        if built == 0:
+            self.report(
+                {"ERROR"},
+                f"No {element} atom has four or more bonded neighbours to "
+                "enclose a polyhedron.",
+            )
+            return {"CANCELLED"}
+        message = f"Built {built} {element} polyhedra."
+        if skipped:
+            message += f" {skipped} site(s) skipped (too few ligands or planar)."
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+class CGN_OT_create_polyhedra_selected(_CGN_OT_select_atoms):
+    bl_idname = "cgn.create_polyhedra_selected"
+    bl_label = "Create from Selected"
+    bl_description = (
+        "Select atoms in the viewport, then confirm to build polyhedra "
+        "around them and their connected ligands"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    select_error = "Import a CIF before selecting polyhedron centers."
+    status_text = (
+        "Click atoms to add/remove, drag a box to select; Shift adds. "
+        "Enter/right-click creates the polyhedra, Esc cancels."
+    )
+    keep_stored_selection = False
+
+    def _confirm(self, context):
+        if not self._selected:
+            self._finish(context)
+            self.report({"ERROR"}, "Select one or more atoms before building.")
+            return {"CANCELLED"}
+        root = bpy.data.collections.get(self._root_name)
+        if root is None or root.get("cgn_instance_id") != self._root_id:
+            self._finish(context)
+            self.report({"ERROR"}, "The active structure changed during selection.")
+            return {"CANCELLED"}
+        try:
+            atoms = _structure_atoms(root)
+        except (ValueError, TypeError) as exc:
+            self._finish(context)
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        centers = sorted(
+            {
+                index
+                for index in self._selected
+                if isinstance(index, int) and 0 <= index < len(atoms)
+            }
+        )
+        self._finish(context)
+        try:
+            built, skipped = _build_polyhedra_objects(
+                root,
+                atoms,
+                centers,
+                context.scene,
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        # The viewport highlight wrote the transient selection into the
+        # growth-selection storage; restore what was there before the modal.
+        try:
+            _update_growth_selection(root, atoms, self._initial_selection)
+        except Exception:
+            traceback.print_exc()
+        if built == 0:
+            self.report(
+                {"ERROR"},
+                "Skipped every selected atom: fewer than four bonded "
+                "neighbours or a planar coordination.",
+            )
+            return {"CANCELLED"}
+        message = f"Built {built} polyhedra."
+        if skipped:
+            message += f" {skipped} selected atom(s) skipped."
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
+class CGN_OT_clear_polyhedra(Operator):
+    bl_idname = "cgn.clear_polyhedra"
+    bl_label = "Clear Polyhedra"
+    bl_description = "Remove polyhedra faces and edges (all, or one element)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    element: StringProperty(default="", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        root = _active_root(context.scene)
+        return root is not None and any(
+            obj.get("cgn_role") in _POLY_ROLE_ROLES for obj in root.objects
+        )
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({"ERROR"}, "Import a CIF before clearing polyhedra.")
+            return {"CANCELLED"}
+        target = str(self.element).upper() if self.element else None
+        _clear_polyhedra(root, target)
+        if target:
+            self.report({"INFO"}, f"Removed {target} polyhedra.")
+        else:
+            self.report({"INFO"}, "Removed every polyhedron.")
         return {"FINISHED"}
 
 
@@ -4271,6 +5402,74 @@ class CGN_PT_bond_style(Panel):
             layout.prop(scene, "cgn_aromatic_torus_color", text="Torus Color")
 
 
+class CGN_PT_polyhedra(Panel):
+    bl_label = "Polyhedra"
+    bl_idname = "CGN_PT_polyhedra"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 6
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        root = _active_root(scene)
+        settings = scene.cgn_polyhedron_settings
+        col = layout.column(align=True)
+        col.prop(settings, "element", text="Element")
+        col.operator("cgn.create_polyhedra", text="Create Polyhedra", icon="MESH_GRID")
+        col.operator(
+            "cgn.create_polyhedra_selected",
+            text="Create from Selected",
+            icon="RESTRICT_SELECT_OFF",
+        )
+        # Per-element delete buttons
+        present_elements = sorted(
+            {
+                str(obj.get("cgn_poly_element", "")).upper()
+                for obj in root.objects
+                if obj.get("cgn_role") in _POLY_ROLE_ROLES
+                and str(obj.get("cgn_poly_element", "")).strip()
+            }
+        )
+        if present_elements:
+            box = layout.box()
+            box.label(text="Delete polyhedra")
+            for element in present_elements:
+                op = box.operator(
+                    "cgn.clear_polyhedra",
+                    text=f"Delete {element} polyhedra",
+                    icon="X",
+                )
+                op.element = element
+        layout.operator("cgn.clear_polyhedra", text="Clear All Polyhedra", icon="TRASH")
+        elements = _cached_polyhedron_elements(root, scene) if root is not None else []
+        shown = False
+        for element in elements:
+            style = _existing_polyhedron_style(scene, element)
+            if style is None:
+                continue
+            shown = True
+            box = layout.box()
+            box.label(text=f"{element} polyhedron")
+            box.prop(style, "face_color", text="Face")
+            box.prop(style, "face_transparency", text="Face Transparency", slider=True)
+            box.prop(style, "edge_color", text="Edge")
+            box.prop(style, "edge_transparency", text="Edge Transparency", slider=True)
+            box.prop(style, "edge_width", text="Edge Width", slider=True)
+        if not shown:
+            layout.label(
+                text="Select an element above to configure its style.",
+                icon="INFO",
+            )
+
+
 class CGN_PT_about(Panel):
     bl_label = "About"
     bl_idname = "CGN_PT_about"
@@ -4279,7 +5478,7 @@ class CGN_PT_about(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 6
+    bl_order = 7
 
     def draw(self, context):
         layout = self.layout
@@ -4332,6 +5531,8 @@ _CLASSES = (
     CGN_ConnectivityPair,
     CGN_AtomStyle,
     CGN_UnitCellSettings,
+    CGN_PolyhedronSettings,
+    CGN_PolyhedronStyle,
     CGN_OT_import_cif,
     CGN_OT_rebuild_connectivity,
     CGN_OT_fill_asu,
@@ -4341,6 +5542,9 @@ _CLASSES = (
     CGN_OT_select_growth_atoms,
     CGN_OT_delete_atoms,
     CGN_OT_grow_further,
+    CGN_OT_create_polyhedra,
+    CGN_OT_create_polyhedra_selected,
+    CGN_OT_clear_polyhedra,
     CGN_MT_fill,
     CGN_MT_viewport,
     CGN_PT_panel,
@@ -4349,6 +5553,7 @@ _CLASSES = (
     CGN_PT_unit_cell,
     CGN_PT_model_style,
     CGN_PT_bond_style,
+    CGN_PT_polyhedra,
     CGN_PT_about,
 )
 
@@ -4368,6 +5573,12 @@ def register():
         update=_update_show_hydrogens,
     )
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(type=CGN_UnitCellSettings)
+    bpy.types.Scene.cgn_polyhedron_settings = PointerProperty(
+        type=CGN_PolyhedronSettings
+    )
+    bpy.types.Scene.cgn_polyhedron_styles = CollectionProperty(
+        type=CGN_PolyhedronStyle
+    )
     bpy.types.Scene.cgn_model = EnumProperty(
         name="Model",
         description="Rendering model for atoms and bonds",
@@ -4558,6 +5769,8 @@ def unregister():
     del bpy.types.Scene.cgn_ellipsoid_probability
     del bpy.types.Scene.cgn_model
     del bpy.types.Scene.cgn_unit_cell_settings
+    del bpy.types.Scene.cgn_polyhedron_settings
+    del bpy.types.Scene.cgn_polyhedron_styles
     del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_active_structure
     del bpy.types.Scene.cgn_atom_styles

@@ -10,7 +10,7 @@ license = [
   "SPDX:GPL-3.0-or-later",
 ]
 
-tags = ["Import-Export", "Geometry Nodes", "Science"]
+tags = ["Import-Export", "Geometry Nodes", "Material"]
 
 blender_version_min = "5.2.0"
 

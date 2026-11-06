@@ -82,7 +82,7 @@ Cell parameters retain CIF standard uncertainties, for example `7.57360(10)`,
 and exact integer angles display without decimal places;
 **Build** holds Fill, Grow, Delete and a **Show Hydrogens** checkbox that hides
 or shows hydrogen atoms together with their bonds; **Connectivity**,
-**Unit Cell**, **Atom Model & Style** and **About** are collapsed by default.
+**Unit Cell**, **Polyhedra**, **Atom Model & Style** and **About** are collapsed by default.
 The same build actions are available from the **CrystalViz** menu in the 3D Viewport
 header, and CIF import is also registered under **File > Import**.
 
@@ -137,10 +137,22 @@ Wire-sticks,
 double and triple bonds independently. In Wire-sticks, the shared atom-and-bond
 radius control keeps the single-bond and atom radii equal.
 
-Every model has independent per-element color and roughness controls, with
-roughness defaulting to 0.25. Ball & Stick also lets each element's atom radius
-be adjusted from zero to its van der Waals radius. Hydrogen size is adjustable
-in ORTEP and Space-filling modes.
+The collapsible **Polyhedra** sub-panel (placed under Bond Style) builds a
+convex coordination polyhedron around central atoms. Choose an element from the
+dropdown — only elements that currently have at least one atom with four or more
+bonded neighbours are offered — then click **Create Polyhedra** to build one
+polyhedron per site of that element, or **Create from Selected** to enter viewport
+selection mode and build only around the chosen atoms. Neighbours are taken from
+the P1 site table plus periodic images, so coordination spheres are complete even
+when only the asymmetric unit is displayed, and the ligand atoms are added to the
+displayed structure so polyhedron edges connect to real atoms. Each polyhedron
+is the convex hull of its connected ligands; faces are merged where coplanar so
+square faces do not get spurious diagonal edges. Per-element appearance controls
+(face color, defaulting to the central atom's CPK colour, face transparency,
+edge color, edge transparency and edge width) are shown for each element that has
+a style, and individual element types can be removed with **Delete {element}
+polyhedra** or all at once with **Clear All Polyhedra**. Square-planar and other
+fully coplanar coordinations are currently skipped.
 
 Switching models rebuilds atom and bond objects from the stored site table, so a
 structure imported before this feature still switches correctly (it simply has
@@ -191,8 +203,21 @@ remove it, Shift adds to the selection, then press Enter or right-click to
 delete them, or press Esc to cancel. Atom meshes and bonds are rebuilt after
 deletion.
 
-The prototype does not yet support coordination-polyhedron tools from the
-original add-on.
+The prototype now includes coordination-polyhedron tools: the collapsible **Polyhedra**
+sub-panel (under Bond Style) builds a convex polyhedron around every atom of a
+chosen element that has at least four bonded neighbours. Eligible elements are
+those with at least one atom carrying four or more neighbours, detected from the
+P1 site table plus periodic images, so coordination spheres are complete even
+when only the asymmetric unit is displayed. **Create Polyhedra** builds them for
+all sites of the selected element; **Create from Selected** enters viewport
+selection mode and builds only around the chosen atoms. Each polyhedron's ligand
+atoms are added to the displayed structure. Per-element appearance controls
+(face color, which defaults to the central atom's CPK colour, face transparency,
+edge color, edge transparency and edge width) live in the same panel, and
+individual element types can be removed with **Delete {element} polyhedra** or
+all at once with **Clear All Polyhedra**. Polyhedra are convex hulls of the
+connected ligand atoms; square-planar and other coplanar coordinations are not
+yet supported.
 The source unit-cell parameters, space-group symbol and symmetry operators are
 retained on the generated structure collection.
 

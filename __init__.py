@@ -723,6 +723,92 @@ def _make_node_group(name, is_bond_group):
     return node_group
 
 
+def _make_unit_cell_node_group():
+    node_group = bpy.data.node_groups.get("CGN_GN_UnitCell")
+    if node_group is not None:
+        return node_group
+    node_group = bpy.data.node_groups.new("CGN_GN_UnitCell", "GeometryNodeTree")
+    geometry_in = node_group.interface.new_socket(
+        name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+    )
+    face_material_in = node_group.interface.new_socket(
+        name="Face Material", in_out="INPUT", socket_type="NodeSocketMaterial"
+    )
+    edge_material_in = node_group.interface.new_socket(
+        name="Edge Material", in_out="INPUT", socket_type="NodeSocketMaterial"
+    )
+    edge_thickness_in = node_group.interface.new_socket(
+        name="Edge Thickness", in_out="INPUT", socket_type="NodeSocketFloat"
+    )
+    edge_thickness_in.default_value = _UNIT_CELL_EDGE_THICKNESS * _DISPLAY_SCALE
+    marker_radius_in = node_group.interface.new_socket(
+        name="Marker Radius", in_out="INPUT", socket_type="NodeSocketFloat"
+    )
+    marker_radius_in.default_value = _UNIT_CELL_EDGE_THICKNESS * _DISPLAY_SCALE
+    geometry_out = node_group.interface.new_socket(
+        name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+    )
+
+    nodes = node_group.nodes
+    links = node_group.links
+    group_in = nodes.new("NodeGroupInput")
+    group_out = nodes.new("NodeGroupOutput")
+    group_in.location = (-900, 0)
+    group_out.location = (900, 0)
+
+    # Branch 1: faces (transparent)
+    set_face_mat = nodes.new("GeometryNodeSetMaterial")
+    set_face_mat.location = (-300, 200)
+    links.new(group_in.outputs[geometry_in.identifier], set_face_mat.inputs["Geometry"])
+    links.new(group_in.outputs[face_material_in.identifier], set_face_mat.inputs["Material"])
+
+    # Branch 2: beveled edges
+    mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
+    profile = nodes.new("GeometryNodeCurvePrimitiveCircle")
+    curve_to_mesh = nodes.new("GeometryNodeCurveToMesh")
+    set_edge_mat = nodes.new("GeometryNodeSetMaterial")
+    mesh_to_curve.location = (-400, -100)
+    profile.location = (-400, -250)
+    curve_to_mesh.location = (-150, -100)
+    set_edge_mat.location = (100, -100)
+    profile.inputs["Resolution"].default_value = 8
+    links.new(group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"])
+    links.new(mesh_to_curve.outputs["Curve"], curve_to_mesh.inputs["Curve"])
+    links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
+    links.new(group_in.outputs[edge_thickness_in.identifier], profile.inputs["Radius"])
+    links.new(curve_to_mesh.outputs["Mesh"], set_edge_mat.inputs["Geometry"])
+    links.new(group_in.outputs[edge_material_in.identifier], set_edge_mat.inputs["Material"])
+
+    # Branch 3: corner markers (icospheres on vertices)
+    ico = nodes.new("GeometryNodeMeshIcoSphere")
+    ico_mat = nodes.new("GeometryNodeSetMaterial")
+    smooth = nodes.new("GeometryNodeSetShadeSmooth")
+    instance = nodes.new("GeometryNodeInstanceOnPoints")
+    realize = nodes.new("GeometryNodeRealizeInstances")
+    ico.location = (-400, -400)
+    ico_mat.location = (-250, -400)
+    smooth.location = (-100, -400)
+    instance.location = (150, -300)
+    realize.location = (350, -300)
+    ico.inputs["Subdivisions"].default_value = 2
+    links.new(group_in.outputs[marker_radius_in.identifier], ico.inputs["Radius"])
+    links.new(ico.outputs["Mesh"], ico_mat.inputs["Geometry"])
+    links.new(group_in.outputs[edge_material_in.identifier], ico_mat.inputs["Material"])
+    links.new(ico_mat.outputs["Geometry"], smooth.inputs["Geometry"])
+    links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
+    links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
+    links.new(instance.outputs["Instances"], realize.inputs["Geometry"])
+
+    # Join
+    join = nodes.new("GeometryNodeJoinGeometry")
+    join.location = (700, 0)
+    links.new(set_face_mat.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(set_edge_mat.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(realize.outputs["Geometry"], join.inputs["Geometry"])
+    links.new(join.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
+    return node_group
+
+
 def _current_model(scene=None):
     """Return the active rendering model name."""
     if scene is None:
@@ -1773,6 +1859,7 @@ def _cell_corner(cell_matrix, fx, fy, fz):
 def _clear_unit_cell(root):
     for obj in list(root.objects):
         if obj.get("cgn_role") not in {
+            "unit_cell",
             "unit_cell_edge",
             "unit_cell_face",
             "unit_cell_marker",
@@ -1840,7 +1927,12 @@ def _stored_cell_matrix(root):
 
 
 def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
-    """Draw one or more transparent unit cells with solid edges."""
+    """Draw one or more unit cells as a single Geometry-Nodes object.
+
+    Faces, beveled edges and corner markers all live in one mesh; the
+    single GN modifier rebuilds the edges and markers from the mesh, so the
+    panel can still adjust face/edge color, transparency and thickness.
+    """
     _clear_unit_cell(root)
     _face, _alpha, _edge, thickness = _unit_cell_values(settings)
     edge_corners = [
@@ -1857,73 +1949,90 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
         (0, 2, 6, 4),
         (1, 5, 7, 3),
     )
-    corners = []
-    faces = []
+    # Deduplicate grid corners so markers instance once per unique corner.
+    corner_index = {}
+    corner_positions = []
 
-    curve = bpy.data.curves.new("CGN_UnitCell_Edges", "CURVE")
-    curve.dimensions = "3D"
-    curve.resolution_u = 1
-    curve.bevel_resolution = 2
-    curve.bevel_depth = thickness * _DISPLAY_SCALE
+    def corner(i, j, k, tx, ty, tz):
+        key = (i + tx, j + ty, k + tz)
+        if key in corner_index:
+            return corner_index[key]
+        position = _display_point(
+            _cell_corner(cell_matrix, i + tx, j + ty, k + tz)
+        )
+        index = len(corner_positions)
+        corner_index[key] = index
+        corner_positions.append(position)
+        return index
+
+    edges = []
+    faces = []
     for tx in range(repeats[0]):
         for ty in range(repeats[1]):
             for tz in range(repeats[2]):
-                base = len(corners)
-                corners.extend(
-                    _display_point(_cell_corner(cell_matrix, i + tx, j + ty, k + tz))
+                base_indices = [
+                    corner(i, j, k, tx, ty, tz)
                     for i in range(2)
                     for j in range(2)
                     for k in range(2)
-                )
+                ]
+                # base_indices order matches the original 0..7 corner order:
+                # i outer, j middle, k inner -> index = i*4 + j*2 + k
                 for first, second in edge_corners:
-                    spline = curve.splines.new("POLY")
-                    spline.points.add(1)
-                    spline.points[0].co = (*corners[base + first], 1.0)
-                    spline.points[1].co = (*corners[base + second], 1.0)
-                faces.extend(
-                    tuple(base + index for index in face) for face in face_corners
-                )
-    curve.materials.append(_make_unit_cell_edge_material(settings))
-    edge_obj = bpy.data.objects.new("CGN_UnitCell_Edges", curve)
-    edge_obj["cgn_role"] = "unit_cell_edge"
-    root.objects.link(edge_obj)
+                    edges.append(
+                        (base_indices[first], base_indices[second])
+                    )
+                for face in face_corners:
+                    faces.append(
+                        tuple(base_indices[index] for index in face)
+                    )
 
-    marker_mesh = _unit_cell_marker_mesh(cell_matrix, repeats, settings)
-    marker_obj = bpy.data.objects.new("CGN_UnitCell_CornerMarkers", marker_mesh)
-    marker_obj["cgn_role"] = "unit_cell_marker"
-    root.objects.link(marker_obj)
-
-    mesh = bpy.data.meshes.new("CGN_UnitCell_Faces")
-    mesh.from_pydata(corners, [], faces)
+    mesh = bpy.data.meshes.new("CGN_UnitCell")
+    mesh.from_pydata(corner_positions, edges, faces)
     mesh.update()
-    mesh.materials.append(_make_unit_cell_face_material(settings))
-    face_obj = bpy.data.objects.new("CGN_UnitCell_Faces", mesh)
-    face_obj["cgn_role"] = "unit_cell_face"
-    root.objects.link(face_obj)
+    for polygon in mesh.polygons:
+        polygon.use_smooth = False
+
+    node_group = _make_unit_cell_node_group()
+    obj = bpy.data.objects.new("CGN_UnitCell", mesh)
+    obj["cgn_role"] = "unit_cell"
+    root.objects.link(obj)
+
+    modifier = obj.modifiers.new("Geometry Nodes", "NODES")
+    modifier.node_group = node_group
+    face_material = _make_unit_cell_face_material(settings)
+    edge_material = _make_unit_cell_edge_material(settings)
+    _set_modifier_input(modifier, node_group, "Face Material", face_material)
+    _set_modifier_input(modifier, node_group, "Edge Material", edge_material)
+    _set_modifier_input(
+        modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE
+    )
+    _set_modifier_input(
+        modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE
+    )
+    obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
-def _update_unit_cell_objects(
-    edge_obj, face_obj, marker_obj, cell_matrix, repeats, settings
-):
+def _update_unit_cell_objects(obj, cell_matrix, repeats, settings):
     _face, _alpha, _edge, thickness = _unit_cell_values(settings)
-    if isinstance(edge_obj.data, bpy.types.Curve):
-        edge_obj.data.bevel_depth = thickness * _DISPLAY_SCALE
-    marker_mesh = marker_obj.data
-    marker_radius = float(marker_mesh.get("cgn_marker_radius", -1.0))
-    expected_radius = thickness * _DISPLAY_SCALE
-    if not math.isclose(marker_radius, expected_radius, abs_tol=1e-9):
-        marker_obj.data = _unit_cell_marker_mesh(cell_matrix, repeats, settings)
-        if marker_mesh.users == 0:
-            bpy.data.meshes.remove(marker_mesh)
-    for obj, material in (
-        (edge_obj, _make_unit_cell_edge_material(settings)),
-        (marker_obj, _make_unit_cell_edge_material(settings)),
-        (face_obj, _make_unit_cell_face_material(settings)),
-    ):
-        if obj.data.materials:
-            obj.data.materials[0] = material
-        else:
-            obj.data.materials.append(material)
+    node_group = _make_unit_cell_node_group()
+    if obj.modifiers and obj.modifiers[0].type == "NODES":
+        modifier = obj.modifiers[0]
+    else:
+        modifier = obj.modifiers.new("Geometry Nodes", "NODES")
+        modifier.node_group = node_group
+    modifier.node_group = node_group
+    face_material = _make_unit_cell_face_material(settings)
+    edge_material = _make_unit_cell_edge_material(settings)
+    _set_modifier_input(modifier, node_group, "Face Material", face_material)
+    _set_modifier_input(modifier, node_group, "Edge Material", edge_material)
+    _set_modifier_input(
+        modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE
+    )
+    _set_modifier_input(
+        modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE
+    )
+    obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
 def _apply_unit_cell_settings(scene):
@@ -1948,24 +2057,22 @@ def _apply_unit_cell_settings(scene):
         repeats = (1, 1, 1)
     if len(repeats) != 3:
         repeats = (1, 1, 1)
-    edge_obj = next(
-        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_edge"),
-        None,
+    obj = next(
+        (o for o in root.objects if o.get("cgn_role") == "unit_cell"), None
     )
-    face_obj = next(
-        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_face"),
-        None,
-    )
-    marker_obj = next(
-        (obj for obj in root.objects if obj.get("cgn_role") == "unit_cell_marker"),
-        None,
-    )
-    if edge_obj is None or face_obj is None or marker_obj is None:
+    # Legacy objects from older builds: remove them and rebuild as one.
+    legacy = [
+        o for o in root.objects
+        if o.get("cgn_role") in {"unit_cell_edge", "unit_cell_face", "unit_cell_marker"}
+    ]
+    if legacy:
+        _clear_unit_cell(root)
+        obj = None
+    expected_corners = (repeats[0] + 1) * (repeats[1] + 1) * (repeats[2] + 1)
+    if obj is None or len(obj.data.vertices) != expected_corners:
         _show_unit_cell(root, cell_matrix, settings, repeats)
         return
-    _update_unit_cell_objects(
-        edge_obj, face_obj, marker_obj, cell_matrix, repeats, settings
-    )
+    _update_unit_cell_objects(obj, cell_matrix, repeats, settings)
 
 
 # --------------------------------------------------------------------------
@@ -1977,7 +2084,16 @@ def _apply_unit_cell_settings(scene):
 _POLY_ROLE_ROLES = ("polyhedron_face", "polyhedron_edge")
 
 
-def _enabled_pair_windows(pair_settings):
+def _disabled_pair_keys(pair_settings):
+    """Element pairs the user has explicitly disabled in Connectivity."""
+    status = {}
+    for setting in pair_settings:
+        key = _pair_key(setting.element_a, setting.element_b)
+        if setting.enabled:
+            status[key] = True
+        else:
+            status.setdefault(key, False)
+    return {key for key, enabled in status.items() if not enabled}
     """Enabled element-pair (min, max) distance windows from the panel."""
     enabled = {}
     for setting in pair_settings:
@@ -2069,22 +2185,25 @@ def _p1_pool(root):
                 "cart": cart,
                 "covalent_radius": float(site.get("covalent_radius", 0.0))
                 or _DEFAULT_VDW_RADIUS * 0.5,
+                "index": len(pool),
             }
         )
     return pool, cell_matrix
 
 
-def _polyhedron_ligands_for_center(center_cart, center_covalent, pool, cell_matrix, tolerance=0.8):
+def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element, pool, cell_matrix, disabled_pairs=None, tolerance=0.8):
     """Ligand display positions for one center, including periodic images.
 
-    Image translations are chosen relative to the center's own cell, so
-    coordination spheres are found for atoms anywhere in a grown/packed
-    structure, not just near the origin.
+    Neighbours come from every periodic image of every P1 site within
+    ``covalent_a + covalent_b + tolerance`` Angstrom.  Element pairs that
+    the user has explicitly disabled in the Connectivity panel are excluded,
+    so e.g. an unchecked Ti-Ti pair never produces Ti ligands.
     """
     if not pool or not cell_matrix:
         return []
     if center_covalent is None or center_covalent <= 0:
         center_covalent = _DEFAULT_VDW_RADIUS * 0.5
+    disabled_pairs = disabled_pairs or set()
 
     M = [
         [cell_matrix[0], cell_matrix[1], cell_matrix[2]],
@@ -2135,6 +2254,8 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, pool, cell_matr
     for atom in pool:
         cj = atom["cart"]
         rj = atom["covalent_radius"]
+        if _pair_key(center_element, atom["element"]) in disabled_pairs:
+            continue
         threshold = center_covalent + rj + tolerance
         pj = atom["frac"]
         tx0 = int(round(fcx - pj[0]))
@@ -2155,7 +2276,7 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, pool, cell_matr
                     if key in seen:
                         continue
                     seen.add(key)
-                    site_index = pool.index(atom)
+                    site_index = atom["index"]
                     ligands.append((pos, site_index, (tx, ty, tz)))
     return ligands
 
@@ -2255,14 +2376,17 @@ def _cached_polyhedron_elements(root, scene):
     cache_key = (
         root.get("cgn_instance_id", root.name),
         len(pool),
+        frozenset(_disabled_pair_keys(scene.cgn_connectivity_pairs)),
     )
     cached = _POLY_ELEMENTS_CACHE
     if cached is not None and cached[0] == cache_key:
         return cached[1]
+    disabled_pairs = _disabled_pair_keys(scene.cgn_connectivity_pairs)
     eligible = set()
     for site in pool:
         ligands = _polyhedron_ligands_for_center(
-            site["cart"], site["covalent_radius"], pool, cell_matrix, 0.8
+            site["cart"], site["covalent_radius"], site["element"],
+            pool, cell_matrix, disabled_pairs, 0.8
         )
         if len(ligands) >= _POLY_MIN_LIGANDS:
             eligible.add(site["element"])
@@ -4829,7 +4953,10 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene):
             center_cart = atoms[center]["cart"]
             center_covalent = float(atoms[center].get("covalent_radius", 0.0)) or _DEFAULT_VDW_RADIUS * 0.5
             ligands = _polyhedron_ligands_for_center(
-                center_cart, center_covalent, pool, cell_matrix, 0.8
+                center_cart, center_covalent,
+                str(atoms[center].get("element", "X")).upper(),
+                pool, cell_matrix,
+                _disabled_pair_keys(scene.cgn_connectivity_pairs), 0.8
             )
             if len(ligands) < _POLY_MIN_LIGANDS:
                 skipped_total += 1

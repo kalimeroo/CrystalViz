@@ -361,6 +361,12 @@ def _site_u_cart(site, unit_cell, operation=None):
     CIF Uij values are expressed along the direct cell axes, so they are first
     converted to the reciprocal-basis tensor and then to Cartesian space.
     Symmetry images rotate the tensor with the operation that generated them.
+
+    Careful: gemmi's ``aniso.elements_voigt()`` returns the *mechanics* Voigt
+    order (U11, U22, U33, U23, U13, U12), not the standard CIF order —
+    ``values[3]`` is U23 and ``values[5]`` is U12, which matches the
+    off-diagonal layout of ``u_cif`` below (verified against cctbx's
+    ``adptbx.u_cif_as_u_cart``).
     """
     aniso = getattr(site, "aniso", None)
     try:

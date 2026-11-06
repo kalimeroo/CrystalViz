@@ -1202,6 +1202,20 @@ def _atom_style(scene, element):
     return style
 
 
+def _existing_atom_style(scene, element):
+    """Read-only style lookup, safe to call from panel ``draw``.
+
+    Mutating scene data during redraw (the legacy migration and style creation
+    in ``_atom_style``) is not allowed, so panels must never call that helper.
+    Styles are created by the import/bond-rebuild paths instead; elements with
+    no style yet are drawn as a hint until the next structural operation.
+    """
+    for style in scene.cgn_atom_styles:
+        if style.element == element:
+            return style
+    return None
+
+
 def _add_geometry_nodes_modifier(
     obj,
     node_group,
@@ -3170,6 +3184,7 @@ class CGN_OT_rebuild_connectivity(Operator):
     bl_idname = "cgn.rebuild_connectivity"
     bl_label = "Rebuild Bonds"
     bl_description = "Apply enabled element-pair distance windows to the imported atoms"
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         root = _active_root(context.scene)
@@ -3774,10 +3789,6 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        try:
-            bpy.ops.ed.undo_push(message="Delete Atoms")
-        except RuntimeError:
-            pass
         self.report(
             {"INFO"},
             f"Deleted {len(removed)} atoms; structure now contains {len(atoms)} atoms.",
@@ -3789,6 +3800,7 @@ class CGN_OT_grow_further(Operator):
     bl_idname = "cgn.grow_further"
     bl_label = "Grow Structure"
     bl_description = "Add one shell around all atoms or the selected growth atoms"
+    bl_options = {"REGISTER", "UNDO"}
 
     all_atoms: BoolProperty(
         name="Grow from all atoms",
@@ -3936,7 +3948,7 @@ class CGN_OT_grow_further(Operator):
             return {"CANCELLED"}
         self.report(
             {"INFO"},
-            f"Added {grew_by} atoms; structure now contains {len(atoms)} atoms.",
+            f"Added {grew_by} atoms; structure now contains {len(instances) // 4} atoms.",
         )
         return {"FINISHED"}
 
@@ -4177,7 +4189,15 @@ class CGN_PT_model_style(Panel):
             box = layout.box()
             box.label(text="Atom Appearance")
             for element in elements:
-                style = _atom_style(scene, element)
+                style = _existing_atom_style(scene, element)
+                if style is None:
+                    # No data mutation during draw; styles are created on
+                    # import / bond rebuild. Hint instead of drawing controls.
+                    box.label(
+                        text=f"{element}: import or rebuild bonds to configure.",
+                        icon="INFO",
+                    )
+                    continue
                 row = box.row(align=True)
                 row.label(text=element)
                 row.prop(style, "color", text="")

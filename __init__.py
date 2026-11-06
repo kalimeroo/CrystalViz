@@ -3695,6 +3695,9 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
         "Select atoms in the viewport, then confirm to grow around them; "
         "click a selected atom to remove it, Shift adds to the selection"
     )
+    # Undo step at modal end, so the seed selection and the subsequent growth
+    # (cgn.grow_further, deferred to a timer) land as two separate undo steps.
+    bl_options = {"REGISTER", "UNDO"}
 
     select_error = "Import a CIF before selecting growth atoms."
     status_text = (

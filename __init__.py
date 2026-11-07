@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
-    "version": (0, 8, 0),
+    "version": (0, 8, 2),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -4609,14 +4609,16 @@ class _CGN_OT_select_atoms(Operator):
                 self._selected.clear()
             x_min, x_max = sorted((self._drag_start.x, self._drag_end.x))
             y_min, y_max = sorted((self._drag_start.y, self._drag_end.y))
-            indices, points, _depths, _visible = self._project_atoms(context)
+            indices, points, _depths, visible = self._project_atoms(context)
             boxed = (
                 (points[:, 0] >= x_min)
                 & (points[:, 0] <= x_max)
                 & (points[:, 1] >= y_min)
                 & (points[:, 1] <= y_max)
             )
-            self._selected.update(int(index) for index in indices[boxed])
+            # Hidden atoms (e.g. hydrogens) are projected too; keep the box
+            # selection consistent with click selection and skip them.
+            self._selected.update(int(index) for index in indices[boxed & visible])
         else:
             indices, points, depths, visible = self._project_atoms(context)
             nearest = _click_candidate(

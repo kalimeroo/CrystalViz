@@ -160,7 +160,7 @@ def _latest_release():
 _MANIFEST_TEMPLATE = '''schema_version = "1.0.0"
 
 id = "crystalviz"
-version = "0.8.0"
+version = "0.8.2"
 name = "CrystalViz"
 tagline = "Import CIF atoms and render with Geometry Nodes"
 maintainer = "OpenAI"

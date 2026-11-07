@@ -64,9 +64,6 @@ _COVALENT_RADII = {
 
 _DEFAULT_VDW_RADIUS = 1.70
 _DEFAULT_COVALENT_RADIUS = 0.75
-# cctbx.crystal.special_position_settings default: snap sites onto a special
-# position when the deviation is below this many Angstrom.
-_SNAP_DISTANCE = 0.5
 _CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
 _LABEL_ELEMENT = re.compile(r"([A-Za-z]{1,2})")
 
@@ -204,45 +201,6 @@ def _op_key(operation):
             rotation.append(int(row))
     return (tuple(rotation),
             tuple(int(value) for value in operation.tran))
-
-
-def _site_symmetry_group(ops, unit_cell, frac):
-    """Subgroup of ops that keep ``frac`` fixed within the snap distance."""
-    near = [
-        operation for operation in ops
-        if _cart_distance(unit_cell, operation.apply_to_xyz(frac), frac)
-        <= _SNAP_DISTANCE
-    ]
-    if len(near) <= 1:
-        return list(near)
-    subgroup = {}
-    for operation in near:
-        subgroup[_op_key(operation)] = operation
-    pending = list(subgroup.values())
-    while pending:
-        left = pending.pop()
-        for right in list(subgroup.values()):
-            product = left.combine(right)
-            key = _op_key(product)
-            if key not in subgroup:
-                subgroup[key] = product
-                pending.append(product)
-    return list(subgroup.values())
-
-
-def _special_position(ops, unit_cell, frac):
-    """Project a site onto the special position of its site-symmetry group."""
-    subgroup = _site_symmetry_group(ops, unit_cell, frac)
-    if len(subgroup) <= 1:
-        return list(frac)
-    total = [0.0, 0.0, 0.0]
-    for operation in subgroup:
-        moved = operation.apply_to_xyz(frac)
-        for axis in range(3):
-            delta = float(moved[axis]) - float(frac[axis])
-            total[axis] += float(frac[axis]) + (delta - round(delta))
-    count = float(len(subgroup))
-    return [value / count for value in total]
 
 
 def _expand_site(ops, unit_cell, frac):
@@ -427,7 +385,7 @@ def _p1_sites(structure, unit_cell):
     for site in structure.sites:
         element = _site_element(site)
         vdw_radius, covalent_radius = _radius_tables(element)
-        frac = _special_position(ops, unit_cell, [float(v) for v in site.fract])
+        frac = [float(v) for v in site.fract]
         for image, operation in _expand_site(ops, unit_cell, frac):
             site_data = {
                 "label": site.label,
@@ -455,9 +413,7 @@ def load_structure(cif_path, block_name=None):
     lookup = _base_atom_lookup(unit_cell, base_atoms)
     asu_atoms = []
     for site in structure.sites:
-        frac = _special_position(
-            ops, unit_cell, [float(value) for value in site.fract]
-        )
+        frac = [float(value) for value in site.fract]
         asu_atoms.append({
             "label": site.label,
             "element": _site_element(site).upper(),

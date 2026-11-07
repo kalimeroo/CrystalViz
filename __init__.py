@@ -2132,15 +2132,7 @@ def _disabled_pair_keys(pair_settings):
         else:
             status.setdefault(key, False)
     return {key for key, enabled in status.items() if not enabled}
-    """Enabled element-pair (min, max) distance windows from the panel."""
-    enabled = {}
-    for setting in pair_settings:
-        if setting.enabled and setting.max_distance >= setting.min_distance:
-            enabled[_pair_key(setting.element_a, setting.element_b)] = (
-                float(setting.min_distance),
-                float(setting.max_distance),
-            )
-    return enabled
+
 
 def _p1_pool(root):
     """P1 site list as atom dicts (cart in Angstrom), for coordination search."""
@@ -2395,23 +2387,6 @@ def _clear_polyhedra(root, element=None):
             bpy.data.curves.remove(data)
         elif isinstance(data, bpy.types.Mesh):
             bpy.data.meshes.remove(data)
-    """Remove polyhedra objects; pass an element to keep the others."""
-    for obj in list(root.objects):
-        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
-            continue
-        if element is not None and str(obj.get("cgn_poly_element", "")) != element:
-            continue
-        data = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if data is None or data.users != 0:
-            continue
-        if isinstance(data, bpy.types.Curve):
-            bpy.data.curves.remove(data)
-        elif isinstance(data, bpy.types.Mesh):
-            bpy.data.meshes.remove(data)
-
-
-
 
 def _remap_polyhedra(root, removed_indices):
     """Shift polyhedra center/ligand indices after atoms were deleted."""

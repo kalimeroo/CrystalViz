@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
-    "version": (0, 8, 5),
+    "version": (0, 8, 6),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -2201,7 +2201,9 @@ def _p1_pool(root):
     return pool, cell_matrix
 
 
-def _polyhedron_ligands_for_center(center_cart, center_element, pool, cell_matrix, windows):
+def _polyhedron_ligands_for_center(
+    center_cart, center_element, pool, cell_matrix, windows
+):
     """Ligand display positions for one center, including periodic images.
 
     The search radius and acceptance range come from the enabled connectivity
@@ -2251,6 +2253,7 @@ def _polyhedron_ligands_for_center(center_cart, center_element, pool, cell_matri
         if maximum <= 0.0:
             continue
         pj = atom["frac"]
+        site_index = atom["index"]
         pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
         for im in cell.find_nearest_pbc_images(center_frac, maximum, pj_gemmi, 0):
             f_img = cell.fract_image(im, pj_gemmi)
@@ -2270,7 +2273,6 @@ def _polyhedron_ligands_for_center(center_cart, center_element, pool, cell_matri
             if key in seen:
                 continue
             seen.add(key)
-            site_index = atom["index"]
             ligands.append((pos, site_index, (tx, ty, tz)))
     return ligands
 
@@ -2400,33 +2402,165 @@ def _clear_polyhedra(root, element=None):
             continue
         _remove_object(obj)
 
-def _remap_polyhedra(root, removed_indices):
-    """Shift polyhedra center/ligand indices after atoms were deleted."""
+def _polyhedron_geometry(
+    atoms, centers, pool, cell_matrix, windows, removed_quads=None
+):
+    """Face/edge geometry for *centers*.
+
+    Returns ``(vertices, faces, edges, built_centers)`` or ``None`` when no
+    centre still has enough ligands to enclose a polyhedron.
+
+    ``removed_quads`` lists the ``(site, tx, ty, tz)`` images the user just
+    erased.  If any of them is a ligand of *center*, the whole polyhedron is
+    dropped instead of being rebuilt around the remaining neighbours.
+    """
+    vertices = []
+    faces = []
+    edges = []
+    built = []
+    for center in centers:
+        if not 0 <= center < len(atoms):
+            continue
+        ligands = _polyhedron_ligands_for_center(
+            atoms[center]["cart"],
+            str(atoms[center].get("element", "X")).upper(),
+            pool, cell_matrix, windows,
+        )
+        if removed_quads and any(
+            (site_index, tx, ty, tz) in removed_quads
+            for _pos, site_index, (tx, ty, tz) in ligands
+        ):
+            # A ligand was erased: remove this polyhedron entirely rather
+            # than re-enclosing the surviving neighbours.
+            continue
+        if len(ligands) < _POLY_MIN_LIGANDS:
+            continue
+        topology = _polyhedron_topology([item[0] for item in ligands])
+        if topology is None:
+            continue
+        local_vertices, _kept, local_faces, local_edges = topology
+        base = len(vertices)
+        vertices.extend(local_vertices)
+        faces.extend(
+            tuple(base + index for index in loop) for loop in local_faces
+        )
+        edges.extend(
+            (base + first, base + second) for first, second in local_edges
+        )
+        built.append(center)
+    if not vertices or not faces:
+        return None
+    return vertices, faces, edges, built
+
+
+def _remap_polyhedra(
+    root, removed_indices, atoms=None, scene=None, removed_quads=None
+):
+    """Rebuild polyhedra after atoms were deleted.
+
+    Polyhedron geometry is baked at creation time, so only rewriting
+    ``cgn_poly_map`` used to leave the completed faces and edges of every
+    deleted centre on screen — and left completely empty objects behind when
+    all of an object's centres were deleted.  Shift the surviving indices,
+    recompute each object's geometry, drop any polyhedron that used an erased
+    ligand, and delete objects that no longer enclose anything.
+    """
     removed = sorted({int(index) for index in removed_indices})
     if not removed:
         return
+    if scene is None:
+        scene = getattr(bpy.context, "scene", None)
+    if atoms is None:
+        try:
+            atoms = _structure_atoms(root)
+        except (ValueError, TypeError, KeyError):
+            return
+    if not atoms:
+        return
+    windows = _enabled_pair_windows(
+        getattr(scene, "cgn_connectivity_pairs", ())
+    )
+    try:
+        pool, cell_matrix = _p1_pool(root)
+    except (TypeError, ValueError):
+        return
+    if not pool or not cell_matrix:
+        return
+
+    def _shift(index):
+        index = int(index)
+        return index - sum(1 for removed_index in removed if removed_index < index)
+
+    cache = {}
     for obj in list(root.objects):
         if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
             continue
-        raw = obj.get("cgn_poly_map", "")
         try:
-            poly_map = json.loads(raw)
+            poly_map = json.loads(obj.get("cgn_poly_map", ""))
+            if not isinstance(poly_map, dict):
+                raise ValueError
+            centers = sorted({int(key) for key in poly_map})
         except (TypeError, ValueError):
             # Corrupted entry: drop the object *and* its datablock.
             _remove_object(obj)
             continue
-        shifted = {}
-        for center, ligands in poly_map.items():
-            center = int(center)
-            if center in removed:
-                continue
-            drop = center - sum(1 for index in removed if index < center)
-            shifted[str(drop)] = [
-                int(ligand) - sum(1 for index in removed if index < int(ligand))
-                for ligand in ligands
+        if not centers:
+            # Stale object left behind by an older delete.
+            _remove_object(obj)
+            continue
+        shifted = {
+            str(_shift(center)): [
+                _shift(ligand)
+                for ligand in poly_map.get(str(center), [])
                 if int(ligand) not in removed
             ]
+            for center in centers
+            if center not in removed
+        }
+        if not shifted:
+            # Every centre of this object was deleted.
+            _remove_object(obj)
+            continue
         obj["cgn_poly_map"] = json.dumps(shifted)
+        if not windows:
+            # No connectivity means coordination cannot be recomputed; keep
+            # the existing geometry, but the object above was still cleaned
+            # up if every centre disappeared.
+            continue
+
+        # Rebuild whenever atoms were deleted: the baked geometry may contain
+        # a deleted centre *or* a deleted ligand image, and both must go.
+        cache_key = (
+            str(obj.get("cgn_poly_element", "")).upper(),
+            tuple(sorted(int(key) for key in shifted)),
+        )
+        if cache_key not in cache:
+            cache[cache_key] = _polyhedron_geometry(
+                atoms, cache_key[1], pool, cell_matrix, windows, removed_quads
+            )
+        geometry = cache[cache_key]
+        if geometry is None:
+            _remove_object(obj)
+            continue
+        vertices, faces, edges, built = geometry
+        data = obj.data
+        if isinstance(data, bpy.types.Mesh):
+            data.clear_geometry()
+            data.from_pydata(vertices, [], faces)
+            data.update()
+            for polygon in data.polygons:
+                polygon.use_smooth = False
+        elif isinstance(data, bpy.types.Curve):
+            for spline in list(data.splines):
+                data.splines.remove(spline)
+            for first, second in edges:
+                spline = data.splines.new("POLY")
+                spline.points.add(1)
+                spline.points[0].co = (*vertices[first], 1.0)
+                spline.points[1].co = (*vertices[second], 1.0)
+        obj["cgn_poly_map"] = json.dumps(
+            {str(center): shifted.get(str(center), []) for center in built}
+        )
 
 
 def _vec_sub(u, v):
@@ -4785,6 +4919,15 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             return {"CANCELLED"}
 
         removed_offsets = {index * 4 for index in removed}
+        removed_quads = {
+            (
+                int(instances[index * 4]),
+                int(instances[index * 4 + 1]),
+                int(instances[index * 4 + 2]),
+                int(instances[index * 4 + 3]),
+            )
+            for index in removed
+        }
         new_instances = [
             value
             for offset, value in enumerate(instances)
@@ -4801,7 +4944,9 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             _rebuild_atom_objects(root, atoms)
             _update_growth_selection(root, atoms, [])
             _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
-            _remap_polyhedra(root, removed)
+            _remap_polyhedra(
+                root, removed, atoms, context.scene, removed_quads
+            )
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))

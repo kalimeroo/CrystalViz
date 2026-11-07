@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
-    "version": (0, 8, 2),
+    "version": (0, 8, 5),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -1470,12 +1470,58 @@ def _add_geometry_nodes_modifier(
         _set_modifier_input(modifier, node_group, "Ellipse Material", ellipse_material)
 
 
+def _remove_object(obj):
+    """Delete an object and the mesh/curve datablock it leaves orphaned.
+
+    Removing an object never frees its data; without this the session keeps
+    every atom, bond and unit-cell mesh that was ever generated.
+    """
+    data = getattr(obj, "data", None)
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if data is None or data.users != 0:
+        return
+    if isinstance(data, bpy.types.Curve):
+        bpy.data.curves.remove(data)
+    elif isinstance(data, bpy.types.Mesh):
+        bpy.data.meshes.remove(data)
+
+
 def _clear_collection(collection):
+    """Delete a structure collection and all of its object datablocks.
+
+    Children are cleared recursively *before* being unlinked, so their own
+    meshes/curves are purged as well instead of being left behind in
+    ``bpy.data``.
+    """
     for child in list(collection.children):
         _clear_collection(child)
         bpy.data.collections.remove(child, do_unlink=True)
     for obj in list(collection.objects):
-        bpy.data.objects.remove(obj, do_unlink=True)
+        _remove_object(obj)
+
+
+def _purge_structure_roots(scene=None, keep=None):
+    """Delete every structure collection except *keep*.
+
+    The add-on drives a single active structure, but an import only removed
+    the collection referenced by ``scene.cgn_active_structure``.  Any older
+    structure that had lost that pointer (renamed collection, stale scene
+    property, import that failed after creating its collection) therefore
+    stayed in the file with all of its meshes.  Purging by ``cgn_role``
+    instead of by that pointer removes those leftovers.
+    """
+    removed = 0
+    for collection in list(bpy.data.collections):
+        if collection is keep or collection.get("cgn_role") != "structure":
+            continue
+        _clear_collection(collection)
+        bpy.data.collections.remove(collection, do_unlink=True)
+        removed += 1
+    if scene is not None:
+        active = scene.cgn_active_structure
+        if active and bpy.data.collections.get(active) is None:
+            scene.cgn_active_structure = keep.name if keep is not None else ""
+    return removed
 
 
 _LEGACY_STRUCTURE_ERROR = (
@@ -1761,10 +1807,7 @@ def _make_atom_objects(root, atoms):
 def _rebuild_atom_objects(root, atoms):
     for obj in list(root.objects):
         if obj.get("cgn_role") == "atoms":
-            mesh = obj.data
-            bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+            _remove_object(obj)
     _make_atom_objects(root, atoms)
 
 
@@ -1772,10 +1815,7 @@ def _update_growth_selection(root, atoms, indices):
     root["cgn_selected_indices"] = json.dumps(sorted(set(indices)))
     for obj in list(root.objects):
         if obj.get("cgn_role") == "growth_selection":
-            mesh = obj.data
-            bpy.data.objects.remove(obj, do_unlink=True)
-            if mesh.users == 0:
-                bpy.data.meshes.remove(mesh)
+            _remove_object(obj)
     selected_atoms = [
         atoms[index] for index in sorted(set(indices)) if 0 <= index < len(atoms)
     ]
@@ -1871,14 +1911,7 @@ def _clear_unit_cell(root):
             "unit_cell_marker",
         }:
             continue
-        data = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if data is None or data.users != 0:
-            continue
-        if isinstance(data, bpy.types.Curve):
-            bpy.data.curves.remove(data)
-        elif isinstance(data, bpy.types.Mesh):
-            bpy.data.meshes.remove(data)
+        _remove_object(obj)
 
 def _stored_cell_matrix(root):
     raw = root.get("cgn_cell_matrix", "")
@@ -2365,14 +2398,7 @@ def _clear_polyhedra(root, element=None):
             continue
         if element is not None and str(obj.get("cgn_poly_element", "")) != element:
             continue
-        data = obj.data
-        bpy.data.objects.remove(obj, do_unlink=True)
-        if data is None or data.users != 0:
-            continue
-        if isinstance(data, bpy.types.Curve):
-            bpy.data.curves.remove(data)
-        elif isinstance(data, bpy.types.Mesh):
-            bpy.data.meshes.remove(data)
+        _remove_object(obj)
 
 def _remap_polyhedra(root, removed_indices):
     """Shift polyhedra center/ligand indices after atoms were deleted."""
@@ -2386,7 +2412,8 @@ def _remap_polyhedra(root, removed_indices):
         try:
             poly_map = json.loads(raw)
         except (TypeError, ValueError):
-            bpy.data.objects.remove(obj, do_unlink=True)
+            # Corrupted entry: drop the object *and* its datablock.
+            _remove_object(obj)
             continue
         shifted = {}
         for center, ligands in poly_map.items():
@@ -3256,10 +3283,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
     if start_index == 0:
         for obj in list(root.objects):
             if obj.get("cgn_role") == "bonds":
-                mesh = obj.data
-                bpy.data.objects.remove(obj, do_unlink=True)
-                if mesh.users == 0:
-                    bpy.data.meshes.remove(mesh)
+                _remove_object(obj)
 
     if model == "SPACE_FILLING" or not enabled or len(atoms) < 2 or max_distance <= 0:
         _BOND_SPATIAL_CACHE = None
@@ -3675,7 +3699,6 @@ def _import_result(scene, result, cif_path):
     if not atoms:
         raise ValueError("The selected CIF contains no atoms.")
 
-    old_root = _active_root(scene)
     root = bpy.data.collections.new("CrystalViz_Structure")
     root["cgn_role"] = "structure"
     root["cgn_instance_id"] = uuid.uuid4().hex
@@ -3724,9 +3747,10 @@ def _import_result(scene, result, cif_path):
                     20.0, radii[element_a] + radii[element_b] + _BOND_TOLERANCE
                 )
         _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
-        if old_root is not None:
-            _clear_collection(old_root)
-            bpy.data.collections.remove(old_root, do_unlink=True)
+        # Single-structure view: drop every previous structure (not just the
+        # one the scene pointer happens to name) so repeated imports cannot
+        # accumulate hidden collections and their meshes.
+        _purge_structure_roots(scene, keep=root)
         scene.cgn_active_structure = root.name
         _set_scene_units(scene)
         _apply_unit_cell_settings(scene)

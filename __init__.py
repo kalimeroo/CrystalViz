@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
-    "version": (0, 8, 8),
+    "version": (0, 8, 9),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -1996,6 +1996,14 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     node_group = _make_unit_cell_node_group()
     obj = bpy.data.objects.new("CGN_UnitCell", mesh)
     obj["cgn_role"] = "unit_cell"
+    # Remember the inputs this mesh was built from, so the refresh guard can
+    # compare the actual matrix/grid instead of guessing from the vertex count.
+    obj["cgn_unit_cell_matrix"] = json.dumps(
+        [float(value) for value in cell_matrix]
+    )
+    obj["cgn_unit_cell_repeats"] = json.dumps(
+        [int(value) for value in repeats]
+    )
     root.objects.link(obj)
 
     modifier = obj.modifiers.new("Geometry Nodes", "NODES")
@@ -2035,6 +2043,29 @@ def _update_unit_cell_objects(obj, cell_matrix, repeats, settings):
     obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
+def _unit_cell_signature(obj):
+    """Inputs the current box mesh was built from, or ``None`` if unknown.
+
+    Boxes created before this property existed (or manually edited meshes)
+    return ``None`` so the caller rebuilds them once from the real settings.
+    """
+    if obj is None:
+        return None
+    try:
+        matrix = json.loads(obj.get("cgn_unit_cell_matrix", ""))
+        repeats = json.loads(obj.get("cgn_unit_cell_repeats", ""))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(matrix, (list, tuple)) or len(matrix) != 9:
+        return None
+    if not isinstance(repeats, (list, tuple)) or len(repeats) != 3:
+        return None
+    return (
+        [float(value) for value in matrix],
+        [int(value) for value in repeats],
+    )
+
+
 def _apply_unit_cell_settings(scene):
     """Show, hide, or restyle the active structure's unit-cell box."""
     root = _active_root(scene)
@@ -2068,8 +2099,11 @@ def _apply_unit_cell_settings(scene):
     if legacy:
         _clear_unit_cell(root)
         obj = None
-    expected_corners = (repeats[0] + 1) * (repeats[1] + 1) * (repeats[2] + 1)
-    if obj is None or len(obj.data.vertices) != expected_corners:
+    signature = (
+        [float(value) for value in cell_matrix],
+        [int(value) for value in repeats],
+    )
+    if obj is None or _unit_cell_signature(obj) != signature:
         _show_unit_cell(root, cell_matrix, settings, repeats)
         return
     _update_unit_cell_objects(obj, cell_matrix, repeats, settings)

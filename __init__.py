@@ -4951,11 +4951,17 @@ class CGN_OT_grow_further(Operator):
         return {"FINISHED"}
 
 
-def _build_polyhedra_objects(root, atoms, center_indices, scene):
+def _build_polyhedra_objects(root, atoms, center_indices, scene,
+                             clear_existing=True):
     """Build polyhedra, grouping centers by element so each element keeps
     its own style and materials.  Ligands come from the P1 site pool plus
     periodic images, so coordination spheres are complete even when the
     displayed structure is only the asymmetric unit.  Returns (built, skipped).
+
+    When ``clear_existing`` is True (default), all existing polyhedra for each
+    element are removed before building — this matches the "Create Polyhedra"
+    operator.  When False, new polyhedra are added without removing existing
+    ones — this matches the "Create from Selected" operator.
     """
     if scene is None:
         scene = bpy.context.scene
@@ -4974,7 +4980,17 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene):
     skipped_total = 0
     for element, centers in groups.items():
         style = _polyhedron_style(scene, element)
-        _clear_polyhedra(root, element)
+        if clear_existing:
+            _clear_polyhedra(root, element)
+        else:
+            # Generate a unique suffix so multiple "Create from Selected"
+            # calls don't collide with existing object names.
+            existing_faces = [
+                o for o in root.objects
+                if o.get("cgn_role") == "polyhedron_face"
+                and str(o.get("cgn_poly_element", "")).upper() == element
+            ]
+            suffix = f"_{len(existing_faces)}" if existing_faces else ""
         poly_map = {}
         vertices = []
         faces = []
@@ -5016,7 +5032,8 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene):
             continue
 
         face_material = _make_polyhedron_face_material(element, style)
-        mesh = bpy.data.meshes.new(f"CGN_Polyhedra_Faces_{element}")
+        mesh_name = f"CGN_Polyhedra_Faces_{element}{suffix if not clear_existing else ''}"
+        mesh = bpy.data.meshes.new(mesh_name)
         mesh.from_pydata(vertices, [], faces)
         mesh.update()
         for polygon in mesh.polygons:
@@ -5029,7 +5046,8 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene):
         root.objects.link(face_obj)
 
         _face, _edge, thickness = _polyhedron_style_values(style)
-        curve = bpy.data.curves.new(f"CGN_Polyhedra_Edges_{element}", "CURVE")
+        curve_name = f"CGN_Polyhedra_Edges_{element}{suffix if not clear_existing else ''}"
+        curve = bpy.data.curves.new(curve_name, "CURVE")
         curve.dimensions = "3D"
         curve.resolution_u = 1
         curve.bevel_resolution = 2
@@ -5190,6 +5208,7 @@ class CGN_OT_create_polyhedra_selected(_CGN_OT_select_atoms):
                 atoms,
                 centers,
                 context.scene,
+                clear_existing=False,
             )
         except Exception as exc:
             traceback.print_exc()

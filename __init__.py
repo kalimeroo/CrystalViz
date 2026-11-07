@@ -3928,7 +3928,8 @@ def _unwrapped_cell_instances(
     return [value for instance in sorted(instances) for value in instance]
 
 
-def _extend_cell_boundary_instances(sites, instances, tolerance=1e-4):
+def _extend_cell_boundary_instances(sites, instances, pack_repeats=None,
+                                     tolerance=1e-4):
     """Extend P1 cell instances so atoms appear at both [0] and [1] cell faces.
 
     For CELL fill mode, periodic frameworks (diamond, MOFs, etc.) keep each
@@ -3937,6 +3938,15 @@ def _extend_cell_boundary_instances(sites, instances, tolerance=1e-4):
     boundary images so corner atoms appear at all 8 corners, edge atoms on all
     edges, and face atoms on both faces — giving a complete cell in [0, 1]
     range.
+
+    For PACK fill mode, every cell extends frac≈0 atoms by +1 on every axis,
+    giving a ``[0,1)[0,1)[0,1]...[0,1]`` scheme along each axis.  Atoms on
+    shared internal faces are deduplicated by the ``seen`` set, so no atom
+    appears twice.
+
+    ``pack_repeats`` is (ra, rb, rc) for PACK mode, or None for CELL mode.
+    It is accepted for interface compatibility but all cells are extended
+    identically; ``seen`` handles deduplication.
 
     Returns an extended flat quadruple list with boundary images appended.
     """
@@ -3958,7 +3968,9 @@ def _extend_cell_boundary_instances(sites, instances, tolerance=1e-4):
         expanded.extend(key)
         seen.add(key)
 
-    # Add boundary images where display frac is near 0 or 1 on any axis.
+    # Add boundary images where local frac is near 0 on any axis.  Every cell
+    # extends by +1 on all axes; duplicates at internal faces are skipped
+    # by ``seen``.
     for offset in range(0, count, 4):
         site_index = int(instances[offset])
         tx0, ty0, tz0 = (
@@ -3966,32 +3978,23 @@ def _extend_cell_boundary_instances(sites, instances, tolerance=1e-4):
             int(instances[offset + 2]),
             int(instances[offset + 3]),
         )
-        frac = sites[site_index]["frac"]
+        frac = sites[site_index]["frac"]  # LOCAL fractional position in [0, 1)
 
-        # Display fractional position = site frac + translation.
-        display_frac = [
-            frac[axis] + (tx0, ty0, tz0)[axis] for axis in range(3)
-        ]
-
-        # Cumulatively build boundary translations.
+        # Cumulatively build +1 boundary translations.
         translations = [(0, 0, 0)]
-        for axis, coord in enumerate(display_frac):
+        for axis, coord in enumerate(frac):
             new_translations = []
             for t in translations:
                 if coord < tolerance:
                     t_list = list(t)
                     t_list[axis] += 1
                     new_translations.append(tuple(t_list))
-                elif coord > 1.0 - tolerance:
-                    t_list = list(t)
-                    t_list[axis] -= 1
-                    new_translations.append(tuple(t_list))
             translations.extend(new_translations)
 
         for t in translations:
             if t == (0, 0, 0):
                 continue
-            key = (site_index, t[0], t[1], t[2])
+            key = (site_index, tx0 + t[0], ty0 + t[1], tz0 + t[2])
             if key not in seen:
                 seen.add(key)
                 expanded.extend(key)
@@ -4063,11 +4066,6 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                 for value in (site_index, 0, 0, 0)
             ]
         cell_atom_count = len(cell_instances) // 4
-        # Extend P1 cell instances to [0, 1] range so atoms on cell boundaries
-        # appear on all faces/corners for periodic frameworks (diamond, MOFs).
-        if mode == "CELL":
-            cell_instances = _extend_cell_boundary_instances(sites, cell_instances)
-            cell_atom_count = len(cell_instances) // 4
 
         seen = set()
         new_instances = []
@@ -4092,6 +4090,16 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
                             )
                             return {"CANCELLED"}
                         new_instances.extend(key)
+
+        # Extend P1 cell instances to [0, 1] range so atoms on cell boundaries
+        # appear on all faces/corners for periodic frameworks (diamond, MOFs).
+        # Scheme: [0,1)[0,1)[0,1]...[0,1] along each axis; seen() prevents
+        # duplicates at shared internal faces.
+        pack_repeats = repeats if mode == "PACK" else None
+        new_instances = _extend_cell_boundary_instances(
+            sites, new_instances, pack_repeats=pack_repeats
+        )
+        cell_atom_count = len(new_instances) // 4
 
     atoms = _materialize_atoms(
         sites,

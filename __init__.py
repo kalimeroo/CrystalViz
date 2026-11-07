@@ -650,13 +650,11 @@ def _make_node_group(name, is_bond_group):
     if node_group is not None:
         if not is_bond_group:
             _ensure_shade_smooth(node_group)
-            for node in node_group.nodes:
-                if node.bl_idname == "GeometryNodeMeshIcoSphere":
-                    node.inputs["Subdivisions"].default_value = 3
-        else:
-            for node in node_group.nodes:
-                if node.bl_idname == "GeometryNodeCurvePrimitiveCircle":
-                    node.inputs["Resolution"].default_value = 12
+        # Re-apply the scene's quality preset instead of hardcoding the
+        # defaults: this helper is called on every rebuild (import, model
+        # change, grow, selection highlight), and it must never silently
+        # override LOW/HIGH/CUSTOM values chosen by the user.
+        _apply_quality_settings(getattr(bpy.context, "scene", None))
         return node_group
 
     node_group = bpy.data.node_groups.new(name, "GeometryNodeTree")
@@ -726,6 +724,7 @@ def _make_node_group(name, is_bond_group):
         links.new(
             instance.outputs["Instances"], group_out.inputs[geometry_out.identifier]
         )
+    _apply_quality_settings(getattr(bpy.context, "scene", None))
     return node_group
 
 
@@ -812,6 +811,7 @@ def _make_unit_cell_node_group():
     links.new(set_edge_mat.outputs["Geometry"], join.inputs["Geometry"])
     links.new(realize.outputs["Geometry"], join.inputs["Geometry"])
     links.new(join.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
+    _apply_quality_settings(getattr(bpy.context, "scene", None))
     return node_group
 
 

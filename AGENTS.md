@@ -1,6 +1,6 @@
 # AGENTS.md — CrystalViz (BlenderCCTBX)
 
-Blender **Extension** `crystalviz` (formerly "CCTBX Geometry Nodes"; code still uses `CGN_` prefixes and the repo is still named BlenderCCTBX). Imports CIF (crystallographic) files via **gemmi** (bundled, in-process — no subprocess, no pip for users) and renders atoms/bonds with Geometry Nodes. GPL-3.0-or-later.
+Blender **Extension** `crystalviz`. Imports CIF (crystallographic) files via **gemmi** (bundled, in-process — no subprocess, no pip for users) and renders atoms/bonds with Geometry Nodes. MPL-2.0.
 
 ## What this repo is
 
@@ -34,7 +34,7 @@ Two-module split — respect it:
 
 Data flow and storage contract:
 
-- Import → `worker.load_structure()` returns a dict: P1 `sites`, flat `instances` list of **quadruples** `(site_index, tx, ty, tz)`, `cell_matrix` (9 floats, column-major orthogonalized cell vectors, read from gemmi's *private* `unit_cell._columns` — re-check this attribute if the bundled gemmi version changes), space-group XHM + operator triplets, cell-params display strings (with standard uncertainties).
+- Import → `worker.load_structure()` returns a dict: P1 `sites`, flat `instances` list of **quadruples** `(site_index, tx, ty, tz)`, `cell_matrix` (9 floats, column-major orthogonalized cell vectors, read from gemmi's _private_ `unit_cell._columns` — re-check this attribute if the bundled gemmi version changes), space-group XHM + operator triplets, cell-params display strings (with standard uncertainties).
 - All structure state is persisted as **JSON strings in collection custom properties** `cgn_*` on the structure collection (`cgn_role == "structure"`); the active one is looked up via `scene.cgn_active_structure`. Fill/Grow/Delete (`cgn.fill_*`, `cgn.grow_*`, `cgn.delete_atoms`) re-derive atoms from sites+instances (`_materialize_atoms`) — they never rebuild from the CIF.
 - Structures imported before the site table existed raise `_LEGACY_STRUCTURE_ERROR`; they must be re-imported, they cannot be grown/bonded.
 
@@ -42,7 +42,6 @@ Data flow and storage contract:
 
 `gemmi_worker.py` reproduces cctbx output exactly on the example CIFs. Changing symmetry code breaks it unless you preserve:
 
-- special-position snapping within **0.5 Å** before expansion (`_SNAP_DISTANCE`);
 - vdW/covalent radii tables **verbatim** from `cctbx.eltbx` (they define default bond windows `r_a + r_b + 0.4 Å`);
 - element symbol resolved from the CIF `type_symbol` first (`_site_element`);
 - duplicate CIF block names read with `check_level=0`, last block wins.

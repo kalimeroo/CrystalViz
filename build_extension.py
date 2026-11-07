@@ -166,7 +166,7 @@ tagline = "Import CIF atoms and render with Geometry Nodes"
 maintainer = "OpenAI"
 type = "add-on"
 license = [
-  "SPDX:GPL-3.0-or-later",
+  "SPDX:MPL-2.0",
 ]
 
 tags = ["Import-Export", "Geometry Nodes", "Material"]

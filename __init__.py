@@ -2182,49 +2182,34 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element,
         center_covalent = _DEFAULT_VDW_RADIUS * 0.5
     disabled_pairs = disabled_pairs or set()
 
-    M = [
-        [cell_matrix[0], cell_matrix[1], cell_matrix[2]],
-        [cell_matrix[3], cell_matrix[4], cell_matrix[5]],
-        [cell_matrix[6], cell_matrix[7], cell_matrix[8]],
-    ]
-    det = (
-        M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1])
-        - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0])
-        + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0])
-    )
-    if abs(det) < 1e-12:
-        return []
-    inv = [
-        [
-            (M[1][1] * M[2][2] - M[1][2] * M[2][1]) / det,
-            (M[0][2] * M[2][1] - M[0][1] * M[2][2]) / det,
-            (M[0][1] * M[1][2] - M[0][2] * M[1][1]) / det,
-        ],
-        [
-            (M[1][2] * M[2][0] - M[1][0] * M[2][2]) / det,
-            (M[0][0] * M[2][2] - M[0][2] * M[2][0]) / det,
-            (M[0][2] * M[1][0] - M[0][0] * M[1][2]) / det,
-        ],
-        [
-            (M[1][0] * M[2][1] - M[1][1] * M[2][0]) / det,
-            (M[0][1] * M[2][0] - M[0][0] * M[2][1]) / det,
-            (M[0][0] * M[1][1] - M[0][1] * M[1][0]) / det,
-        ],
-    ]
-    fcx = inv[0][0] * center_cart[0] + inv[0][1] * center_cart[1] + inv[0][2] * center_cart[2]
-    fcy = inv[1][0] * center_cart[0] + inv[1][1] * center_cart[1] + inv[1][2] * center_cart[2]
-    fcz = inv[2][0] * center_cart[0] + inv[2][1] * center_cart[1] + inv[2][2] * center_cart[2]
+    # Derive cell parameters (a, b, c, alpha, beta, gamma) from the
+    # column-major orthogonalized cell matrix, then use gemmi's
+    # UnitCell.find_nearest_pbc_images() for C++ cell-list PBC search.
+    worker = _gemmi_worker()
+    a_vec = (cell_matrix[0], cell_matrix[3], cell_matrix[6])
+    b_vec = (cell_matrix[1], cell_matrix[4], cell_matrix[7])
+    c_vec = (cell_matrix[2], cell_matrix[5], cell_matrix[8])
 
-    c0 = (cell_matrix[0], cell_matrix[3], cell_matrix[6])
-    c1 = (cell_matrix[1], cell_matrix[4], cell_matrix[7])
-    c2 = (cell_matrix[2], cell_matrix[5], cell_matrix[8])
+    def _vec_len(v):
+        return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
-    def translate(pos, tx, ty, tz):
-        return (
-            pos[0] + tx * c0[0] + ty * c1[0] + tz * c2[0],
-            pos[1] + tx * c0[1] + ty * c1[1] + tz * c2[1],
-            pos[2] + tx * c0[2] + ty * c1[2] + tz * c2[2],
-        )
+    def _vec_angle(u, v):
+        lu = _vec_len(u)
+        lv = _vec_len(v)
+        if lu <= 1e-12 or lv <= 1e-12:
+            return 90.0
+        dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+        return math.degrees(math.acos(max(-1.0, min(1.0, dot / (lu * lv)))))
+
+    a_len = _vec_len(a_vec)
+    b_len = _vec_len(b_vec)
+    c_len = _vec_len(c_vec)
+    alpha = _vec_angle(b_vec, c_vec)
+    beta = _vec_angle(a_vec, c_vec)
+    gamma = _vec_angle(a_vec, b_vec)
+
+    cell = worker.gemmi.UnitCell(a_len, b_len, c_len, alpha, beta, gamma)
+    center_frac = cell.fractionalize(worker.gemmi.Position(*center_cart))
 
     ligands = []
     seen = set()
@@ -2235,26 +2220,24 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element,
             continue
         threshold = center_covalent + rj + tolerance
         pj = atom["frac"]
-        tx0 = int(round(fcx - pj[0]))
-        ty0 = int(round(fcy - pj[1]))
-        tz0 = int(round(fcz - pj[2]))
-        for tx in (tx0 - 1, tx0, tx0 + 1):
-            for ty in (ty0 - 1, ty0, ty0 + 1):
-                for tz in (tz0 - 1, tz0, tz0 + 1):
-                    img = translate(cj, tx, ty, tz)
-                    delta = (center_cart[0] - img[0], center_cart[1] - img[1], center_cart[2] - img[2])
-                    d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
-                    if d2 <= 1e-12:
-                        continue
-                    if math.sqrt(d2) > threshold:
-                        continue
-                    pos = _display_point(img)
-                    key = tuple(round(v, 6) for v in pos)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    site_index = atom["index"]
-                    ligands.append((pos, site_index, (tx, ty, tz)))
+        pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
+        for im in cell.find_nearest_pbc_images(center_frac, threshold, pj_gemmi, 0):
+            f_img = cell.fract_image(im, pj_gemmi)
+            tx = int(round(f_img.x - pj[0]))
+            ty = int(round(f_img.y - pj[1]))
+            tz = int(round(f_img.z - pj[2]))
+            c_img = cell.orthogonalize(f_img)
+            delta = (center_cart[0] - c_img.x, center_cart[1] - c_img.y, center_cart[2] - c_img.z)
+            d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
+            if d2 <= 1e-12:
+                continue
+            pos = _display_point(c_img)
+            key = tuple(round(v, 6) for v in pos)
+            if key in seen:
+                continue
+            seen.add(key)
+            site_index = atom["index"]
+            ligands.append((pos, site_index, (tx, ty, tz)))
     return ligands
 
 

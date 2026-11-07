@@ -463,24 +463,6 @@ def _enabled_windows(pair_settings):
     return windows
 
 
-def _fractional_reach(unit_cell, max_distance):
-    """Per-axis fractional displacement equivalent to max_distance (Angstrom).
-
-    A Cartesian move of at most max_distance can never move a site further
-    than this in fractional coordinates, so it bounds both the periodic cell
-    translations that must be inspected and the size of the search window.
-    """
-    matrix = list(unit_cell.fractionalization_matrix())
-    reach = []
-    for axis in range(3):
-        row = matrix[axis * 3:axis * 3 + 3]
-        reach.append(
-            max_distance * math.sqrt(sum(value * value for value in row))
-        )
-    cells = [max(1, int(math.ceil(value))) for value in reach]
-    return reach, cells
-
-
 def _fractional_tolerance(unit_cell, cart_tolerance):
     """Per-axis fractional tolerance equivalent to cart_tolerance (Angstrom)."""
     matrix = list(unit_cell.fractionalization_matrix())
@@ -670,83 +652,53 @@ def _instance_keys(instances, canonical):
     return keys
 
 
-def _build_image_bank(unit_cell, base_atoms, base_elements, active_elements,
-                      reach, cells, canonical=None):
-    """Bucket every (base atom, neighbouring cell) image in fractional space."""
-    bucket_width = [max(value, 1e-6) for value in reach]
-    bank = {}
-    for base_index, base_atom in enumerate(base_atoms):
-        if canonical is not None and canonical[base_index] != base_index:
-            continue
-        if base_elements[base_index] not in active_elements:
-            continue
-        frac = base_atom["frac"]
-        for ta in range(-cells[0], cells[0] + 1):
-            for tb in range(-cells[1], cells[1] + 1):
-                for tc in range(-cells[2], cells[2] + 1):
-                    relative = (frac[0] + ta, frac[1] + tb, frac[2] + tc)
-                    cart = unit_cell.orthogonalize(relative)
-                    cell = tuple(
-                        int(math.floor(relative[axis] / bucket_width[axis]))
-                        for axis in range(3)
-                    )
-                    bank.setdefault(cell, []).append(
-                        (base_index, ta, tb, tc, cart[0], cart[1], cart[2])
-                    )
-    return bank, bucket_width
-
-
-def _periodic_neighbour_table(unit_cell, base_atoms, base_elements,
-                              windows_by_element, bank, bucket_width,
-                              canonical=None):
+def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
+                                     windows_by_element, canonical=None):
     """For each cell atom, list its bonded (base atom, cell offset) pairs.
 
-    This depends only on the unit-cell contents and the distance windows, not
-    on how large the displayed structure has become. A bond between cell atom
-    i and cell atom j + t is expressed once as (j, t); translating the whole
-    structure leaves the table valid.
+    Uses gemmi's UnitCell.find_nearest_pbc_images() (C++ cell-list search)
+    instead of a hand-rolled Python bucket grid over (-cells..+cells)^3
+    translations. Returns the same (candidate_index, tx, ty, tz) tuples.
     """
+    cell = unit_cell.cell  # gemmi.UnitCell
     table = []
     for base_index, base_atom in enumerate(base_atoms):
-        pair_windows = windows_by_element.get(base_elements[base_index])
-        if not pair_windows or (
-            canonical is not None and canonical[base_index] != base_index
-        ):
+        if canonical is not None and canonical[base_index] != base_index:
             table.append(())
             continue
-        frac = base_atom["frac"]
-        origin = unit_cell.orthogonalize(frac)
-        bucket = tuple(
-            int(math.floor(frac[axis] / bucket_width[axis])) for axis in range(3)
-        )
+        pair_windows = windows_by_element.get(base_elements[base_index])
+        if not pair_windows:
+            table.append(())
+            continue
+        frac_i = gemmi.Fractional(*base_atom["frac"])
         neighbours = []
-        for da in (-1, 0, 1):
-            for db in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    neighbour = (
-                        bucket[0] + da, bucket[1] + db, bucket[2] + dc
-                    )
-                    for candidate, ta, tb, tc, x, y, z in bank.get(
-                        neighbour, ()
-                    ):
-                        bounds = pair_windows.get(base_elements[candidate])
-                        if bounds is None:
-                            continue
-                        delta_x = x - origin[0]
-                        delta_y = y - origin[1]
-                        delta_z = z - origin[2]
-                        distance_squared = (
-                            delta_x * delta_x
-                            + delta_y * delta_y
-                            + delta_z * delta_z
-                        )
-                        if distance_squared <= 1e-12:
-                            continue
-                        maximum = bounds[1]
-                        if distance_squared > maximum * maximum:
-                            continue
-                        if math.sqrt(distance_squared) >= bounds[0]:
-                            neighbours.append((candidate, ta, tb, tc))
+        seen = set()
+        for j, atom_j in enumerate(base_atoms):
+            element_j = base_elements[j]
+            bounds = pair_windows.get(element_j)
+            if bounds is None:
+                continue
+            frac_j = gemmi.Fractional(*atom_j["frac"])
+            for im in cell.find_nearest_pbc_images(frac_i, bounds[1], frac_j, 0):
+                f_img = cell.fract_image(im, frac_j)
+                tx = int(round(f_img.x - frac_j.x))
+                ty = int(round(f_img.y - frac_j.y))
+                tz = int(round(f_img.z - frac_j.z))
+                c_img = cell.orthogonalize(f_img)
+                c_i = cell.orthogonalize(frac_i)
+                dist = math.sqrt(
+                    (c_img.x - c_i.x) ** 2
+                    + (c_img.y - c_i.y) ** 2
+                    + (c_img.z - c_i.z) ** 2
+                )
+                if dist <= 1e-12:
+                    continue
+                if dist < bounds[0]:
+                    continue
+                key = (j, tx, ty, tz)
+                if key not in seen:
+                    seen.add(key)
+                    neighbours.append((j, tx, ty, tz))
         table.append(tuple(neighbours))
     return table
 
@@ -774,7 +726,6 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
         raise ValueError("Enabled connectivity maximum distances must be positive.")
 
     if neighbour_table is None:
-        reach, cells = _fractional_reach(unit_cell, max_distance)
 
         windows_by_element = {}
         for (element_a, element_b), bounds in windows.items():
@@ -782,13 +733,8 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
             windows_by_element.setdefault(element_b, {})[element_a] = bounds
 
         base_elements = [atom["element"] for atom in base_atoms]
-        bank, bucket_width = _build_image_bank(
-            unit_cell, base_atoms, base_elements, windows_by_element, reach,
-            cells, canonical,
-        )
-        neighbour_table = _periodic_neighbour_table(
-            unit_cell, base_atoms, base_elements, windows_by_element,
-            bank, bucket_width, canonical,
+        neighbour_table = _periodic_neighbour_table_gemmi(
+            unit_cell, base_atoms, base_elements, windows_by_element, canonical,
         )
     elif len(neighbour_table) != len(base_atoms):
         raise ValueError("The cached periodic neighbour table is invalid.")

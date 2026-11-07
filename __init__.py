@@ -2122,16 +2122,16 @@ def _update_quality_manual(self, context):
 _POLY_ROLE_ROLES = ("polyhedron_face", "polyhedron_edge")
 
 
-def _disabled_pair_keys(pair_settings):
-    """Element pairs the user has explicitly disabled in Connectivity."""
-    status = {}
+def _enabled_pair_windows(pair_settings):
+    """Map sorted element-pair keys to enabled (min, max) distance windows."""
+    windows = {}
     for setting in pair_settings:
-        key = _pair_key(setting.element_a, setting.element_b)
-        if setting.enabled:
-            status[key] = True
-        else:
-            status.setdefault(key, False)
-    return {key for key, enabled in status.items() if not enabled}
+        if setting.enabled and setting.max_distance >= setting.min_distance:
+            windows[_pair_key(setting.element_a, setting.element_b)] = (
+                float(setting.min_distance),
+                float(setting.max_distance),
+            )
+    return windows
 
 
 def _p1_pool(root):
@@ -2168,19 +2168,16 @@ def _p1_pool(root):
     return pool, cell_matrix
 
 
-def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element, pool, cell_matrix, disabled_pairs=None, tolerance=0.8):
+def _polyhedron_ligands_for_center(center_cart, center_element, pool, cell_matrix, windows):
     """Ligand display positions for one center, including periodic images.
 
-    Neighbours come from every periodic image of every P1 site within
-    ``covalent_a + covalent_b + tolerance`` Angstrom.  Element pairs that
-    the user has explicitly disabled in the Connectivity panel are excluded,
-    so e.g. an unchecked Ti-Ti pair never produces Ti ligands.
+    The search radius and acceptance range come from the enabled connectivity
+    window for the (center, ligand) element pair, so polyhedra use exactly the
+    same connectivity as the rendered bonds.  Pairs without an enabled window
+    (e.g. an unchecked Ti-Ti pair) never produce ligands.
     """
-    if not pool or not cell_matrix:
+    if not pool or not cell_matrix or not windows:
         return []
-    if center_covalent is None or center_covalent <= 0:
-        center_covalent = _DEFAULT_VDW_RADIUS * 0.5
-    disabled_pairs = disabled_pairs or set()
 
     # Derive cell parameters (a, b, c, alpha, beta, gamma) from the
     # column-major orthogonalized cell matrix, then use gemmi's
@@ -2214,14 +2211,15 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element,
     ligands = []
     seen = set()
     for atom in pool:
-        cj = atom["cart"]
-        rj = atom["covalent_radius"]
-        if _pair_key(center_element, atom["element"]) in disabled_pairs:
+        bounds = windows.get(_pair_key(center_element, atom["element"]))
+        if bounds is None:
             continue
-        threshold = center_covalent + rj + tolerance
+        minimum, maximum = bounds
+        if maximum <= 0.0:
+            continue
         pj = atom["frac"]
         pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
-        for im in cell.find_nearest_pbc_images(center_frac, threshold, pj_gemmi, 0):
+        for im in cell.find_nearest_pbc_images(center_frac, maximum, pj_gemmi, 0):
             f_img = cell.fract_image(im, pj_gemmi)
             tx = int(round(f_img.x - pj[0]))
             ty = int(round(f_img.y - pj[1]))
@@ -2230,6 +2228,9 @@ def _polyhedron_ligands_for_center(center_cart, center_covalent, center_element,
             delta = (center_cart[0] - c_img.x, center_cart[1] - c_img.y, center_cart[2] - c_img.z)
             d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
             if d2 <= 1e-12:
+                continue
+            distance = math.sqrt(d2)
+            if distance < minimum or distance > maximum:
                 continue
             pos = _display_point(c_img)
             key = tuple(round(v, 6) for v in pos)
@@ -2333,20 +2334,22 @@ def _cached_polyhedron_elements(root, scene):
         return []
     if not pool:
         return []
+    windows = _enabled_pair_windows(scene.cgn_connectivity_pairs)
     cache_key = (
         root.get("cgn_instance_id", root.name),
         len(pool),
-        frozenset(_disabled_pair_keys(scene.cgn_connectivity_pairs)),
+        tuple(sorted(windows.items())),
     )
     cached = _POLY_ELEMENTS_CACHE
     if cached is not None and cached[0] == cache_key:
         return cached[1]
-    disabled_pairs = _disabled_pair_keys(scene.cgn_connectivity_pairs)
+    if not windows:
+        _POLY_ELEMENTS_CACHE = (cache_key, [])
+        return []
     eligible = set()
     for site in pool:
         ligands = _polyhedron_ligands_for_center(
-            site["cart"], site["covalent_radius"], site["element"],
-            pool, cell_matrix, disabled_pairs, 0.8
+            site["cart"], site["element"], pool, cell_matrix, windows
         )
         if len(ligands) >= _POLY_MIN_LIGANDS:
             eligible.add(site["element"])
@@ -3230,11 +3233,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
     if chemdraw:
         start_index = 0
     model = _current_model()
-    enabled = {}
-    for setting in pair_settings:
-        key = _pair_key(setting.element_a, setting.element_b)
-        if setting.enabled and setting.max_distance >= setting.min_distance:
-            enabled[key] = (setting.min_distance, setting.max_distance)
+    enabled = _enabled_pair_windows(pair_settings)
     settings_signature = _connectivity_settings_signature(pair_settings)
     if model == "SPACE_FILLING" or not enabled or len(atoms) < 2:
         start_index = 0
@@ -3756,13 +3755,7 @@ def _unwrapped_cell_instances(
     unit-cell center. Periodic components cannot be represented as finite
     molecules, so their original unit-cell contents are retained.
     """
-    windows = {}
-    for setting in pair_settings:
-        if setting.enabled and setting.max_distance >= setting.min_distance:
-            windows[_pair_key(setting.element_a, setting.element_b)] = (
-                setting.min_distance,
-                setting.max_distance,
-            )
+    windows = _enabled_pair_windows(pair_settings)
     if not windows:
         return None
     if len(sites) > max_instances:
@@ -4970,6 +4963,9 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
     pool, cell_matrix = _p1_pool(root)
     if not pool or not cell_matrix:
         return 0, len(center_indices)
+    windows = _enabled_pair_windows(scene.cgn_connectivity_pairs)
+    if not windows:
+        return 0, len(center_indices)
 
     new_ligand_keys = set()
     new_ligand_quads = []
@@ -4999,12 +4995,10 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
         edges = []
         for center in centers:
             center_cart = atoms[center]["cart"]
-            center_covalent = float(atoms[center].get("covalent_radius", 0.0)) or _DEFAULT_VDW_RADIUS * 0.5
             ligands = _polyhedron_ligands_for_center(
-                center_cart, center_covalent,
+                center_cart,
                 str(atoms[center].get("element", "X")).upper(),
-                pool, cell_matrix,
-                _disabled_pair_keys(scene.cgn_connectivity_pairs), 0.8
+                pool, cell_matrix, windows,
             )
             if len(ligands) < _POLY_MIN_LIGANDS:
                 skipped_total += 1

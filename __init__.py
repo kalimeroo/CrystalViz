@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "OpenAI",
-    "version": (0, 8, 6),
+    "version": (0, 8, 8),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (

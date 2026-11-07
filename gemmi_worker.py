@@ -128,7 +128,7 @@ def _cell_columns(unit_cell):
 
 
 def _inverse_3x3(columns):
-    """Inverse of the orthogonalization matrix, row-major."""
+    """Transpose of the inverse orthogonalization matrix (M^-T), row-major."""
     a, b, c, d, e, f, g, h, i = [float(value) for value in columns]
     # columns = [a d g; b e h; c f i] (basis vectors as columns)
     det = (
@@ -464,11 +464,21 @@ def _enabled_windows(pair_settings):
 
 
 def _fractional_tolerance(unit_cell, cart_tolerance):
-    """Per-axis fractional tolerance equivalent to cart_tolerance (Angstrom)."""
+    """Per-axis fractional tolerance equivalent to cart_tolerance (Angstrom).
+
+    ``fractionalization_matrix()`` stores ``M^-T`` (the transpose of the true
+    inverse orthogonalization matrix) row-major: element ``(row, col)`` is
+    ``M^-1[col][row]``.  A Cartesian displacement ``d`` becomes ``M^-1 d`` in
+    fractional coordinates, so the largest change on axis ``i`` is
+    ``||row_i(M^-1)|| * |d|``.  Row ``i`` of ``M^-1`` is column ``i`` of the
+    stored matrix, i.e. the strided elements ``(0, i), (1, i), (2, i)``.
+    Reading the contiguous rows instead mixes the axes and is only correct
+    when the cell is orthogonal.
+    """
     matrix = list(unit_cell.fractionalization_matrix())
     return [
         cart_tolerance * math.sqrt(
-            sum(value * value for value in matrix[axis * 3:axis * 3 + 3])
+            sum(matrix[row * 3 + axis] ** 2 for row in range(3))
         )
         for axis in range(3)
     ]

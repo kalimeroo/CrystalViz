@@ -5229,6 +5229,9 @@ class CGN_OT_grow_further(Operator):
 
         grew_by = int(result.get("grew_by", 0))
         if grew_by == 0:
+            # Nothing matched, so the growth is finished; drop the lingering
+            # selection sphere that was shown while choosing the seed atoms.
+            _update_growth_selection(root, [], [])
             self.report(
                 {"INFO"},
                 "No additional atoms match the current connectivity settings.",

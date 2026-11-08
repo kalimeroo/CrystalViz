@@ -134,15 +134,9 @@ def _select_wheels(version):
     wheels = [u for u in release if u["packagetype"] == "bdist_wheel"]
     chosen = {}
     for platform in _PLATFORM_TAG:
-        match = [
-            u
-            for u in wheels
-            if wheel_matches_platform(u["filename"], platform)
-        ]
+        match = [u for u in wheels if wheel_matches_platform(u["filename"], platform)]
         if not match:
-            raise SystemExit(
-                f"error: no gemmi {version} cp313 wheel for {platform}"
-            )
+            raise SystemExit(f"error: no gemmi {version} cp313 wheel for {platform}")
         chosen[platform] = (match[0]["filename"], match[0]["url"])
     return chosen
 
@@ -157,13 +151,14 @@ def _latest_release():
 # ---------------------------------------------------------------------------
 
 
-_MANIFEST_TEMPLATE = '''schema_version = "1.0.0"
+_MANIFEST_TEMPLATE = (
+    """schema_version = "1.0.0"
 
 id = "crystalviz"
-version = "0.8.9"
+version = "0.9.0"
 name = "CrystalViz"
 tagline = "Import CIF atoms and render with Geometry Nodes"
-maintainer = "OpenAI"
+maintainer = "Erwann Jeanneau"
 type = "add-on"
 license = [
   "SPDX:MPL-2.0",
@@ -181,7 +176,9 @@ wheels = [
 
 [permissions]
 files = "Read CIF files from disk and store imported structures"
-'''.rstrip() + "\n"
+""".rstrip()
+    + "\n"
+)
 
 
 def _wheels_array(chosen):
@@ -198,9 +195,7 @@ def _wheels_array(chosen):
 def write_manifest(chosen):
     """Regenerate blender_manifest.toml with the current wheel filenames."""
     platforms = ", ".join(f'"{p}"' for p in TARGET_PLATFORMS)
-    text = _MANIFEST_TEMPLATE.format(
-        platforms=platforms, wheels=_wheels_array(chosen)
-    )
+    text = _MANIFEST_TEMPLATE.format(platforms=platforms, wheels=_wheels_array(chosen))
     with open(_MANIFEST, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
     print(f"updated {os.path.relpath(_MANIFEST, _HERE)}")
@@ -297,9 +292,7 @@ def build(args):
                 if os.path.isfile(path):
                     zf.write(path, name)
             for wheel in by_platform[platform]:
-                zf.write(
-                    os.path.join(_WHEELS_DIR, wheel), f"wheels/{wheel}"
-                )
+                zf.write(os.path.join(_WHEELS_DIR, wheel), f"wheels/{wheel}")
         print(f"built {os.path.relpath(zip_path, _HERE)}")
 
 

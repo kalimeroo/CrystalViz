@@ -62,6 +62,48 @@ _COVALENT_RADII = {
     "Xe": 1.4, "Y": 1.9, "Yb": 1.87, "Zn": 1.22, "Zr": 1.75,
 }
 
+# --------------------------------------------------------------------------
+# Shannon ionic radii (CN 6 unless that coordination is not tabulated).
+# Only used when a CIF declares formal charges AND the two elements of a pair
+# carry opposite-sign non-zero charges: covalent radii describe a bond between
+# neutral atoms, and they systematically under-estimate a cation-anion bond
+# because the anion radius doubles when it carries its charge (O 0.66 -> 1.40).
+# Ag-O in Ag2Cr2O7 is the reference case: 1.45 + 0.66 = 2.11 A with covalent
+# radii (misses half the coordination sphere) versus 1.15 + 1.40 = 2.55 A.
+# Elements without an entry (H, most rare ions) fall back to covalent radii.
+# --------------------------------------------------------------------------
+
+_IONIC_RADII = {
+    ("O", -2): 1.40, ("S", -2): 1.84, ("Se", -2): 1.98, ("Te", -2): 2.21,
+    ("N", -3): 1.46, ("F", -1): 1.33, ("Cl", -1): 1.81, ("Br", -1): 1.96,
+    ("I", -1): 2.20,
+    ("Li", 1): 0.76, ("Na", 1): 1.02, ("K", 1): 1.38, ("Rb", 1): 1.52,
+    ("Cs", 1): 1.67, ("Ag", 1): 1.15, ("Cu", 1): 0.77, ("Tl", 1): 1.50,
+    ("Au", 1): 1.37,
+    ("Be", 2): 0.45, ("Mg", 2): 0.72, ("Ca", 2): 1.00, ("Sr", 2): 1.18,
+    ("Ba", 2): 1.35, ("Cr", 2): 0.73, ("Mn", 2): 0.83, ("Fe", 2): 0.78,
+    ("Co", 2): 0.745, ("Ni", 2): 0.69, ("Cu", 2): 0.73, ("Zn", 2): 0.74,
+    ("Cd", 2): 0.95, ("Hg", 2): 1.02, ("Pd", 2): 0.64, ("Pt", 2): 0.80,
+    ("Sn", 2): 1.18, ("Pb", 2): 1.19,
+    ("B", 3): 0.27, ("Al", 3): 0.535, ("Ga", 3): 0.62, ("In", 3): 0.80,
+    ("Tl", 3): 0.885, ("Sc", 3): 0.745, ("Y", 3): 0.90, ("La", 3): 1.032,
+    ("Ce", 3): 1.01, ("Pr", 3): 0.99, ("Nd", 3): 0.983, ("Pm", 3): 0.97,
+    ("Sm", 3): 0.958, ("Eu", 3): 0.947, ("Gd", 3): 0.938, ("Tb", 3): 0.923,
+    ("Dy", 3): 0.912, ("Ho", 3): 0.901, ("Er", 3): 0.890, ("Tm", 3): 0.880,
+    ("Yb", 3): 0.868, ("Lu", 3): 0.861, ("Ti", 3): 0.670, ("V", 3): 0.640,
+    ("Cr", 3): 0.615, ("Mn", 3): 0.645, ("Fe", 3): 0.645, ("Co", 3): 0.545,
+    ("Ru", 3): 0.68, ("Rh", 3): 0.665, ("Ir", 3): 0.68, ("As", 3): 0.58,
+    ("Sb", 3): 0.76, ("Bi", 3): 1.03,
+    ("C", 4): 0.15, ("Si", 4): 0.40, ("Ge", 4): 0.53, ("Sn", 4): 0.69,
+    ("Pb", 4): 0.775, ("Ti", 4): 0.605, ("Zr", 4): 0.72, ("Hf", 4): 0.71,
+    ("V", 4): 0.58, ("Mn", 4): 0.53, ("Mo", 4): 0.65, ("Tc", 4): 0.645,
+    ("Re", 4): 0.63, ("Os", 4): 0.63, ("Se", 4): 0.50, ("Te", 4): 0.97,
+    ("Th", 4): 0.94, ("U", 4): 0.89, ("Pu", 4): 0.86,
+    ("P", 5): 0.38, ("V", 5): 0.54, ("Nb", 5): 0.64, ("Ta", 5): 0.64,
+    ("As", 5): 0.46, ("Sb", 5): 0.60,
+    ("Cr", 6): 0.44, ("Mo", 6): 0.59, ("W", 6): 0.60, ("U", 6): 0.73,
+}
+
 _DEFAULT_VDW_RADIUS = 1.70
 _DEFAULT_COVALENT_RADIUS = 0.75
 _CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
@@ -273,6 +315,76 @@ def _read_structure(cif_path, block_name=None):
     return structure, key, block
 
 
+def _atom_type_charges(block, structure):
+    """Formal oxidation numbers declared by the CIF, keyed by element.
+
+    Two sources, in order of trust:
+
+    1. the ``_atom_type`` loop (``_atom_type_oxidation_number``), used by ICSD
+       and COD files.  The charge is read from ``_atom_type_symbol`` (``Ti+0``)
+       rather than ``_atom_site_type_symbol`` because the two routinely
+       disagree -- brookite declares ``Ti+0`` per site but ``4.000`` here.
+    2. the charge gemmi parses from ``_atom_site_type_symbol`` (``Ag1+``),
+       which is how CSD/AMCSD files usually carry it (Ag2Cr2O7).
+
+    CSD organometallics usually declare neither, so an empty dict means "every
+    atom is neutral" and connectivity stays purely distance based.
+    """
+    charges = {}
+    try:
+        symbols = list(block.find_values("_atom_type_symbol"))
+        numbers = list(block.find_values("_atom_type_oxidation_number"))
+    except Exception:
+        symbols, numbers = [], []
+    for symbol, number in zip(symbols, numbers):
+        text = str(number).strip().strip("'\"")
+        if text in ("", "?", "."):
+            continue
+        try:
+            charge = float(text)
+        except ValueError:
+            continue
+        element = _element_from_text(symbol)
+        if element is not None:
+            charges[element.upper()] = charge
+    for site in structure.sites:
+        element = _site_element(site).upper()
+        if element in charges:
+            continue
+        try:
+            charge = float(site.charge)
+        except (TypeError, ValueError):
+            continue
+        if abs(charge) > 1e-6:
+            charges[element] = charge
+    return charges
+
+
+def _ionic_radii(charges):
+    """Shannon radius of every element whose declared charge is tabulated."""
+    radii = {}
+    for element, charge in charges.items():
+        radius = _IONIC_RADII.get((element.title(), int(round(charge))))
+        if radius is not None:
+            radii[element.upper()] = float(radius)
+    return radii
+
+
+def _metal_elements(structure):
+    """Uppercase symbols of the metallic elements present in the structure."""
+    metals = set()
+    for site in structure.sites:
+        symbol = _site_element(site)
+        if not _is_element(symbol):
+            continue
+        try:
+            if gemmi.Element(symbol).is_metal:
+                metals.add(symbol.upper())
+        except Exception:
+            continue
+    return sorted(metals)
+
+
 def _matrix3_from_columns(columns):
     """3x3 matrix whose columns are the three orthogonalized cell vectors."""
     return [
@@ -424,6 +536,7 @@ def load_structure(cif_path, block_name=None):
     if not instances:
         raise ValueError("The CIF atoms could not be placed in the unit cell.")
     space_group = structure.spacegroup
+    charges = _atom_type_charges(block, structure)
     return {
         "label": key,
         "space_group": f"{space_group.xhm()} (No. {space_group.number})",
@@ -443,6 +556,12 @@ def load_structure(cif_path, block_name=None):
         "cell_matrix": list(unit_cell._columns),
         "sites": sites,
         "instances": instances,
+        # Connectivity hints: declared oxidation numbers, Shannon radii for the
+        # charged elements, and which elements gemmi considers metallic.  All
+        # three are used by the add-on to derive the default distance windows.
+        "atom_type_charges": charges,
+        "ionic_radii": _ionic_radii(charges),
+        "metal_elements": _metal_elements(structure),
     }
 
 

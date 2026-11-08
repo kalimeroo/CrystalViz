@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
-    "author": "OpenAI",
-    "version": (0, 8, 9),
+    "author": "Erwann Jeanneau",
+    "version": (0, 9, 0),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -199,7 +199,27 @@ _CHEMDRAW_MAX_VALENCE = {
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
 _DEFAULT_BOND_RADIUS = _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
-_BOND_TOLERANCE = 0.4
+# Default connectivity window, as a fraction of (r_a + r_b) with the covalent
+# radii of the two elements: the same 0.6 / 1.2 multiples Diamond uses.  The
+# lower bound rejects collapsed contacts such as the 1.18 A K-K pair in
+# Ca_autored.cif.
+_BOND_MIN_SCALE = 0.6
+_BOND_MAX_SCALE = 1.2
+# Diamond's 1.2 factor is calibrated on its own compact radii; applied to the
+# larger covalent radii below it would be *more* permissive than the previous
+# additive default for every pair with a big radius sum (3.84 A instead of
+# 3.60 A for Ti-Ti, which re-draws spurious brookite contacts).  Keeping the
+# additive slack as a ceiling means the covalent window can only ever tighten.
+# Cation-anion pairs with declared opposite charges bypass it: there the
+# reference is the Shannon ionic sum (see _default_pair_window), and the
+# ceiling would clip the long contacts that belong to the coordination sphere
+# (Ag-O in Ag2Cr2O7 reaches 2.75 A against a 3.06 A limit).
+_BOND_MAX_SLACK = 0.4
+# Cap applied to same-sign metal-metal pairs (for example Ti(IV)-Ti(IV) in an
+# oxide, or Cu(I)-Cu(I) in Cu2O): only contacts shorter than this fraction of
+# the covalent radius sum survive, which keeps genuine cluster bonds
+# (Rh2(OAc)4, Re2Cl8(2-)) while dropping cation-cation contacts.
+_BOND_METAL_CAP_SCALE = 0.85
 _MAX_FILL_REPEATS = 20
 _MAX_FILL_ATOMS = 200000
 _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
@@ -543,6 +563,7 @@ def _update_polyhedron_style(self, context):
             if isinstance(obj.data, bpy.types.Curve):
                 obj.data.bevel_depth = thickness * _DISPLAY_SCALE
 
+
 class CGN_PolyhedronStyle(PropertyGroup):
     element: StringProperty(options={"HIDDEN"})
     face_color: FloatVectorProperty(
@@ -765,7 +786,9 @@ def _make_unit_cell_node_group():
     set_face_mat = nodes.new("GeometryNodeSetMaterial")
     set_face_mat.location = (-300, 200)
     links.new(group_in.outputs[geometry_in.identifier], set_face_mat.inputs["Geometry"])
-    links.new(group_in.outputs[face_material_in.identifier], set_face_mat.inputs["Material"])
+    links.new(
+        group_in.outputs[face_material_in.identifier], set_face_mat.inputs["Material"]
+    )
 
     # Branch 2: beveled edges
     mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
@@ -782,7 +805,9 @@ def _make_unit_cell_node_group():
     links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
     links.new(group_in.outputs[edge_thickness_in.identifier], profile.inputs["Radius"])
     links.new(curve_to_mesh.outputs["Mesh"], set_edge_mat.inputs["Geometry"])
-    links.new(group_in.outputs[edge_material_in.identifier], set_edge_mat.inputs["Material"])
+    links.new(
+        group_in.outputs[edge_material_in.identifier], set_edge_mat.inputs["Material"]
+    )
 
     # Branch 3: corner markers (icospheres on vertices)
     ico = nodes.new("GeometryNodeMeshIcoSphere")
@@ -1913,6 +1938,7 @@ def _clear_unit_cell(root):
             continue
         _remove_object(obj)
 
+
 def _stored_cell_matrix(root):
     raw = root.get("cgn_cell_matrix", "")
     if not raw:
@@ -1957,9 +1983,7 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
         key = (i + tx, j + ty, k + tz)
         if key in corner_index:
             return corner_index[key]
-        position = _display_point(
-            _cell_corner(cell_matrix, i + tx, j + ty, k + tz)
-        )
+        position = _display_point(_cell_corner(cell_matrix, i + tx, j + ty, k + tz))
         index = len(corner_positions)
         corner_index[key] = index
         corner_positions.append(position)
@@ -1979,13 +2003,9 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
                 # base_indices order matches the original 0..7 corner order:
                 # i outer, j middle, k inner -> index = i*4 + j*2 + k
                 for first, second in edge_corners:
-                    edges.append(
-                        (base_indices[first], base_indices[second])
-                    )
+                    edges.append((base_indices[first], base_indices[second]))
                 for face in face_corners:
-                    faces.append(
-                        tuple(base_indices[index] for index in face)
-                    )
+                    faces.append(tuple(base_indices[index] for index in face))
 
     mesh = bpy.data.meshes.new("CGN_UnitCell")
     mesh.from_pydata(corner_positions, edges, faces)
@@ -1998,12 +2018,8 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     obj["cgn_role"] = "unit_cell"
     # Remember the inputs this mesh was built from, so the refresh guard can
     # compare the actual matrix/grid instead of guessing from the vertex count.
-    obj["cgn_unit_cell_matrix"] = json.dumps(
-        [float(value) for value in cell_matrix]
-    )
-    obj["cgn_unit_cell_repeats"] = json.dumps(
-        [int(value) for value in repeats]
-    )
+    obj["cgn_unit_cell_matrix"] = json.dumps([float(value) for value in cell_matrix])
+    obj["cgn_unit_cell_repeats"] = json.dumps([int(value) for value in repeats])
     root.objects.link(obj)
 
     modifier = obj.modifiers.new("Geometry Nodes", "NODES")
@@ -2088,12 +2104,11 @@ def _apply_unit_cell_settings(scene):
         repeats = (1, 1, 1)
     if len(repeats) != 3:
         repeats = (1, 1, 1)
-    obj = next(
-        (o for o in root.objects if o.get("cgn_role") == "unit_cell"), None
-    )
+    obj = next((o for o in root.objects if o.get("cgn_role") == "unit_cell"), None)
     # Legacy objects from older builds: remove them and rebuild as one.
     legacy = [
-        o for o in root.objects
+        o
+        for o in root.objects
         if o.get("cgn_role") in {"unit_cell_edge", "unit_cell_face", "unit_cell_marker"}
     ]
     if legacy:
@@ -2251,10 +2266,15 @@ def _polyhedron_ligands_for_center(
     # Derive cell parameters (a, b, c, alpha, beta, gamma) from the
     # column-major orthogonalized cell matrix, then use gemmi's
     # UnitCell.find_nearest_pbc_images() for C++ cell-list PBC search.
+    # The matrix holds the cell vectors as COLUMNS (that is how
+    # _p1_pool and the worker already read it), so a is (m0, m1, m2).
+    # Reading it row-wise instead gives a sheared cell for every triclinic
+    # structure (Ag2Cr2O7: a/b/c = 7.004/7.520/6.072 instead of
+    # 6.968/7.148/6.544), which produced wrong coordination spheres there.
     worker = _gemmi_worker()
-    a_vec = (cell_matrix[0], cell_matrix[3], cell_matrix[6])
-    b_vec = (cell_matrix[1], cell_matrix[4], cell_matrix[7])
-    c_vec = (cell_matrix[2], cell_matrix[5], cell_matrix[8])
+    a_vec = (cell_matrix[0], cell_matrix[1], cell_matrix[2])
+    b_vec = (cell_matrix[3], cell_matrix[4], cell_matrix[5])
+    c_vec = (cell_matrix[6], cell_matrix[7], cell_matrix[8])
 
     def _vec_len(v):
         return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
@@ -2295,7 +2315,11 @@ def _polyhedron_ligands_for_center(
             ty = int(round(f_img.y - pj[1]))
             tz = int(round(f_img.z - pj[2]))
             c_img = cell.orthogonalize(f_img)
-            delta = (center_cart[0] - c_img.x, center_cart[1] - c_img.y, center_cart[2] - c_img.z)
+            delta = (
+                center_cart[0] - c_img.x,
+                center_cart[1] - c_img.y,
+                center_cart[2] - c_img.z,
+            )
             d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
             if d2 <= 1e-12:
                 continue
@@ -2436,6 +2460,7 @@ def _clear_polyhedra(root, element=None):
             continue
         _remove_object(obj)
 
+
 def _polyhedron_geometry(
     atoms, centers, pool, cell_matrix, windows, removed_quads=None
 ):
@@ -2458,7 +2483,9 @@ def _polyhedron_geometry(
         ligands = _polyhedron_ligands_for_center(
             atoms[center]["cart"],
             str(atoms[center].get("element", "X")).upper(),
-            pool, cell_matrix, windows,
+            pool,
+            cell_matrix,
+            windows,
         )
         if removed_quads and any(
             (site_index, tx, ty, tz) in removed_quads
@@ -2475,21 +2502,15 @@ def _polyhedron_geometry(
         local_vertices, _kept, local_faces, local_edges = topology
         base = len(vertices)
         vertices.extend(local_vertices)
-        faces.extend(
-            tuple(base + index for index in loop) for loop in local_faces
-        )
-        edges.extend(
-            (base + first, base + second) for first, second in local_edges
-        )
+        faces.extend(tuple(base + index for index in loop) for loop in local_faces)
+        edges.extend((base + first, base + second) for first, second in local_edges)
         built.append(center)
     if not vertices or not faces:
         return None
     return vertices, faces, edges, built
 
 
-def _remap_polyhedra(
-    root, removed_indices, atoms=None, scene=None, removed_quads=None
-):
+def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quads=None):
     """Rebuild polyhedra after atoms were deleted.
 
     Polyhedron geometry is baked at creation time, so only rewriting
@@ -2511,9 +2532,7 @@ def _remap_polyhedra(
             return
     if not atoms:
         return
-    windows = _enabled_pair_windows(
-        getattr(scene, "cgn_connectivity_pairs", ())
-    )
+    windows = _enabled_pair_windows(getattr(scene, "cgn_connectivity_pairs", ()))
     try:
         pool, cell_matrix = _p1_pool(root)
     except (TypeError, ValueError):
@@ -2668,10 +2687,11 @@ def _convex_hull_faces(vertices):
         return []
     axis = _vec_sub(vertices[index1], vertices[index0])
     index2 = max(
-        range(n), key=lambda i: _vec_dot(
+        range(n),
+        key=lambda i: _vec_dot(
             _vec_cross(_vec_sub(vertices[i], vertices[index0]), axis),
             _vec_cross(_vec_sub(vertices[i], vertices[index0]), axis),
-        )
+        ),
     )
     if index2 == index0 or index2 == index1:
         if _vec_distance_squared(vertices[index2], vertices[index0]) <= 1e-12:
@@ -2689,7 +2709,10 @@ def _convex_hull_faces(vertices):
             _vec_dot(_vec_sub(vertices[i], vertices[index0]), plane_normal)
         ),
     )
-    if abs(_vec_dot(_vec_sub(vertices[index3], vertices[index0]), plane_normal)) <= 1e-9:
+    if (
+        abs(_vec_dot(_vec_sub(vertices[index3], vertices[index0]), plane_normal))
+        <= 1e-9
+    ):
         return []  # all positions coplanar; no volume to enclose
 
     seeds = (index0, index1, index2, index3)
@@ -2775,9 +2798,7 @@ def _convex_hull_faces(vertices):
         oriented = []
         for face in faces:
             a, b, c = (vertices[i] for i in face)
-            face_center = _vec_scale(
-                _vec_add(_vec_add(a, b), c), 1.0 / 3.0
-            )
+            face_center = _vec_scale(_vec_add(_vec_add(a, b), c), 1.0 / 3.0)
             if (
                 _vec_dot(
                     _vec_cross(_vec_sub(b, a), _vec_sub(c, a)),
@@ -2821,7 +2842,8 @@ def _merge_coplanar_faces(faces, vertices):
                 directed.append((face[position], face[(position + 1) % 3]))
         directed_set = set(directed)
         boundary = [
-            (start, end) for (start, end) in directed
+            (start, end)
+            for (start, end) in directed
             if (end, start) not in directed_set
         ]
         next_vertex = {}
@@ -2877,8 +2899,7 @@ def _polyhedron_topology(points):
     kept = []
     for index, point in enumerate(points):
         if any(
-            _vec_distance_squared(point, previous) <= 1e-9
-            for previous in deduplicated
+            _vec_distance_squared(point, previous) <= 1e-9 for previous in deduplicated
         ):
             continue
         deduplicated.append(point)
@@ -2932,9 +2953,45 @@ def _polyhedron_topology(points):
     return (compact_vertices, compact_kept, compact_faces, compact_edges)
 
 
-
 def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
+
+
+def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=None):
+    """Default (min, max) connectivity distance for one element pair.
+
+    *radii* maps uppercase element symbols to covalent radii, *charges* holds the
+    oxidation numbers the CIF declares, *metals* is the set of metallic symbols
+    and *ionic* maps the charged symbols to their Shannon radius.
+
+    Cation-anion pairs use the Shannon radii and the plain ``[0.6, 1.2]``
+    multiples (Diamond's model): Ag(I)-O in Ag2Cr2O7 needs 2.55 A as the
+    reference, and the covalent sum (2.11 A) misses half the coordination
+    sphere.  Every other pair keeps the covalent radii, with the upper bound
+    capped at ``r_a + r_b + 0.4`` so it never exceeds the old additive default,
+    and a metal-metal pair whose two elements carry same-sign non-zero formal
+    charges is capped at ``0.85 * (r_a + r_b)`` so cation-cation contacts in
+    ionic frameworks are not drawn.
+    """
+    ionic = ionic or {}
+    charge_a = float(charges.get(element_a, 0.0))
+    charge_b = float(charges.get(element_b, 0.0))
+    if (
+        charge_a
+        and charge_b
+        and (charge_a > 0.0) != (charge_b > 0.0)
+        and element_a in ionic
+        and element_b in ionic
+    ):
+        reference = ionic[element_a] + ionic[element_b]
+        return _BOND_MIN_SCALE * reference, min(20.0, _BOND_MAX_SCALE * reference)
+    reference = radii[element_a] + radii[element_b]
+    maximum = min(_BOND_MAX_SCALE * reference, reference + _BOND_MAX_SLACK)
+    if element_a in metals and element_b in metals:
+        if charge_a and charge_b and (charge_a > 0.0) == (charge_b > 0.0):
+            maximum = _BOND_METAL_CAP_SCALE * reference
+    minimum = min(_BOND_MIN_SCALE * reference, maximum)
+    return minimum, max(minimum, min(20.0, maximum))
 
 
 def _bond_point_key(point):
@@ -3904,16 +3961,26 @@ def _import_result(scene, result, cif_path):
         for atom in atoms:
             element = str(atom.get("element", "X")).upper()
             radii[element] = float(atom.get("covalent_radius", 0.75))
+        charges = {
+            str(key).upper(): float(value)
+            for key, value in (result.get("atom_type_charges") or {}).items()
+        }
+        metals = {str(element).upper() for element in result.get("metal_elements", [])}
+        ionic = {
+            str(key).upper(): float(value)
+            for key, value in (result.get("ionic_radii") or {}).items()
+        }
         for index, element_a in enumerate(elements):
             for element_b in elements[index:]:
                 item = scene.cgn_connectivity_pairs.add()
                 item.element_a = element_a
                 item.element_b = element_b
                 item.enabled = True
-                item.min_distance = 0.1
-                item.max_distance = min(
-                    20.0, radii[element_a] + radii[element_b] + _BOND_TOLERANCE
+                minimum, maximum = _default_pair_window(
+                    element_a, element_b, radii, charges, metals, ionic
                 )
+                item.min_distance = minimum
+                item.max_distance = maximum
         _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
         # Single-structure view: drop every previous structure (not just the
         # one the scene pointer happens to name) so repeated imports cannot
@@ -4113,8 +4180,9 @@ def _unwrapped_cell_instances(
     return [value for instance in sorted(instances) for value in instance]
 
 
-def _extend_cell_boundary_instances(sites, instances, pack_repeats=None,
-                                     tolerance=1e-4):
+def _extend_cell_boundary_instances(
+    sites, instances, pack_repeats=None, tolerance=1e-4
+):
     """Extend P1 cell instances so atoms appear at both [0] and [1] cell faces.
 
     For CELL fill mode, periodic frameworks (diamond, MOFs, etc.) keep each
@@ -4978,9 +5046,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             _rebuild_atom_objects(root, atoms)
             _update_growth_selection(root, atoms, [])
             _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
-            _remap_polyhedra(
-                root, removed, atoms, context.scene, removed_quads
-            )
+            _remap_polyhedra(root, removed, atoms, context.scene, removed_quads)
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
@@ -5149,8 +5215,7 @@ class CGN_OT_grow_further(Operator):
         return {"FINISHED"}
 
 
-def _build_polyhedra_objects(root, atoms, center_indices, scene,
-                             clear_existing=True):
+def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=True):
     """Build polyhedra, grouping centers by element so each element keeps
     its own style and materials.  Ligands come from the P1 site pool plus
     periodic images, so coordination spheres are complete even when the
@@ -5187,7 +5252,8 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
             # Generate a unique suffix so multiple "Create from Selected"
             # calls don't collide with existing object names.
             existing_faces = [
-                o for o in root.objects
+                o
+                for o in root.objects
                 if o.get("cgn_role") == "polyhedron_face"
                 and str(o.get("cgn_poly_element", "")).upper() == element
             ]
@@ -5201,7 +5267,9 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
             ligands = _polyhedron_ligands_for_center(
                 center_cart,
                 str(atoms[center].get("element", "X")).upper(),
-                pool, cell_matrix, windows,
+                pool,
+                cell_matrix,
+                windows,
             )
             if len(ligands) < _POLY_MIN_LIGANDS:
                 skipped_total += 1
@@ -5214,12 +5282,8 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
             local_vertices, kept, local_faces, local_edges = topology
             base = len(vertices)
             vertices.extend(local_vertices)
-            faces.extend(
-                tuple(base + index for index in loop) for loop in local_faces
-            )
-            edges.extend(
-                (base + first, base + second) for first, second in local_edges
-            )
+            faces.extend(tuple(base + index for index in loop) for loop in local_faces)
+            edges.extend((base + first, base + second) for first, second in local_edges)
             poly_map[str(center)] = []
             for _pos, site_index, (tx, ty, tz) in ligands:
                 key = (site_index, tx, ty, tz)
@@ -5231,7 +5295,9 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
             continue
 
         face_material = _make_polyhedron_face_material(element, style)
-        mesh_name = f"CGN_Polyhedra_Faces_{element}{suffix if not clear_existing else ''}"
+        mesh_name = (
+            f"CGN_Polyhedra_Faces_{element}{suffix if not clear_existing else ''}"
+        )
         mesh = bpy.data.meshes.new(mesh_name)
         mesh.from_pydata(vertices, [], faces)
         mesh.update()
@@ -5245,7 +5311,9 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
         root.objects.link(face_obj)
 
         _face, _edge, thickness = _polyhedron_style_values(style)
-        curve_name = f"CGN_Polyhedra_Edges_{element}{suffix if not clear_existing else ''}"
+        curve_name = (
+            f"CGN_Polyhedra_Edges_{element}{suffix if not clear_existing else ''}"
+        )
         curve = bpy.data.curves.new(curve_name, "CURVE")
         curve.dimensions = "3D"
         curve.resolution_u = 1
@@ -5275,8 +5343,12 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene,
             count = len(instances) - len(instances) % 4
             for offset in range(0, count, 4):
                 existing.add(
-                    (int(instances[offset]), int(instances[offset + 1]),
-                     int(instances[offset + 2]), int(instances[offset + 3]))
+                    (
+                        int(instances[offset]),
+                        int(instances[offset + 1]),
+                        int(instances[offset + 2]),
+                        int(instances[offset + 3]),
+                    )
                 )
             added = False
             for quad in new_ligand_quads:
@@ -5340,9 +5412,7 @@ class CGN_OT_create_polyhedra(Operator):
             self.report({"ERROR"}, f"The structure contains no {element} atoms.")
             return {"CANCELLED"}
         try:
-            built, skipped = _build_polyhedra_objects(
-                root, atoms, centers, scene
-            )
+            built, skipped = _build_polyhedra_objects(root, atoms, centers, scene)
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
@@ -5867,6 +5937,7 @@ class CGN_PT_quality(Panel):
             layout.prop(scene, "cgn_atom_subdivisions", text="Atom Subdivisions")
             layout.prop(scene, "cgn_bond_resolution", text="Bond Resolution")
 
+
 class CGN_MT_viewport(Menu):
     bl_idname = "CGN_MT_viewport"
     bl_label = "CrystalViz"
@@ -5951,9 +6022,7 @@ def register():
     bpy.types.Scene.cgn_polyhedron_settings = PointerProperty(
         type=CGN_PolyhedronSettings
     )
-    bpy.types.Scene.cgn_polyhedron_styles = CollectionProperty(
-        type=CGN_PolyhedronStyle
-    )
+    bpy.types.Scene.cgn_polyhedron_styles = CollectionProperty(type=CGN_PolyhedronStyle)
     bpy.types.Scene.cgn_quality_preset = EnumProperty(
         name="Quality",
         description="Sphere and bond tube resolution preset",

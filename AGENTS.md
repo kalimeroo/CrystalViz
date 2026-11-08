@@ -1,4 +1,4 @@
-# AGENTS.md — CrystalViz (BlenderCCTBX)
+# AGENTS.md — CrystalViz
 
 Blender **Extension** `crystalviz`. Imports CIF (crystallographic) files via **gemmi** (bundled, in-process — no subprocess, no pip for users) and renders atoms/bonds with Geometry Nodes. MPL-2.0.
 
@@ -42,7 +42,6 @@ Data flow and storage contract:
 
 `gemmi_worker.py` reproduces cctbx output exactly on the example CIFs. Changing symmetry code breaks it unless you preserve:
 
-- vdW/covalent radii tables **verbatim** from `cctbx.eltbx` (they define default bond windows `r_a + r_b + 0.4 Å`);
 - element symbol resolved from the CIF `type_symbol` first (`_site_element`);
 - duplicate CIF block names read with `check_level=0`, last block wins.
 

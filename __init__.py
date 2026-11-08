@@ -3814,7 +3814,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
             getattr(
                 scene,
                 "cgn_aromatic_torus_color",
-                _BOND_COLOR_DEFAULT,
+                _ELEMENT_COLORS["C"],
             ),
         )
         _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
@@ -3841,7 +3841,7 @@ def _update_aromatic_torus_style(scene, context):
         return
     material = _make_material(
         "CGN_Aromatic_Torus_Mat",
-        getattr(scene, "cgn_aromatic_torus_color", _BOND_COLOR_DEFAULT),
+        getattr(scene, "cgn_aromatic_torus_color", _ELEMENT_COLORS["C"]),
     )
     size_scale = getattr(
         scene, "cgn_aromatic_torus_size", _AROMATIC_TORUS_SIZE_DEFAULT
@@ -6223,7 +6223,7 @@ def register():
         size=4,
         min=0.0,
         max=1.0,
-        default=_BOND_COLOR_DEFAULT,
+        default=_ELEMENT_COLORS["C"],
         update=_update_aromatic_torus_style,
     )
     bpy.types.Scene.cgn_bond_color = FloatVectorProperty(

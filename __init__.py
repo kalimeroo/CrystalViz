@@ -3769,30 +3769,43 @@ def _bond_objects(root, atoms, pair_settings, start_index=0):
             _AROMATIC_TORUS_SIZE_DEFAULT,
         ),
     )
-    for ring_index, (ring, ring_segments) in enumerate(
-        zip(aromatic_rings, torus_rings)
-    ):
-        center, axis_u, axis_v, ring_radius, element = ring
-        vdw_radius = vdw_by_element.get(element, _DEFAULT_VDW_RADIUS)
-        torus_base_bond_radius = _bond_radius(vdw_radius, vdw_radius, model)
+    # Group every aromatic ring into a single object so the scene does not
+    # spawn one CGN_Bonds_Aromatic_<n> per ring.  Each ring is an independent
+    # closed polyline; all rings share one bevel radius and one material.
+    if aromatic_rings:
+        vertices = []
+        edges = []
+        base_radii = []
+        for ring_segments in torus_rings:
+            first_segment = ring_segments[0]
+            element = first_segment[2]
+            vdw_radius = vdw_by_element.get(element, _DEFAULT_VDW_RADIUS)
+            base_radii.append(_bond_radius(vdw_radius, vdw_radius, model))
+            base = len(vertices)
+            for first, _second, _first_element, _second_element in ring_segments:
+                vertices.append(_display_point(first))
+            count = len(vertices) - base
+            edges.extend(
+                (base + index, base + (index + 1) % count) for index in range(count)
+            )
+        # One shared bevel radius: use the largest so no ring is under-drawn.
+        torus_base_bond_radius = max(base_radii)
         torus_bond_radius = torus_base_bond_radius * torus_width
-        vertices = [
-            _display_point(first)
-            for first, _second, _first_element, _second_element in ring_segments
-        ]
-        edges = [(index, (index + 1) % len(vertices)) for index in range(len(vertices))]
-        obj_name = f"CGN_Bonds_Aromatic_{ring_index}"
+        obj_name = "CGN_Bonds_Aromatic"
         mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
         mesh.from_pydata(vertices, edges, [])
         mesh.update()
         obj = bpy.data.objects.new(obj_name, mesh)
         obj["cgn_role"] = "bonds"
         obj["cgn_aromatic_torus"] = True
-        obj["cgn_pair"] = f"{element}|{element}"
-        obj["cgn_aromatic_center"] = list(center)
-        obj["cgn_aromatic_axis_u"] = list(axis_u)
-        obj["cgn_aromatic_axis_v"] = list(axis_v)
-        obj["cgn_aromatic_ring_radius"] = ring_radius
+        # Store the raw ring definitions so the style updater can rebuild every
+        # ring polyline in the single mesh from a size/width/color change.
+        obj["cgn_aromatic_rings"] = json.dumps(
+            [
+                list(map(list, (center, axis_u, axis_v))) + [radius, element]
+                for center, axis_u, axis_v, radius, element in aromatic_rings
+            ]
+        )
         obj["cgn_aromatic_base_bond_radius"] = torus_base_bond_radius
         obj["cgn_base_radius"] = torus_bond_radius
         root.objects.link(obj)
@@ -3826,21 +3839,54 @@ def _update_aromatic_torus_style(scene, context):
     root = _active_root(scene)
     if root is None:
         return
-    material = _make_material("CGN_Aromatic_Torus_Mat", scene.cgn_aromatic_torus_color)
+    material = _make_material(
+        "CGN_Aromatic_Torus_Mat",
+        getattr(scene, "cgn_aromatic_torus_color", _BOND_COLOR_DEFAULT),
+    )
+    size_scale = getattr(
+        scene, "cgn_aromatic_torus_size", _AROMATIC_TORUS_SIZE_DEFAULT
+    )
     for obj in root.objects:
         if not obj.get("cgn_aromatic_torus"):
             continue
-        ring = (
-            tuple(obj["cgn_aromatic_center"]),
-            tuple(obj["cgn_aromatic_axis_u"]),
-            tuple(obj["cgn_aromatic_axis_v"]),
-            float(obj["cgn_aromatic_ring_radius"]),
-            str(obj["cgn_pair"]).split("|", 1)[0],
-        )
-        segments = _aromatic_torus_segments([ring], scene.cgn_aromatic_torus_size)[0]
-        for vertex, segment in zip(obj.data.vertices, segments):
-            vertex.co = _display_point(segment[0])
-        obj.data.update()
+        try:
+            rings = [
+                (
+                    tuple(item[0]),
+                    tuple(item[1]),
+                    tuple(item[2]),
+                    float(item[3]),
+                    str(item[4]),
+                )
+                for item in json.loads(obj.get("cgn_aromatic_rings", "[]"))
+            ]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not rings:
+            continue
+        torus_rings = _aromatic_torus_segments(rings, size_scale)
+        vertices = []
+        edges = []
+        for ring_segments in torus_rings:
+            for first, _second, _first_element, _second_element in ring_segments:
+                vertices.append(_display_point(first))
+            count = len(ring_segments)
+            base = len(vertices) - count
+            edges.extend(
+                (base + index, base + (index + 1) % count) for index in range(count)
+            )
+        mesh = obj.data
+        if len(mesh.vertices) != len(vertices):
+            mesh.clear_geometry()
+            mesh.from_pydata(vertices, edges, [])
+        else:
+            for vertex, position in zip(mesh.vertices, vertices):
+                vertex.co = position
+            if len(mesh.edges) != len(edges):
+                mesh.edges.clear()
+                for first, second in edges:
+                    mesh.edges.new((first, second))
+        mesh.update()
         base_radius = (
             float(obj["cgn_aromatic_base_bond_radius"]) * scene.cgn_aromatic_torus_width
         )

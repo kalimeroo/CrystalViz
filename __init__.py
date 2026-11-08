@@ -1649,6 +1649,132 @@ def _structure_atom_count(root):
     return len(json.loads(instances_json)) // 4
 
 
+def _snapshot_structure_state(root, pair_settings=None):
+    """Capture the data custom-properties (plus per-site polyhedron centers)
+    that fill/grow mutate, so a mid-rebuild failure can be rolled back
+    atomically.  Atoms/bonds are fully derived from ``cgn_instances``; the
+    polyhedron centers are read back from each face object's ``cgn_poly_map``.
+
+    ``pair_settings`` (the connectivity pairs used to build the current bonds)
+    is copied so a rollback can reproduce the exact pre-operation bond set even
+    when the user toggled the pairs in the meantime.
+    """
+    keys = [
+        "cgn_instances",
+        "cgn_initial_count",
+        "cgn_selected_indices",
+        "cgn_growth_shells",
+        "cgn_fill_mode",
+        "cgn_cell_atoms",
+        "cgn_fill_repeats",
+        "cgn_bond_settings_signature",
+    ]
+    props = {key: root.get(key) for key in keys}
+    pair_records = [
+        {
+            "element_a": str(item.element_a),
+            "element_b": str(item.element_b),
+            "enabled": bool(item.enabled),
+            "min_distance": float(item.min_distance),
+            "max_distance": float(item.max_distance),
+        }
+        for item in (pair_settings or ())
+    ]
+    centers_by_style = {}
+    for obj in root.objects:
+        if obj.get("cgn_role") != "polyhedron_face":
+            continue
+        element = str(obj.get("cgn_poly_element", "")).upper()
+        site = str(obj.get("cgn_poly_site_label", "") or "")
+        try:
+            poly_map = json.loads(obj.get("cgn_poly_map", "{}"))
+        except (TypeError, ValueError):
+            continue
+        indices = {int(key) for key in poly_map}
+        style_key = (element, site)
+        centers_by_style.setdefault(style_key, set()).update(indices)
+    return {
+        "props": props,
+        "pairs": pair_records,
+        "polyhedra": {
+            key: sorted(value) for key, value in centers_by_style.items()
+        },
+    }
+
+
+def _rollback_structure_state(root, snapshot, scene, pair_settings):
+    """Restore a structure to a captured pre-operation state after a failed
+    fill/grow.  Restores the stored ``cgn_*`` props, drops every generated
+    display object, and rebuilds atoms/bonds/polyhedra/unit-cell from the
+    restored instances so the viewport and stored data stay consistent.
+    """
+    props = snapshot["props"]
+    for key, value in props.items():
+        if value is None:
+            if key in root:
+                del root[key]
+        else:
+            root[key] = value
+    # Rebuild bonds with the pairs that produced the captured bond signature so
+    # the rollback is faithful even if the user toggled pairs in the meantime.
+    rollback_pairs = _pairs_from_records(snapshot.get("pairs")) or pair_settings
+    for obj in list(root.objects):
+        role = obj.get("cgn_role")
+        if role in {
+            "atoms",
+            "bonds",
+            "growth_selection",
+            "polyhedron_face",
+            "polyhedron_edge",
+        }:
+            _remove_object(obj)
+    try:
+        atoms = _structure_atoms(root)
+    except (ValueError, TypeError):
+        return
+    try:
+        selected = json.loads(props.get("cgn_selected_indices", "[]"))
+    except (TypeError, ValueError):
+        selected = []
+    _make_atom_objects(root, atoms)
+    _update_growth_selection(root, atoms, selected)
+    _bond_objects(root, atoms, rollback_pairs)
+    _apply_unit_cell_settings(scene)
+    for (element, site_label), centers in snapshot["polyhedra"].items():
+        _build_polyhedra_objects(root, atoms, centers, scene)
+
+
+def _pairs_from_records(records):
+    """Rebuild a list of minimal connectivity-pair objects from captured
+    records, or return ``[]`` when there are no records to restore from."""
+    if not records:
+        return []
+    pairs = []
+    for record in records:
+        pair = _ConnectivityRecord()
+        pair.element_a = record["element_a"]
+        pair.element_b = record["element_b"]
+        pair.enabled = record["enabled"]
+        pair.min_distance = record["min_distance"]
+        pair.max_distance = record["max_distance"]
+        pairs.append(pair)
+    return pairs
+
+
+class _ConnectivityRecord:
+    """Minimal stand-in for ``CGN_ConnectivityPair`` used to replay captured
+    connectivity settings during rollback without touching Blender data."""
+
+    __slots__ = ("element_a", "element_b", "enabled", "min_distance", "max_distance")
+
+    def __init__(self):
+        self.element_a = ""
+        self.element_b = ""
+        self.enabled = True
+        self.min_distance = 0.1
+        self.max_distance = 3.0
+
+
 def _display_point(cart):
     """Convert an Ångström-space position to Blender display units."""
     return tuple(float(value) * _DISPLAY_SCALE for value in cart)
@@ -3512,43 +3638,67 @@ def _cached_atoms_for_growth(root, pair_settings, atom_count, new_atoms):
     return cached["atoms"] + new_atoms
 
 
-def _bond_objects(root, atoms, pair_settings, start_index=0):
+def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
+    """Build (or, with ``append_only``, extend) the structure's bond objects.
+
+    ``start_index`` is the first atom index whose bonds are computed; buckets
+    are built from the earlier atoms so bonds among pre-existing atoms are
+    never re-derived.  With ``append_only`` the existing bond objects are left
+    untouched and only bonds for atoms ``[start_index, len(atoms))`` are added
+    — this is the grow path, which must never tear down bonds that were built
+    under earlier connectivity settings.  Connectivity toggles therefore only
+    *add* to the scene; re-deriving everything from the current windows is the
+    explicit job of the "Rebuild Bonds" operator (``append_only=False``).
+    """
     global _BOND_SPATIAL_CACHE
     start_index = max(0, min(int(start_index), len(atoms)))
     scene = getattr(bpy.context, "scene", None)
     chemdraw = bool(getattr(scene, "cgn_chemdraw", False))
-    if chemdraw:
-        start_index = 0
     model = _current_model()
     enabled = _enabled_pair_windows(pair_settings)
     settings_signature = _connectivity_settings_signature(pair_settings)
-    if model == "SPACE_FILLING" or not enabled or len(atoms) < 2:
-        start_index = 0
     max_distance = max((pair[1] for pair in enabled.values()), default=0.0)
-    if max_distance <= 0:
+
+    if append_only:
+        # Grow: never remove or rebuild existing bonds.  If there is nothing to
+        # bond (no enabled windows, not enough atoms, space-filling, or no new
+        # atoms to append to), leave the current bonds exactly as they are.
+        if (
+            model == "SPACE_FILLING"
+            or not enabled
+            or len(atoms) < 2
+            or max_distance <= 0
+            or start_index <= 0
+        ):
+            return 0
+    else:
+        # Full rebuild: re-derive all bonds from the current windows.  Any of
+        # these invalidation conditions drops the existing bonds.
+        if (
+            model == "SPACE_FILLING"
+            or not enabled
+            or len(atoms) < 2
+            or max_distance <= 0
+        ):
+            _BOND_SPATIAL_CACHE = None
+            root["cgn_bond_settings_signature"] = settings_signature
+            return 0
         start_index = 0
+
     cell_width = max(max_distance, 1e-6)
     root_id = root.get("cgn_instance_id", root.name)
     cached = _BOND_SPATIAL_CACHE
     cache_matches = (
-        start_index > 0
-        and cached is not None
+        cached is not None
         and cached["root_id"] == root_id
         and cached["settings_signature"] == settings_signature
         and cached["cell_width"] == cell_width
         and cached["atom_count"] == start_index
     )
-    if start_index > 0 and not cache_matches:
-        start_index = 0
     if start_index == 0:
         for obj in list(root.objects):
             if obj.get("cgn_role") == "bonds":
                 _remove_object(obj)
-
-    if model == "SPACE_FILLING" or not enabled or len(atoms) < 2 or max_distance <= 0:
-        _BOND_SPATIAL_CACHE = None
-        root["cgn_bond_settings_signature"] = settings_signature
-        return 0
 
     if cache_matches:
         buckets = cached["buckets"]
@@ -4444,6 +4594,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
     if not atoms:
         operator.report({"ERROR"}, "The fill produced no atoms.")
         return {"CANCELLED"}
+    snapshot = _snapshot_structure_state(root, context.scene.cgn_connectivity_pairs)
     try:
         _rebuild_atom_objects(root, atoms)
         _update_growth_selection(root, atoms, [])
@@ -4452,6 +4603,11 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         _apply_unit_cell_settings(context.scene)
     except Exception as exc:
         traceback.print_exc()
+        # A mid-rebuild failure must not leave the displayed atoms inconsistent
+        # with the stored data: restore the pre-operation state atomically.
+        _rollback_structure_state(
+            root, snapshot, context.scene, context.scene.cgn_connectivity_pairs
+        )
         operator.report({"ERROR"}, str(exc))
         return {"CANCELLED"}
 
@@ -4508,25 +4664,57 @@ class CGN_OT_import_cif(Operator):
         return {"FINISHED"}
 
 
+def _default_connectivity_pairs(scene, atoms):
+    """Repopulate ``scene.cgn_connectivity_pairs`` with the default windows for
+    the elements present in ``atoms`` (covalent-radius defaults, as import
+    computes for the common case)."""
+    scene.cgn_connectivity_pairs.clear()
+    elements = sorted({str(a.get("element", "X")).upper() for a in atoms})
+    radii = {}
+    for atom in atoms:
+        element = str(atom.get("element", "X")).upper()
+        radii[element] = float(atom.get("covalent_radius", 0.75))
+    for index, element_a in enumerate(elements):
+        for element_b in elements[index:]:
+            item = scene.cgn_connectivity_pairs.add()
+            item.element_a = element_a
+            item.element_b = element_b
+            item.enabled = True
+            minimum, maximum = _default_pair_window(
+                element_a, element_b, radii, {}, set(), {}
+            )
+            item.min_distance = minimum
+            item.max_distance = maximum
+
+
 class CGN_OT_rebuild_connectivity(Operator):
     bl_idname = "cgn.rebuild_connectivity"
-    bl_label = "Rebuild Bonds"
-    bl_description = "Apply enabled element-pair distance windows to the imported atoms"
+    bl_label = "Reset Default"
+    bl_description = (
+        "Restore the default connectivity windows for the next growth. "
+        "Already-rendered bonds are kept; the restored settings steer future "
+        "growing of selected atoms."
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before rebuilding connectivity.")
+            self.report({"ERROR"}, "Import a CIF before resetting connectivity.")
             return {"CANCELLED"}
         try:
             atoms = _structure_atoms(root)
         except (ValueError, TypeError) as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        count = _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+        # Non-destructive: restore the default pair windows but DO NOT tear down
+        # the bonds already on screen.  Under Option B the restored settings are
+        # used the next time the user grows selected atoms.
+        _default_connectivity_pairs(context.scene, atoms)
         self.report(
-            {"INFO"}, f"Built {count} bonds using the current distance windows."
+            {"INFO"},
+            "Connectivity reset to defaults. Existing bonds kept; the next grow "
+            "uses these windows.",
         )
         return {"FINISHED"}
 
@@ -4798,6 +4986,11 @@ class _CGN_OT_select_atoms(Operator):
     select_error = "Import a CIF before selecting atoms."
     status_text = ""
     keep_stored_selection = True
+    # The grow operator keeps its seed sphere visible until the deferred grow
+    # runs; delete and polyhedra operators do not, so their confirm (and any
+    # early-return) path must drop the selection sphere instead of leaving an
+    # orphan behind.
+    keep_selection_sphere = True
 
     def invoke(self, context, event):
         if context.area is None or context.area.type != "VIEW_3D":
@@ -4858,6 +5051,10 @@ class _CGN_OT_select_atoms(Operator):
             root = bpy.data.collections.get(self._root_name)
             if root is not None and root.get("cgn_instance_id") == self._root_id:
                 _update_growth_selection(root, self._atoms, self._selected)
+        elif not self.keep_selection_sphere:
+            root = bpy.data.collections.get(self._root_name)
+            if root is not None and root.get("cgn_instance_id") == self._root_id:
+                _update_growth_selection(root, self._atoms, [])
         if getattr(self, "_draw_handle", None) is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, "WINDOW")
             self._draw_handle = None
@@ -5015,6 +5212,16 @@ def _grow_from_selection():
         bpy.ops.cgn.grow_further("INVOKE_DEFAULT", all_atoms=False)
     except RuntimeError as exc:
         print(f"CrystalViz: grow failed: {exc}")
+    # grow_further clears the seed sphere on its success and "grew_by == 0"
+    # paths, but its CANCELLED early returns leave the seed selection sphere
+    # on screen.  Drop any leftover sphere so nothing lingers regardless of
+    # what the grow reported.
+    try:
+        root = _active_root(bpy.context.scene)
+        if root is not None and root.get("cgn_selected_indices") not in ("[]", ""):
+            _update_growth_selection(root, _structure_atoms(root), [])
+    except (ValueError, TypeError):
+        pass
     return None
 
 
@@ -5063,6 +5270,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         "Enter/right-click deletes them, Esc cancels."
     )
     keep_stored_selection = False
+    keep_selection_sphere = False
 
     def _confirm(self, context):
         if not self._selected:
@@ -5243,6 +5451,7 @@ class CGN_OT_grow_further(Operator):
                 {"ERROR"}, "The gemmi worker returned an invalid growth result."
             )
             return {"CANCELLED"}
+        snapshot = _snapshot_structure_state(root, context.scene.cgn_connectivity_pairs)
         try:
             old_atom_count = len(instances) // 4
             instances = instances + new_instances
@@ -5252,44 +5461,51 @@ class CGN_OT_grow_further(Operator):
                 new_instances,
                 initial_count + old_atom_count,
             )
-            _make_atom_objects(root, new_atoms)
-            _update_growth_selection(root, [], [])
-            bond_start_index = (
-                old_atom_count
-                if root.get("cgn_bond_settings_signature")
-                == _connectivity_settings_signature(
-                    context.scene.cgn_connectivity_pairs
+            # Re-derive the full atom list once and make the per-element atom
+            # objects reflect it.  A grow must not spawn a fresh CGN_Atoms_*
+            # object per element per shell (the outliner would accumulate one
+            # per grow); instead rebuild the single per-element objects in
+            # place so the outliner stays flat while growth still works.
+            atoms = (
+                _cached_atoms_for_growth(
+                    root,
+                    context.scene.cgn_connectivity_pairs,
+                    old_atom_count,
+                    new_atoms,
                 )
-                else 0
+                if old_atom_count > 0
+                else None
             )
-            if _current_model(context.scene) == "SPACE_FILLING":
-                atoms = []
-                _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
-            else:
-                atoms = (
-                    _cached_atoms_for_growth(
-                        root,
-                        context.scene.cgn_connectivity_pairs,
-                        old_atom_count,
-                        new_atoms,
-                    )
-                    if bond_start_index
-                    else None
-                )
-                if atoms is None:
-                    atoms = _materialize_atoms(
-                        sites, cell_matrix, instances, initial_count
-                    )
+            if atoms is None:
+                atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
+            _rebuild_atom_objects(root, atoms)
+            _update_growth_selection(root, [], [])
+            # Option B: growing always APPENDS bonds for the newly grown atoms
+            # and never tears down bonds that were built under earlier
+            # connectivity settings.  The current pair toggles act as a query
+            # filter for this growth only; re-deriving all bonds from them is
+            # the explicit "Rebuild Bonds" operator.
+            if _current_model(context.scene) != "SPACE_FILLING":
                 _bond_objects(
                     root,
                     atoms,
                     context.scene.cgn_connectivity_pairs,
-                    start_index=bond_start_index,
+                    start_index=old_atom_count,
+                    append_only=True,
                 )
             root["cgn_instances"] = json.dumps(instances)
             root["cgn_growth_shells"] = int(root.get("cgn_growth_shells", 0)) + 1
         except Exception as exc:
             traceback.print_exc()
+            # A mid-rebuild failure must not leave the displayed atoms
+            # inconsistent with the stored data: restore the pre-operation
+            # state atomically.
+            _rollback_structure_state(
+                root,
+                snapshot,
+                context.scene,
+                context.scene.cgn_connectivity_pairs,
+            )
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report(
@@ -5545,6 +5761,7 @@ class CGN_OT_create_polyhedra_selected(_CGN_OT_select_atoms):
         "Enter/right-click creates the polyhedra, Esc cancels."
     )
     keep_stored_selection = False
+    keep_selection_sphere = False
 
     def _confirm(self, context):
         if not self._selected:
@@ -5768,7 +5985,9 @@ class CGN_PT_connectivity(Panel):
             row.label(text=f"{item.element_a} — {item.element_b}")
             row.prop(item, "min_distance", text="Min")
             row.prop(item, "max_distance", text="Max")
-        layout.operator("cgn.rebuild_connectivity", icon="FILE_REFRESH")
+        layout.operator(
+            "cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK"
+        )
 
 
 class CGN_PT_unit_cell(Panel):
@@ -6084,7 +6303,7 @@ class CGN_MT_viewport(Menu):
         layout.operator("cgn.delete_atoms", text="Delete Atoms", icon="X")
         layout.separator()
         layout.operator(
-            "cgn.rebuild_connectivity", text="Rebuild Bonds", icon="FILE_REFRESH"
+            "cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK"
         )
 
 

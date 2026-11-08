@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 1),
+    "version": (0, 9, 2),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -412,6 +412,11 @@ def _update_ortep_materials(scene, context):
 
 
 def _update_ortep_ellipse_thickness(scene, context):
+    # If the template object was deleted, recreate it (and rebuild the
+    # ellipsoid node group's pointer to it) instead of silently giving up,
+    # otherwise the ORTEP ellipsoids are permanently broken.
+    if bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT) is None:
+        _make_ellipsoid_node_group()
     template = bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT)
     if template is None:
         return
@@ -1193,6 +1198,12 @@ def _make_ellipsoid_node_group():
     """Build the ORTEP cutaway ellipsoid instancing node group."""
     node_group = bpy.data.node_groups.get(_NODE_GROUP_ELLIPSOIDS)
     if node_group is not None:
+        # The group may already exist while the ORTEP template object was
+        # deleted; refresh the Object Info pointer so it self-heals.
+        template = _ensure_ortep_template()
+        for node in node_group.nodes:
+            if node.bl_idname == "GeometryNodeObjectInfo":
+                node.inputs["Object"].default_value = template
         return node_group
 
     node_group = bpy.data.node_groups.new(_NODE_GROUP_ELLIPSOIDS, "GeometryNodeTree")
@@ -2365,10 +2376,7 @@ def _polyhedron_style(scene, element, site_label=""):
     """
     site_label = str(site_label or "")
     for style in scene.cgn_polyhedron_styles:
-        if (
-            style.element == element
-            and str(style.site_label or "") == site_label
-        ):
+        if style.element == element and str(style.site_label or "") == site_label:
             return style
     color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
     style = scene.cgn_polyhedron_styles.add()
@@ -2385,10 +2393,7 @@ def _polyhedron_style(scene, element, site_label=""):
 def _existing_polyhedron_style(scene, element, site_label=""):
     site_label = str(site_label or "")
     for style in scene.cgn_polyhedron_styles:
-        if (
-            style.element == element
-            and str(style.site_label or "") == site_label
-        ):
+        if style.element == element and str(style.site_label or "") == site_label:
             return style
     return None
 
@@ -2397,7 +2402,9 @@ def _make_polyhedron_face_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
+        material = bpy.data.materials.new(
+            f"CGN_Polyhedron_Face_Material_{element}{suffix}"
+        )
     material.use_nodes = True
     face_rgba, _edge, _thickness = _polyhedron_style_values(style)
     color, alpha = face_rgba[:3], face_rgba[3]
@@ -2422,7 +2429,9 @@ def _make_polyhedron_edge_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
+        material = bpy.data.materials.new(
+            f"CGN_Polyhedron_Edge_Material_{element}{suffix}"
+        )
     material.use_nodes = True
     _face, edge_rgba, _thickness = _polyhedron_style_values(style)
     color, alpha = edge_rgba[:3], edge_rgba[3]
@@ -5273,7 +5282,7 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
         # Rebuilds replace every polyhedron of the involved elements, so clear
         # each element once up front (before any site's object is created,
         # otherwise a later site group would wipe out an earlier one).
-        for (element, _site_label) in groups:
+        for element, _site_label in groups:
             _clear_polyhedra(root, element)
 
     built_total = 0
@@ -5950,7 +5959,7 @@ class CGN_PT_polyhedra(Panel):
             if el:
                 present.add((el, site))
         shown = False
-        for (element, site_label) in sorted(present):
+        for element, site_label in sorted(present):
             style = _polyhedron_style(scene, element, site_label)
             shown = True
             title = f"{element} · {site_label}" if site_label else element

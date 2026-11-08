@@ -544,11 +544,14 @@ def _update_polyhedron_style(self, context):
     element = str(getattr(self, "element", ""))
     if not element:
         return
-    face_material = _make_polyhedron_face_material(element, self)
-    edge_material = _make_polyhedron_edge_material(element, self)
+    site_label = str(getattr(self, "site_label", ""))
+    face_material = _make_polyhedron_face_material(element, self, site_label)
+    edge_material = _make_polyhedron_edge_material(element, self, site_label)
     _face, _edge, thickness = _polyhedron_style_values(self)
     for obj in list(root.objects):
         if str(obj.get("cgn_poly_element", "")) != element:
+            continue
+        if str(obj.get("cgn_poly_site_label", "")) != site_label:
             continue
         if obj.get("cgn_role") == "polyhedron_face":
             if obj.data.materials:
@@ -566,6 +569,12 @@ def _update_polyhedron_style(self, context):
 
 class CGN_PolyhedronStyle(PropertyGroup):
     element: StringProperty(options={"HIDDEN"})
+    site_label: StringProperty(options={"HIDDEN"})
+    expanded: BoolProperty(
+        name="Expanded",
+        description="Show this polyhedron's style controls",
+        default=False,
+    )
     face_color: FloatVectorProperty(
         name="Face Color",
         description="Polyhedron face color (defaults to the central atom colour)",
@@ -2347,14 +2356,24 @@ def _polyhedron_style_values(style):
     return face_rgba, edge_rgba, thickness
 
 
-def _polyhedron_style(scene, element):
-    """Look up or create the style for an element (defaults to atom colour)."""
+def _polyhedron_style(scene, element, site_label=""):
+    """Look up or create the style for an element (and optionally a site).
+
+    Defaults to the atom colour.  When ``site_label`` is non-empty the style is
+    per crystallographic site (e.g. ``AG``/``Ag1`` vs ``AG``/``Ag2``) so each
+    site's polyhedron keeps its own editable style.
+    """
+    site_label = str(site_label or "")
     for style in scene.cgn_polyhedron_styles:
-        if style.element == element:
+        if (
+            style.element == element
+            and str(style.site_label or "") == site_label
+        ):
             return style
     color = _ELEMENT_COLORS.get(element, _DEFAULT_COLOR)
     style = scene.cgn_polyhedron_styles.add()
     style.element = element
+    style.site_label = site_label
     style.face_color = color
     style.face_transparency = 1.0 - _POLY_FACE_ALPHA
     style.edge_color = _POLY_EDGE_COLOR
@@ -2363,17 +2382,22 @@ def _polyhedron_style(scene, element):
     return style
 
 
-def _existing_polyhedron_style(scene, element):
+def _existing_polyhedron_style(scene, element, site_label=""):
+    site_label = str(site_label or "")
     for style in scene.cgn_polyhedron_styles:
-        if style.element == element:
+        if (
+            style.element == element
+            and str(style.site_label or "") == site_label
+        ):
             return style
     return None
 
 
-def _make_polyhedron_face_material(element, style):
-    material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}")
+def _make_polyhedron_face_material(element, style, site_label=""):
+    suffix = f"_{site_label}" if site_label else ""
+    material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(f"CGN_Polyhedron_Face_Material_{element}")
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
     material.use_nodes = True
     face_rgba, _edge, _thickness = _polyhedron_style_values(style)
     color, alpha = face_rgba[:3], face_rgba[3]
@@ -2394,10 +2418,11 @@ def _make_polyhedron_face_material(element, style):
     return material
 
 
-def _make_polyhedron_edge_material(element, style):
-    material = bpy.data.materials.get(f"CGN_Polyhedron_Edge_Material_{element}")
+def _make_polyhedron_edge_material(element, style, site_label=""):
+    suffix = f"_{site_label}" if site_label else ""
+    material = bpy.data.materials.get(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(f"CGN_Polyhedron_Edge_Material_{element}")
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
     material.use_nodes = True
     _face, edge_rgba, _thickness = _polyhedron_style_values(style)
     color, alpha = edge_rgba[:3], edge_rgba[3]
@@ -2585,6 +2610,7 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
         # a deleted centre *or* a deleted ligand image, and both must go.
         cache_key = (
             str(obj.get("cgn_poly_element", "")).upper(),
+            str(obj.get("cgn_poly_site_label", "")),
             tuple(sorted(int(key) for key in shifted)),
         )
         if cache_key not in cache:
@@ -5240,15 +5266,22 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
     groups = {}
     for center in center_indices:
         element = str(atoms[center].get("element", "X")).upper()
-        groups.setdefault(element, []).append(center)
+        site_label = str(atoms[center].get("label", "") or "").strip()
+        groups.setdefault((element, site_label), []).append(center)
+
+    if clear_existing:
+        # Rebuilds replace every polyhedron of the involved elements, so clear
+        # each element once up front (before any site's object is created,
+        # otherwise a later site group would wipe out an earlier one).
+        for (element, _site_label) in groups:
+            _clear_polyhedra(root, element)
 
     built_total = 0
     skipped_total = 0
-    for element, centers in groups.items():
-        style = _polyhedron_style(scene, element)
-        if clear_existing:
-            _clear_polyhedra(root, element)
-        else:
+    for (element, site_label), centers in groups.items():
+        style = _polyhedron_style(scene, element, site_label)
+        suffix = ""
+        if not clear_existing:
             # Generate a unique suffix so multiple "Create from Selected"
             # calls don't collide with existing object names.
             existing_faces = [
@@ -5256,6 +5289,7 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
                 for o in root.objects
                 if o.get("cgn_role") == "polyhedron_face"
                 and str(o.get("cgn_poly_element", "")).upper() == element
+                and str(o.get("cgn_poly_site_label", "")) == site_label
             ]
             suffix = f"_{len(existing_faces)}" if existing_faces else ""
         poly_map = {}
@@ -5294,9 +5328,11 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
         if not vertices or not faces:
             continue
 
-        face_material = _make_polyhedron_face_material(element, style)
+        label_tag = f"_{site_label}" if site_label else ""
+        face_material = _make_polyhedron_face_material(element, style, site_label)
         mesh_name = (
-            f"CGN_Polyhedra_Faces_{element}{suffix if not clear_existing else ''}"
+            f"CGN_Polyhedra_Faces_{element}{label_tag}"
+            f"{suffix if not clear_existing else ''}"
         )
         mesh = bpy.data.meshes.new(mesh_name)
         mesh.from_pydata(vertices, [], faces)
@@ -5307,12 +5343,14 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
         face_obj = bpy.data.objects.new(mesh.name, mesh)
         face_obj["cgn_role"] = "polyhedron_face"
         face_obj["cgn_poly_element"] = element
+        face_obj["cgn_poly_site_label"] = site_label
         face_obj["cgn_poly_map"] = json.dumps(poly_map)
         root.objects.link(face_obj)
 
         _face, _edge, thickness = _polyhedron_style_values(style)
         curve_name = (
-            f"CGN_Polyhedra_Edges_{element}{suffix if not clear_existing else ''}"
+            f"CGN_Polyhedra_Edges_{element}{label_tag}"
+            f"{suffix if not clear_existing else ''}"
         )
         curve = bpy.data.curves.new(curve_name, "CURVE")
         curve.dimensions = "3D"
@@ -5324,10 +5362,13 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
             spline.points.add(1)
             spline.points[0].co = (*vertices[first], 1.0)
             spline.points[1].co = (*vertices[second], 1.0)
-        curve.materials.append(_make_polyhedron_edge_material(element, style))
+        curve.materials.append(
+            _make_polyhedron_edge_material(element, style, site_label)
+        )
         edge_obj = bpy.data.objects.new(curve.name, curve)
         edge_obj["cgn_role"] = "polyhedron_edge"
         edge_obj["cgn_poly_element"] = element
+        edge_obj["cgn_poly_site_label"] = site_label
         edge_obj["cgn_poly_map"] = json.dumps(poly_map)
         root.objects.link(edge_obj)
 
@@ -5894,23 +5935,48 @@ class CGN_PT_polyhedra(Panel):
                 )
                 op.element = element
         layout.operator("cgn.clear_polyhedra", text="Clear All Polyhedra", icon="TRASH")
-        elements = _cached_polyhedron_elements(root, scene) if root is not None else []
-        shown = False
-        for element in elements:
-            style = _existing_polyhedron_style(scene, element)
-            if style is None:
+        self._draw_styles(layout, scene, root)
+
+    def _draw_styles(self, layout, scene, root):
+        # Collect the styles we actually own: one per (element, site_label)
+        # that has at least one built polyhedron object, plus the set of
+        # element-level defaults for sites that have no per-site style yet.
+        present = set()
+        for obj in root.objects if root is not None else []:
+            if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
                 continue
+            el = str(obj.get("cgn_poly_element", "")).upper()
+            site = str(obj.get("cgn_poly_site_label", ""))
+            if el:
+                present.add((el, site))
+        shown = False
+        for (element, site_label) in sorted(present):
+            style = _polyhedron_style(scene, element, site_label)
             shown = True
+            title = f"{element} · {site_label}" if site_label else element
             box = layout.box()
-            box.label(text=f"{element} polyhedron")
-            box.prop(style, "face_color", text="Face")
-            box.prop(style, "face_transparency", text="Face Transparency", slider=True)
-            box.prop(style, "edge_color", text="Edge")
-            box.prop(style, "edge_transparency", text="Edge Transparency", slider=True)
-            box.prop(style, "edge_width", text="Edge Width", slider=True)
+            head = box.row()
+            head.prop(
+                style,
+                "expanded",
+                text="",
+                emboss=False,
+                icon="DOWNARROW_HLT" if style.expanded else "RIGHTARROW",
+            )
+            head.label(text=f"{title} polyhedron")
+            if style.expanded:
+                box.prop(style, "face_color", text="Face")
+                box.prop(
+                    style, "face_transparency", text="Face Transparency", slider=True
+                )
+                box.prop(style, "edge_color", text="Edge")
+                box.prop(
+                    style, "edge_transparency", text="Edge Transparency", slider=True
+                )
+                box.prop(style, "edge_width", text="Edge Width", slider=True)
         if not shown:
             layout.label(
-                text="Select an element above to configure its style.",
+                text="Create polyhedra above to configure their style.",
                 icon="INFO",
             )
 

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 2),
+    "version": (0, 9, 3),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -605,23 +605,59 @@ def _update_polyhedron_style(self, context):
     face_material = _make_polyhedron_face_material(element, self, site_label)
     edge_material = _make_polyhedron_edge_material(element, self, site_label)
     _face, _edge, thickness = _polyhedron_style_values(self)
+    matching = []
+    rebuild = False
     for obj in list(root.objects):
+        if obj.get("cgn_role") != "polyhedron":
+            continue
         if str(obj.get("cgn_poly_element", "")) != element:
             continue
         if str(obj.get("cgn_poly_site_label", "")) != site_label:
             continue
-        if obj.get("cgn_role") == "polyhedron_face":
-            if obj.data.materials:
-                obj.data.materials[0] = face_material
-            else:
-                obj.data.materials.append(face_material)
-        elif obj.get("cgn_role") == "polyhedron_edge":
-            if obj.data.materials:
-                obj.data.materials[0] = edge_material
-            else:
-                obj.data.materials.append(edge_material)
-            if isinstance(obj.data, bpy.types.Curve):
-                obj.data.bevel_depth = thickness * _DISPLAY_SCALE
+        mesh = obj.data if isinstance(obj.data, bpy.types.Mesh) else None
+        if mesh is None:
+            continue
+        matching.append(obj)
+        # A colour/transparency change only swaps material slots; the edge
+        # width is baked into the tube geometry, so it needs a rebuild.
+        try:
+            stored_width = float(obj.get("cgn_poly_edge_width", thickness))
+        except (TypeError, ValueError):
+            stored_width = thickness
+        if abs(stored_width - thickness) > 1e-9:
+            rebuild = True
+        if len(mesh.materials) >= 2:
+            mesh.materials[0] = face_material
+            mesh.materials[1] = edge_material
+        else:
+            mesh.materials.clear()
+            mesh.materials.append(face_material)
+            mesh.materials.append(edge_material)
+    if rebuild and matching:
+        centers = []
+        for obj in matching:
+            try:
+                centers.extend(
+                    int(index)
+                    for index in json.loads(obj.get("cgn_poly_centers", "[]"))
+                )
+            except (TypeError, ValueError):
+                continue
+        for obj in matching:
+            _remove_object(obj)
+        if centers:
+            try:
+                atoms = _structure_atoms(root)
+            except (ValueError, TypeError):
+                return
+            _build_polyhedra_objects(
+                root,
+                atoms,
+                centers,
+                scene,
+                clear_existing=False,
+                extend_structure=False,
+            )
 
 
 class CGN_PolyhedronStyle(PropertyGroup):
@@ -1140,8 +1176,8 @@ def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
 
 def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     """Create a clipped ellipsoid template with cut faces and three rings."""
-    vertices, faces, face_types, smooth_faces, tube_radius = (
-        _ortep_template_geometry(ellipse_thickness)
+    vertices, faces, face_types, smooth_faces, tube_radius = _ortep_template_geometry(
+        ellipse_thickness
     )
     mesh = bpy.data.meshes.new("CGN_ORTEP_Template_Mesh")
     mesh.from_pydata(vertices, [], faces)
@@ -1171,8 +1207,8 @@ def _update_ortep_template_mesh(mesh, ellipse_thickness):
     """
     if mesh is None or mesh.get("cgn_ortep_template_version") != 3:
         return False
-    vertices, faces, _face_types, _smooth_faces, tube_radius = (
-        _ortep_template_geometry(ellipse_thickness)
+    vertices, faces, _face_types, _smooth_faces, tube_radius = _ortep_template_geometry(
+        ellipse_thickness
     )
     if len(mesh.vertices) != len(vertices) or len(mesh.polygons) != len(faces):
         return False
@@ -1429,16 +1465,12 @@ def _add_ellipsoid_attributes(mesh, atoms):
                 and u33 > 0.0
             ):
                 u12, u13, u23 = numbers[3], numbers[4], numbers[5]
-                tensors.append(
-                    ((u11, u12, u13), (u12, u22, u23), (u13, u23, u33))
-                )
+                tensors.append(((u11, u12, u13), (u12, u22, u23), (u13, u23, u33)))
                 tensor_indices.append(index)
                 tensor_size_scales.append(size_scale)
                 continue
         # No usable ADP: keep the atom spherical on the ball-and-stick radius.
-        radius = _atom_radius(
-            atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), "BALL_STICK"
-        )
+        radius = _atom_radius(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), "BALL_STICK")
         scales[index] = radius * size_scale
 
     if tensors:
@@ -1461,12 +1493,8 @@ def _add_ellipsoid_attributes(mesh, atoms):
 
     scale_attribute = mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
     rotation_attribute = mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
-    scale_attribute.data.foreach_set(
-        "vector", scales.astype(np.float32).ravel()
-    )
-    rotation_attribute.data.foreach_set(
-        "vector", rotations.astype(np.float32).ravel()
-    )
+    scale_attribute.data.foreach_set("vector", scales.astype(np.float32).ravel())
+    rotation_attribute.data.foreach_set("vector", rotations.astype(np.float32).ravel())
 
 
 def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
@@ -1511,10 +1539,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
 
         world_to_object = obj.matrix_world.to_3x3().inverted_safe()
         to_object = np.array(
-            [
-                [world_to_object[row][column] for column in range(3)]
-                for row in range(3)
-            ],
+            [[world_to_object[row][column] for column in range(3)] for row in range(3)],
             dtype=np.float64,
         )
         if camera_vector is None:
@@ -1532,9 +1557,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
                 ],
                 dtype=np.float64,
             )
-            translation = np.array(
-                tuple(world_matrix.translation), dtype=np.float64
-            )
+            translation = np.array(tuple(world_matrix.translation), dtype=np.float64)
             points = coordinates @ to_world.T + translation
             directions = (camera_vector - points) @ to_object.T
 
@@ -1621,9 +1644,7 @@ def _sync_ortep_view_timer_after_load(_unused=None):
 
 
 def _update_ortep_view_orientation():
-    if not any(
-        _current_model(item) == "ELLIPSOID" for item in bpy.data.scenes
-    ):
+    if not any(_current_model(item) == "ELLIPSOID" for item in bpy.data.scenes):
         # Safety net: if the model changed without going through
         # _update_model, stop instead of polling forever.
         return None
@@ -1866,8 +1887,7 @@ def _structure_cache_key(root):
     tables, so a matching key means the cached sites/instances/atoms are already
     current and the JSON blobs need not be parsed again.
     """
-    return (root.get("cgn_instance_id", root.name),
-            int(root.get("cgn_revision", 0)))
+    return (root.get("cgn_instance_id", root.name), int(root.get("cgn_revision", 0)))
 
 
 def _invalidate_structure_cache():
@@ -1998,7 +2018,7 @@ def _snapshot_structure_state(root, pair_settings=None):
     ]
     centers_by_style = {}
     for obj in root.objects:
-        if obj.get("cgn_role") != "polyhedron_face":
+        if obj.get("cgn_role") != "polyhedron":
             continue
         element = str(obj.get("cgn_poly_element", "")).upper()
         site = str(obj.get("cgn_poly_site_label", "") or "")
@@ -2012,9 +2032,7 @@ def _snapshot_structure_state(root, pair_settings=None):
     return {
         "props": props,
         "pairs": pair_records,
-        "polyhedra": {
-            key: sorted(value) for key, value in centers_by_style.items()
-        },
+        "polyhedra": {key: sorted(value) for key, value in centers_by_style.items()},
     }
 
 
@@ -2043,8 +2061,7 @@ def _rollback_structure_state(root, snapshot, scene, pair_settings):
             "atoms",
             "bonds",
             "growth_selection",
-            "polyhedron_face",
-            "polyhedron_edge",
+            "polyhedron",
         }:
             _remove_object(obj)
     try:
@@ -2059,8 +2076,11 @@ def _rollback_structure_state(root, snapshot, scene, pair_settings):
     _update_growth_selection(root, atoms, selected)
     _bond_objects(root, atoms, rollback_pairs)
     _apply_unit_cell_settings(scene)
-    for (element, site_label), centers in snapshot["polyhedra"].items():
-        _build_polyhedra_objects(root, atoms, centers, scene)
+    poly_centers = []
+    for centers in snapshot["polyhedra"].values():
+        poly_centers.extend(centers)
+    if poly_centers:
+        _build_polyhedra_objects(root, atoms, poly_centers, scene)
 
 
 def _pairs_from_records(records):
@@ -2279,9 +2299,7 @@ def _make_atom_objects(root, atoms):
         scene = bpy.context.scene
         style = _atom_style(scene, element)
         size_scale = (
-            scene.cgn_hydrogen_scale
-            if element == "H" and model == "ELLIPSOID"
-            else 1.0
+            scene.cgn_hydrogen_scale if element == "H" and model == "ELLIPSOID" else 1.0
         )
         is_ortep_ellipsoid = ellipsoids and element != "H"
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
@@ -2705,7 +2723,7 @@ def _update_quality_manual(self, context):
 # beveled edge curves) so both stay visually consistent.
 # --------------------------------------------------------------------------
 
-_POLY_ROLE_ROLES = ("polyhedron_face", "polyhedron_edge")
+_POLY_ROLE_ROLES = ("polyhedron",)
 
 
 def _enabled_pair_windows(pair_settings):
@@ -3031,12 +3049,11 @@ def _polyhedron_geometry(
 def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quads=None):
     """Rebuild polyhedra after atoms were deleted.
 
-    Polyhedron geometry is baked at creation time, so only rewriting
-    ``cgn_poly_map`` used to leave the completed faces and edges of every
-    deleted centre on screen — and left completely empty objects behind when
-    all of an object's centres were deleted.  Shift the surviving indices,
-    recompute each object's geometry, drop any polyhedron that used an erased
-    ligand, and delete objects that no longer enclose anything.
+    Polyhedra are baked per crystallographic site into one mesh object, so
+    incremental remapping of the baked geometry is not feasible.  Instead all
+    existing polyhedra are cleared and rebuilt for every element that
+    previously had them, keeping the displayed coordination consistent with
+    the remaining atoms.
     """
     removed = sorted({int(index) for index in removed_indices})
     if not removed:
@@ -3050,89 +3067,30 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
             return
     if not atoms:
         return
-    windows = _enabled_pair_windows(getattr(scene, "cgn_connectivity_pairs", ()))
-    try:
-        pool, cell_matrix = _p1_pool(root)
-    except (TypeError, ValueError):
-        return
-    if not pool or not cell_matrix:
-        return
 
-    def _shift(index):
-        index = int(index)
-        return index - sum(1 for removed_index in removed if removed_index < index)
+    # Elements that had polyhedra before the deletion.
+    elements_with_poly = {
+        str(obj.get("cgn_poly_element", "")).upper()
+        for obj in root.objects
+        if obj.get("cgn_role") == "polyhedron"
+    }
+    _clear_polyhedra(root)
 
-    cache = {}
-    for obj in list(root.objects):
-        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
-            continue
-        try:
-            poly_map = json.loads(obj.get("cgn_poly_map", ""))
-            if not isinstance(poly_map, dict):
-                raise ValueError
-            centers = sorted({int(key) for key in poly_map})
-        except (TypeError, ValueError):
-            # Corrupted entry: drop the object *and* its datablock.
-            _remove_object(obj)
-            continue
-        if not centers:
-            # Stale object left behind by an older delete.
-            _remove_object(obj)
-            continue
-        shifted = {
-            str(_shift(center)): [
-                _shift(ligand)
-                for ligand in poly_map.get(str(center), [])
-                if int(ligand) not in removed
-            ]
-            for center in centers
-            if center not in removed
-        }
-        if not shifted:
-            # Every centre of this object was deleted.
-            _remove_object(obj)
-            continue
-        obj["cgn_poly_map"] = json.dumps(shifted)
-        if not windows:
-            # No connectivity means coordination cannot be recomputed; keep
-            # the existing geometry, but the object above was still cleaned
-            # up if every centre disappeared.
-            continue
-
-        # Rebuild whenever atoms were deleted: the baked geometry may contain
-        # a deleted centre *or* a deleted ligand image, and both must go.
-        cache_key = (
-            str(obj.get("cgn_poly_element", "")).upper(),
-            str(obj.get("cgn_poly_site_label", "")),
-            tuple(sorted(int(key) for key in shifted)),
-        )
-        if cache_key not in cache:
-            cache[cache_key] = _polyhedron_geometry(
-                atoms, cache_key[2], pool, cell_matrix, windows, removed_quads
+    for element in elements_with_poly:
+        centers = [
+            i
+            for i, a in enumerate(atoms)
+            if str(a.get("element", "X")).upper() == element
+        ]
+        if centers:
+            _build_polyhedra_objects(
+                root,
+                atoms,
+                centers,
+                scene,
+                clear_existing=False,
+                extend_structure=False,
             )
-        geometry = cache[cache_key]
-        if geometry is None:
-            _remove_object(obj)
-            continue
-        vertices, faces, edges, built = geometry
-        data = obj.data
-        if isinstance(data, bpy.types.Mesh):
-            data.clear_geometry()
-            data.from_pydata(vertices, [], faces)
-            data.update()
-            for polygon in data.polygons:
-                polygon.use_smooth = False
-        elif isinstance(data, bpy.types.Curve):
-            for spline in list(data.splines):
-                data.splines.remove(spline)
-            for first, second in edges:
-                spline = data.splines.new("POLY")
-                spline.points.add(1)
-                spline.points[0].co = (*vertices[first], 1.0)
-                spline.points[1].co = (*vertices[second], 1.0)
-        obj["cgn_poly_map"] = json.dumps(
-            {str(center): shifted.get(str(center), []) for center in built}
-        )
 
 
 def _vec_sub(u, v):
@@ -3470,6 +3428,79 @@ def _polyhedron_topology(points):
     compact_faces = [tuple(index_map[index] for index in loop) for loop in oriented]
     compact_edges = [(index_map[first], index_map[second]) for first, second in edges]
     return (compact_vertices, compact_kept, compact_faces, compact_edges)
+
+
+def _polyhedron_edge_tube_geometry(vertices, edges, radius, resolution=8):
+    """Return ``(vertices, faces)`` for thin cylinders along ``edges``.
+
+    Polyhedron edges used to be a separate bevelled curve object; baking them
+    into the site's face mesh keeps one editable object per site.  A zero
+    radius (edge width 0) returns empty lists so the edge material simply
+    stays unused.
+    """
+    if radius <= 0.0 or resolution < 3:
+        return [], []
+    tube_vertices = []
+    tube_faces = []
+    for first, second in edges:
+        start = vertices[first]
+        end = vertices[second]
+        direction = (
+            end[0] - start[0],
+            end[1] - start[1],
+            end[2] - start[2],
+        )
+        length = math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2)
+        if length <= 1e-12:
+            continue
+        axis = (
+            direction[0] / length,
+            direction[1] / length,
+            direction[2] / length,
+        )
+        helper = (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0)
+        side_u = (
+            axis[1] * helper[2] - axis[2] * helper[1],
+            axis[2] * helper[0] - axis[0] * helper[2],
+            axis[0] * helper[1] - axis[1] * helper[0],
+        )
+        side_length = math.sqrt(side_u[0] ** 2 + side_u[1] ** 2 + side_u[2] ** 2)
+        if side_length <= 1e-12:
+            continue
+        side_u = (
+            side_u[0] / side_length,
+            side_u[1] / side_length,
+            side_u[2] / side_length,
+        )
+        side_v = (
+            axis[1] * side_u[2] - axis[2] * side_u[1],
+            axis[2] * side_u[0] - axis[0] * side_u[2],
+            axis[0] * side_u[1] - axis[1] * side_u[0],
+        )
+        base = len(tube_vertices)
+        for point in (start, end):
+            for step in range(resolution):
+                angle = 2.0 * math.pi * step / resolution
+                cosine = math.cos(angle)
+                sine = math.sin(angle)
+                tube_vertices.append(
+                    (
+                        point[0] + radius * (cosine * side_u[0] + sine * side_v[0]),
+                        point[1] + radius * (cosine * side_u[1] + sine * side_v[1]),
+                        point[2] + radius * (cosine * side_u[2] + sine * side_v[2]),
+                    )
+                )
+        for step in range(resolution):
+            following = (step + 1) % resolution
+            tube_faces.append(
+                (
+                    base + step,
+                    base + following,
+                    base + resolution + following,
+                    base + resolution + step,
+                )
+            )
+    return tube_vertices, tube_faces
 
 
 def _pair_key(element_a, element_b):
@@ -4354,9 +4385,7 @@ def _update_aromatic_torus_style(scene, context):
         "CGN_Aromatic_Torus_Mat",
         getattr(scene, "cgn_aromatic_torus_color", _ELEMENT_COLORS["C"]),
     )
-    size_scale = getattr(
-        scene, "cgn_aromatic_torus_size", _AROMATIC_TORUS_SIZE_DEFAULT
-    )
+    size_scale = getattr(scene, "cgn_aromatic_torus_size", _AROMATIC_TORUS_SIZE_DEFAULT)
     for obj in root.objects:
         if not obj.get("cgn_aromatic_torus"):
             continue
@@ -5693,9 +5722,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         atoms = _materialize_atoms(sites, cell_matrix, new_instances, new_initial_count)
 
         self._finish(context)
-        snapshot = _snapshot_structure_state(
-            root, context.scene.cgn_connectivity_pairs
-        )
+        snapshot = _snapshot_structure_state(root, context.scene.cgn_connectivity_pairs)
         _set_instances(root, new_instances)
         root["cgn_initial_count"] = new_initial_count
         try:
@@ -5899,16 +5926,25 @@ class CGN_OT_grow_further(Operator):
         return {"FINISHED"}
 
 
-def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=True):
-    """Build polyhedra, grouping centers by element so each element keeps
-    its own style and materials.  Ligands come from the P1 site pool plus
-    periodic images, so coordination spheres are complete even when the
-    displayed structure is only the asymmetric unit.  Returns (built, skipped).
+def _build_polyhedra_objects(
+    root, atoms, center_indices, scene, clear_existing=True, extend_structure=True
+):
+    """Build one polyhedron object per crystallographic site.
 
-    When ``clear_existing`` is True (default), all existing polyhedra for each
-    element are removed before building — this matches the "Create Polyhedra"
-    operator.  When False, new polyhedra are added without removing existing
-    ones — this matches the "Create from Selected" operator.
+    Centers are grouped by ``p1_index`` so a single canonical polyhedron is
+    built per site and baked onto every corresponding atom image.  All images
+    live in one mesh object (faces + edge tubes, two material slots), which —
+    like the per-element atom and per-pair bond objects — keeps the outliner
+    flat: one entry per site, not one per polyhedron or one per atom image.
+
+    When ``clear_existing`` is True (default), existing polyhedra of the
+    element(s) being built are removed first — other elements are left
+    untouched.  When False, new polyhedra are added without removing existing
+    ones; new images of an already-built site are merged into its object.
+
+    When ``extend_structure`` is False, newly discovered ligand images are
+    not added to the instance table — used by ``_remap_polyhedra`` after
+    atom deletion, where the structure is already correct.
     """
     if scene is None:
         scene = bpy.context.scene
@@ -5919,120 +5955,171 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
     if not windows:
         return 0, len(center_indices)
 
-    new_ligand_keys = set()
-    new_ligand_quads = []
-    groups = {}
-    for center in center_indices:
-        element = str(atoms[center].get("element", "X")).upper()
-        site_label = str(atoms[center].get("label", "") or "").strip()
-        groups.setdefault((element, site_label), []).append(center)
-
     if clear_existing:
-        # Rebuilds replace every polyhedron of the involved elements, so clear
-        # each element once up front (before any site's object is created,
-        # otherwise a later site group would wipe out an earlier one).
-        for element, _site_label in groups:
+        # Only replace the polyhedra of the element(s) being built: asking for
+        # Cr polyhedra must not wipe the Ag ones.
+        for element in {
+            str(atoms[center].get("element", "X")).upper()
+            for center in center_indices
+            if 0 <= center < len(atoms)
+        }:
             _clear_polyhedra(root, element)
 
+    # Group centers by crystallographic site (p1_index).
+    site_groups = {}  # p1_index -> list of atom indices
+    site_rep = {}  # p1_index -> representative atom index (home cell first)
+    for center in center_indices:
+        atom = atoms[center]
+        p1_index = atom.get("p1_index", center)
+        site_groups.setdefault(p1_index, []).append(center)
+        trans = tuple(atom.get("growth_translation", (0, 0, 0)))
+        if p1_index not in site_rep or trans == (0, 0, 0):
+            site_rep[p1_index] = center
+
+    # Existing site objects.  When adding (clear_existing=False) the new images
+    # of an existing site must be merged into its single object instead of the
+    # whole site being skipped, otherwise a freshly grown image could never get
+    # a polyhedron ("Create from Selected" reported a bogus skip).
+    existing_sites = {}
+    if not clear_existing:
+        for obj in root.objects:
+            if obj.get("cgn_role") != "polyhedron":
+                continue
+            p1 = obj.get("cgn_p1_index")
+            if p1 is None:
+                continue
+            try:
+                previous = [
+                    int(index)
+                    for index in json.loads(obj.get("cgn_poly_centers", "[]"))
+                ]
+            except (TypeError, ValueError):
+                previous = []
+            existing_sites[int(p1)] = (obj, previous)
+
+    new_ligand_keys = set()
+    new_ligand_quads = []
     built_total = 0
     skipped_total = 0
-    for (element, site_label), centers in groups.items():
-        style = _polyhedron_style(scene, element, site_label)
-        suffix = ""
-        if not clear_existing:
-            # Generate a unique suffix so multiple "Create from Selected"
-            # calls don't collide with existing object names.
-            existing_faces = [
-                o
-                for o in root.objects
-                if o.get("cgn_role") == "polyhedron_face"
-                and str(o.get("cgn_poly_element", "")).upper() == element
-                and str(o.get("cgn_poly_site_label", "")) == site_label
-            ]
-            suffix = f"_{len(existing_faces)}" if existing_faces else ""
-        poly_map = {}
-        vertices = []
-        faces = []
-        edges = []
-        for center in centers:
-            center_cart = atoms[center]["cart"]
-            ligands = _polyhedron_ligands_for_center(
-                center_cart,
-                str(atoms[center].get("element", "X")).upper(),
-                pool,
-                cell_matrix,
-                windows,
-            )
-            if len(ligands) < _POLY_MIN_LIGANDS:
-                skipped_total += 1
-                continue
-            ligand_positions = [item[0] for item in ligands]
-            topology = _polyhedron_topology(ligand_positions)
-            if topology is None:
-                skipped_total += 1
-                continue
-            local_vertices, kept, local_faces, local_edges = topology
-            base = len(vertices)
-            vertices.extend(local_vertices)
-            faces.extend(tuple(base + index for index in loop) for loop in local_faces)
-            edges.extend((base + first, base + second) for first, second in local_edges)
-            poly_map[str(center)] = []
-            for _pos, site_index, (tx, ty, tz) in ligands:
-                key = (site_index, tx, ty, tz)
-                if key not in new_ligand_keys:
-                    new_ligand_keys.add(key)
-                    new_ligand_quads.append((site_index, tx, ty, tz))
-            built_total += 1
-        if not vertices or not faces:
-            continue
 
-        label_tag = f"_{site_label}" if site_label else ""
-        face_material = _make_polyhedron_face_material(element, style, site_label)
-        mesh_name = (
-            f"CGN_Polyhedra_Faces_{element}{label_tag}"
-            f"{suffix if not clear_existing else ''}"
+    for p1_index, centers in site_groups.items():
+        p1_index = int(p1_index)
+        build_centers = list(centers)
+        existing = existing_sites.get(p1_index)
+        if existing is not None:
+            existing_obj, previous = existing
+            valid_previous = [index for index in previous if 0 <= index < len(atoms)]
+            merged = list(dict.fromkeys(valid_previous + build_centers))
+            if len(merged) == len(valid_previous):
+                # Every requested image is already baked into the site object.
+                skipped_total += len(centers)
+                continue
+            _remove_object(existing_obj)
+            build_centers = merged
+
+        rep_center = site_rep[p1_index]
+        rep_atom = atoms[rep_center]
+        element = str(rep_atom.get("element", "X")).upper()
+
+        # Canonical site label: strip the [P1:...] translation suffix so all
+        # images of the same site share one style and one panel entry.
+        raw_label = str(
+            rep_atom.get("source_label", rep_atom.get("label", "")) or ""
+        ).strip()
+        site_label = raw_label.split(" [")[0] if " [" in raw_label else raw_label
+
+        style = _polyhedron_style(scene, element, site_label)
+
+        # Canonical geometry at the representative (home-cell) center.
+        center_cart = rep_atom["cart"]
+        ligands = _polyhedron_ligands_for_center(
+            center_cart, element, pool, cell_matrix, windows
         )
-        mesh = bpy.data.meshes.new(mesh_name)
-        mesh.from_pydata(vertices, [], faces)
-        mesh.update()
-        for polygon in mesh.polygons:
-            polygon.use_smooth = False
-        mesh.materials.append(face_material)
-        face_obj = bpy.data.objects.new(mesh.name, mesh)
-        face_obj["cgn_role"] = "polyhedron_face"
-        face_obj["cgn_poly_element"] = element
-        face_obj["cgn_poly_site_label"] = site_label
-        face_obj["cgn_poly_map"] = json.dumps(poly_map)
-        root.objects.link(face_obj)
+        if len(ligands) < _POLY_MIN_LIGANDS:
+            skipped_total += len(build_centers)
+            continue
+        ligand_positions = [item[0] for item in ligands]
+        topology = _polyhedron_topology(ligand_positions)
+        if topology is None:
+            skipped_total += len(build_centers)
+            continue
+        local_vertices, _kept, local_faces, local_edges = topology
+
+        # Collect ligand quads so the structure can be extended with them.
+        for _pos, site_index, (tx, ty, tz) in ligands:
+            quad = (int(site_index), int(tx), int(ty), int(tz))
+            if quad not in new_ligand_keys:
+                new_ligand_keys.add(quad)
+                new_ligand_quads.append(quad)
+
+        # Shift canonical vertices so the site centre is at the origin.
+        # ``local_vertices`` are already in display units (the ligand search
+        # returns ``_display_point`` positions), so only the display-space
+        # centre may be subtracted here — no second scale conversion.
+        cx, cy, cz = _display_point(center_cart)
+        local = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in local_vertices]
 
         _face, _edge, thickness = _polyhedron_style_values(style)
-        curve_name = (
-            f"CGN_Polyhedra_Edges_{element}{label_tag}"
-            f"{suffix if not clear_existing else ''}"
+        tube_vertices, tube_faces = _polyhedron_edge_tube_geometry(
+            local, local_edges, thickness * _DISPLAY_SCALE
         )
-        curve = bpy.data.curves.new(curve_name, "CURVE")
-        curve.dimensions = "3D"
-        curve.resolution_u = 1
-        curve.bevel_resolution = 2
-        curve.bevel_depth = thickness * _DISPLAY_SCALE
-        for first, second in edges:
-            spline = curve.splines.new("POLY")
-            spline.points.add(1)
-            spline.points[0].co = (*vertices[first], 1.0)
-            spline.points[1].co = (*vertices[second], 1.0)
-        curve.materials.append(
+
+        # One mesh object per crystallographic site, like the per-element atom
+        # and per-pair bond objects: every grown/translated image of the site
+        # is baked into this single object (faces + edge tubes), so the
+        # outliner shows one entry per site instead of one per polyhedron.
+        vertices = []
+        faces = []
+        material_indices = []
+        for center in build_centers:
+            offset = _display_point(atoms[center]["cart"])
+            base = len(vertices)
+            vertices.extend(
+                (v[0] + offset[0], v[1] + offset[1], v[2] + offset[2]) for v in local
+            )
+            faces.extend(tuple(base + index for index in loop) for loop in local_faces)
+            material_indices.extend([0] * len(local_faces))
+            tube_base = len(vertices)
+            vertices.extend(
+                (v[0] + offset[0], v[1] + offset[1], v[2] + offset[2])
+                for v in tube_vertices
+            )
+            faces.extend(
+                tuple(tube_base + index for index in loop) for loop in tube_faces
+            )
+            material_indices.extend([1] * len(tube_faces))
+
+        mesh = bpy.data.meshes.new(f"CGN_Polyhedron_{element}_P1{p1_index}")
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update()
+        for polygon, material_index in zip(mesh.polygons, material_indices):
+            polygon.use_smooth = False
+            polygon.material_index = material_index
+        mesh.materials.append(
+            _make_polyhedron_face_material(element, style, site_label)
+        )
+        mesh.materials.append(
             _make_polyhedron_edge_material(element, style, site_label)
         )
-        edge_obj = bpy.data.objects.new(curve.name, curve)
-        edge_obj["cgn_role"] = "polyhedron_edge"
-        edge_obj["cgn_poly_element"] = element
-        edge_obj["cgn_poly_site_label"] = site_label
-        edge_obj["cgn_poly_map"] = json.dumps(poly_map)
-        root.objects.link(edge_obj)
+
+        obj = bpy.data.objects.new(mesh.name, mesh)
+        obj["cgn_role"] = "polyhedron"
+        obj["cgn_poly_element"] = element
+        obj["cgn_poly_site_label"] = site_label
+        obj["cgn_p1_index"] = p1_index
+        obj["cgn_poly_centers"] = json.dumps([int(center) for center in build_centers])
+        obj["cgn_poly_map"] = json.dumps(
+            {str(int(center)): [] for center in build_centers}
+        )
+        obj["cgn_poly_edge_width"] = float(thickness)
+        root.objects.link(obj)
+
+        built_total += 1
 
     # Add the ligand atoms (polyhedron vertices) to the displayed structure
     # so the polyhedron edges connect to real atoms.
-    if new_ligand_quads:
+    bonds_rebuilt = False
+    if new_ligand_quads and extend_structure:
         try:
             sites, instances, cell_matrix, initial_count = _structure_tables(root)
         except (ValueError, TypeError):
@@ -6065,11 +6152,24 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
                     _rebuild_atom_objects(root, atoms)
                     _update_growth_selection(root, atoms, [])
                     _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+                    bonds_rebuilt = True
                     _apply_unit_cell_settings(scene)
                 except Exception:
                     traceback.print_exc()
                 _set_instances(root, instances)
                 root["cgn_initial_count"] = initial_count
+
+    # A selected atom whose ligand atoms are already displayed adds no new
+    # instance, so the extension branch above does not touch the bonds.  The
+    # polyhedron vertices still need centre–ligand bonds (same result as the
+    # full "Create Polyhedra" path, which always rebuilds them while
+    # extending), so redraw them here.
+    if built_total > 0 and extend_structure and not bonds_rebuilt:
+        try:
+            current_atoms = _structure_atoms(root)
+            _bond_objects(root, current_atoms, scene.cgn_connectivity_pairs)
+        except (ValueError, TypeError):
+            traceback.print_exc()
     return built_total, skipped_total
 
 
@@ -6105,6 +6205,9 @@ class CGN_OT_create_polyhedra(Operator):
                 "windows so an element gains four or more neighbours.",
             )
             return {"CANCELLED"}
+        # All matching atoms are centers; _build_polyhedra_objects groups them
+        # by crystallographic site (p1_index) and bakes one polyhedron object
+        # per site covering every corresponding atom image.
         centers = [
             index
             for index, atom in enumerate(atoms)
@@ -6195,8 +6298,9 @@ class CGN_OT_create_polyhedra_selected(_CGN_OT_select_atoms):
         if built == 0:
             self.report(
                 {"ERROR"},
-                "Skipped every selected atom: fewer than four bonded "
-                "neighbours or a planar coordination.",
+                "Skipped every selected atom: its site already has a "
+                "polyhedron covering it, or the atom has fewer than four "
+                "bonded neighbours / a planar coordination.",
             )
             return {"CANCELLED"}
         message = f"Built {built} polyhedra."

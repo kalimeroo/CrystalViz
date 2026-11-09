@@ -6046,11 +6046,32 @@ def _build_polyhedra_objects(
         local_vertices, _kept, local_faces, local_edges = topology
 
         # Collect ligand quads so the structure can be extended with them.
-        for _pos, site_index, (tx, ty, tz) in ligands:
-            quad = (int(site_index), int(tx), int(ty), int(tz))
-            if quad not in new_ligand_keys:
-                new_ligand_keys.add(quad)
-                new_ligand_quads.append(quad)
+        # The coordination search runs once around the representative image;
+        # every other selected image of the same site has the same shell
+        # shifted by its integer cell translation.  Translating the quads (and
+        # not just using the representative's) is what makes a box-selected
+        # batch complete the edge atoms of *every* polyhedron.
+        rep_translation = tuple(
+            int(value) for value in rep_atom.get("growth_translation", (0, 0, 0))
+        )
+        for center in build_centers:
+            translation = tuple(
+                int(value)
+                for value in atoms[center].get("growth_translation", (0, 0, 0))
+            )
+            delta = tuple(
+                translation[axis] - rep_translation[axis] for axis in range(3)
+            )
+            for _pos, site_index, (tx, ty, tz) in ligands:
+                quad = (
+                    int(site_index),
+                    int(tx) + delta[0],
+                    int(ty) + delta[1],
+                    int(tz) + delta[2],
+                )
+                if quad not in new_ligand_keys:
+                    new_ligand_keys.add(quad)
+                    new_ligand_quads.append(quad)
 
         # Shift canonical vertices so the site centre is at the origin.
         # ``local_vertices`` are already in display units (the ligand search

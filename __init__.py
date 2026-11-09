@@ -242,6 +242,7 @@ _ORTEP_ELLIPSE_COLOR = (0.015, 0.015, 0.02, 1.0)
 _ORTEP_ELLIPSE_THICKNESS = 0.018
 _ORTEP_VIEW_SIGNATURES = {}
 _BOND_SPATIAL_CACHE = None
+_STRUCTURE_CACHE = None
 _MODEL_ITEMS = (
     ("BALL_STICK", "Ball & Stick", "Spheres at quarter van der Waals radius"),
     ("ELLIPSOID", "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
@@ -1621,8 +1622,47 @@ def _materialize_atoms(sites, cell_matrix, instances, initial_count=0):
     return atoms
 
 
+def _structure_cache_key(root):
+    """Identity + revision key for the parsed-tables cache.
+
+    ``cgn_revision`` is bumped by every operation that rewrites the stored
+    tables, so a matching key means the cached sites/instances/atoms are already
+    current and the JSON blobs need not be parsed again.
+    """
+    return (root.get("cgn_instance_id", root.name),
+            int(root.get("cgn_revision", 0)))
+
+
+def _invalidate_structure_cache():
+    """Drop the parsed-structure cache (e.g. on import/unregister)."""
+    global _STRUCTURE_CACHE
+    _STRUCTURE_CACHE = None
+
+
+def _bump_structure_revision(root):
+    """Mark the stored structure tables as changed for the cache."""
+    root["cgn_revision"] = int(root.get("cgn_revision", 0)) + 1
+
+
 def _structure_tables(root):
-    """Return (sites, instances, cell_matrix, initial_count) for a structure."""
+    """Return (sites, instances, cell_matrix, initial_count) for a structure.
+
+    The parsed tables are cached per (structure id, revision).  Delete, grow,
+    fill and the polyhedron paths call this several times per operation, and
+    re-running ``json.loads`` over the full instance table each time dominated
+    the cost on large CIFs (e.g. ``Ca_autored.cif``).  The returned lists are
+    shared with the cache: callers must not mutate them (copy first if needed).
+    """
+    global _STRUCTURE_CACHE
+    key = _structure_cache_key(root)
+    cached = _STRUCTURE_CACHE
+    if cached is not None and cached["key"] == key:
+        return (
+            cached["sites"],
+            cached["instances"],
+            cached["cell_matrix"],
+            cached["initial_count"],
+        )
     sites_json = root.get("cgn_sites", "")
     instances_json = root.get("cgn_instances", "")
     matrix_json = root.get("cgn_cell_matrix", "")
@@ -1634,19 +1674,57 @@ def _structure_tables(root):
     if len(cell_matrix) != 9:
         raise ValueError("The stored unit-cell matrix is invalid.")
     initial_count = int(root.get("cgn_initial_count", 0))
+    _STRUCTURE_CACHE = {
+        "key": key,
+        "sites": sites,
+        "instances": instances,
+        "cell_matrix": cell_matrix,
+        "initial_count": initial_count,
+        "atoms": None,
+    }
     return sites, instances, cell_matrix, initial_count
 
 
 def _structure_atoms(root):
+    """Return the materialized atom list, cached per (structure id, revision)."""
+    global _STRUCTURE_CACHE
+    key = _structure_cache_key(root)
+    cached = _STRUCTURE_CACHE
+    if cached is not None and cached["key"] == key and cached["atoms"] is not None:
+        return cached["atoms"]
     sites, instances, cell_matrix, initial_count = _structure_tables(root)
-    return _materialize_atoms(sites, cell_matrix, instances, initial_count)
+    atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
+    if _STRUCTURE_CACHE is not None and _STRUCTURE_CACHE["key"] == key:
+        _STRUCTURE_CACHE["atoms"] = atoms
+    return atoms
 
 
 def _structure_atom_count(root):
+    """Number of atom instances, read from the cached scalar when available.
+
+    Panel draws call this on every redraw, so avoid json.loads on the whole
+    instance table: ``cgn_atom_count`` is written alongside ``cgn_instances``
+    by :func:`_set_instances`. Structures stored before that scalar existed fall
+    back to counting the JSON once.
+    """
+    count = root.get("cgn_atom_count")
+    if count is not None:
+        return int(count)
     instances_json = root.get("cgn_instances", "")
     if not instances_json:
         return 0
     return len(json.loads(instances_json)) // 4
+
+
+def _set_instances(root, instances):
+    """Store the instance table and its derived atom count in one place.
+
+    Bumping ``cgn_revision`` invalidates the parsed-tables cache so the next
+    read re-parses only when the underlying data actually changed.
+    """
+    root["cgn_instances"] = json.dumps(instances)
+    root["cgn_atom_count"] = len(instances) // 4
+    _bump_structure_revision(root)
 
 
 def _snapshot_structure_state(root, pair_settings=None):
@@ -1661,6 +1739,7 @@ def _snapshot_structure_state(root, pair_settings=None):
     """
     keys = [
         "cgn_instances",
+        "cgn_atom_count",
         "cgn_initial_count",
         "cgn_selected_indices",
         "cgn_growth_shells",
@@ -1715,6 +1794,9 @@ def _rollback_structure_state(root, snapshot, scene, pair_settings):
                 del root[key]
         else:
             root[key] = value
+    # The instances were restored directly (bypassing _set_instances), so bump
+    # the revision to force the parsed-tables cache to be rebuilt.
+    _bump_structure_revision(root)
     # Rebuild bonds with the pairs that produced the captured bond signature so
     # the rollback is faithful even if the user toggled pairs in the meantime.
     rollback_pairs = _pairs_from_records(snapshot.get("pairs")) or pair_settings
@@ -4145,6 +4227,9 @@ def _set_scene_units(scene):
 
 
 def _import_result(scene, result, cif_path):
+    # A new structure is about to replace the active one; drop any parsed tables
+    # cached for the previous structure so they do not linger in memory.
+    _invalidate_structure_cache()
     sites = result.get("sites", [])
     instances = result.get("instances", [])
     cell_matrix = result.get("cell_matrix", [])
@@ -4165,7 +4250,7 @@ def _import_result(scene, result, cif_path):
     root["cgn_cif_block"] = result.get("label", "")
     root["cgn_cif_path"] = cif_path
     root["cgn_sites"] = json.dumps(sites)
-    root["cgn_instances"] = json.dumps(instances)
+    _set_instances(root, instances)
     root["cgn_asu_instances"] = json.dumps(instances)
     root["cgn_cell_matrix"] = json.dumps(cell_matrix)
     root["cgn_initial_count"] = initial_count
@@ -4611,7 +4696,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         operator.report({"ERROR"}, str(exc))
         return {"CANCELLED"}
 
-    root["cgn_instances"] = json.dumps(new_instances)
+    _set_instances(root, new_instances)
     root["cgn_initial_count"] = len(atoms)
     root["cgn_fill_mode"] = mode
     if mode != "ASU":
@@ -5332,7 +5417,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         snapshot = _snapshot_structure_state(
             root, context.scene.cgn_connectivity_pairs
         )
-        root["cgn_instances"] = json.dumps(new_instances)
+        _set_instances(root, new_instances)
         root["cgn_initial_count"] = new_initial_count
         try:
             _rebuild_atom_objects(root, atoms)
@@ -5513,7 +5598,7 @@ class CGN_OT_grow_further(Operator):
                     start_index=old_atom_count,
                     append_only=True,
                 )
-            root["cgn_instances"] = json.dumps(instances)
+            _set_instances(root, instances)
             root["cgn_growth_shells"] = int(root.get("cgn_growth_shells", 0)) + 1
         except Exception as exc:
             traceback.print_exc()
@@ -5674,6 +5759,9 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
         except (ValueError, TypeError):
             sites, instances, cell_matrix, initial_count = None, None, None, 0
         if sites is not None:
+            # _structure_tables returns shared (cached) lists; copy before the
+            # extend below so the parsed-tables cache is not mutated in place.
+            instances = list(instances)
             existing = set()
             count = len(instances) - len(instances) % 4
             for offset in range(0, count, 4):
@@ -5701,7 +5789,7 @@ def _build_polyhedra_objects(root, atoms, center_indices, scene, clear_existing=
                     _apply_unit_cell_settings(scene)
                 except Exception:
                     traceback.print_exc()
-                root["cgn_instances"] = json.dumps(instances)
+                _set_instances(root, instances)
                 root["cgn_initial_count"] = initial_count
     return built_total, skipped_total
 
@@ -5931,7 +6019,8 @@ class CGN_PT_panel(Panel):
             grid.label(text=f"β = {displayed[4]}°")
             grid.label(text=f"c = {displayed[2]} Å")
             grid.label(text=f"γ = {displayed[5]}°")
-        if root.get("cgn_instances", ""):
+        has_count = root.get("cgn_atom_count", None) is not None
+        if has_count or root.get("cgn_instances", ""):
             layout.label(
                 text=f"Atoms: {_structure_atom_count(root)}",
                 icon="MESH_UVSPHERE",
@@ -6582,6 +6671,7 @@ def register():
 
 
 def unregister():
+    _invalidate_structure_cache()
     if _orient_ortep_for_render in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.remove(_orient_ortep_for_render)
     if bpy.app.timers.is_registered(_update_ortep_view_orientation):

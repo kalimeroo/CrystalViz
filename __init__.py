@@ -334,6 +334,48 @@ class CGN_ConnectivityPair(PropertyGroup):
     )
 
 
+_DEBOUNCE_DELAY = 0.15
+_DEBOUNCE_TIMERS = {}
+
+
+def _debounce(name, callback):
+    """Coalesce repeated property changes into one scheduled run.
+
+    Property update callbacks fire for every tick of a slider (and every step
+    of a colour picker).  The first change schedules ``callback`` roughly
+    0.15 s out; further changes before it runs replace the stored callback and
+    reuse the same timer, so a drag costs at most one heavy rebuild per window
+    instead of one per tick.  The callback is kept in ``_DEBOUNCE_TIMERS`` so
+    :func:`_flush_debounce` can apply a pending change immediately (render,
+    export, headless tests).
+    """
+    _DEBOUNCE_TIMERS[name] = callback
+    if not bpy.app.timers.is_registered(_debounce_timer):
+        bpy.app.timers.register(_debounce_timer, first_interval=_DEBOUNCE_DELAY)
+
+
+def _debounce_timer():
+    _flush_debounce()
+    return None
+
+
+def _flush_debounce():
+    """Apply every pending debounced callback now (used by render/tests)."""
+    pending = list(_DEBOUNCE_TIMERS.values())
+    _DEBOUNCE_TIMERS.clear()
+    for callback in pending:
+        try:
+            callback()
+        except Exception:
+            traceback.print_exc()
+
+
+def _cancel_all_debounce():
+    _DEBOUNCE_TIMERS.clear()
+    if bpy.app.timers.is_registered(_debounce_timer):
+        bpy.app.timers.unregister(_debounce_timer)
+
+
 def _update_atom_style(self, context):
     material = bpy.data.materials.get(f"CGN_Mat_{self.element}")
     if material is None:
@@ -413,6 +455,13 @@ def _update_ortep_materials(scene, context):
 
 
 def _update_ortep_ellipse_thickness(scene, context):
+    _debounce(
+        "ortep_ellipse_thickness",
+        lambda: _apply_ortep_ellipse_thickness(scene),
+    )
+
+
+def _apply_ortep_ellipse_thickness(scene):
     # If the template object was deleted, recreate it (and rebuild the
     # ellipsoid node group's pointer to it) instead of silently giving up,
     # otherwise the ORTEP ellipsoids are permanently broken.
@@ -421,13 +470,15 @@ def _update_ortep_ellipse_thickness(scene, context):
     template = bpy.data.objects.get(_ORTEP_TEMPLATE_OBJECT)
     if template is None:
         return
+    thickness = scene.cgn_ortep_ellipse_thickness
+    if _update_ortep_template_mesh(template.data, thickness):
+        template.update_tag(refresh={"OBJECT", "DATA"})
+        return
     old_mesh = template.data
-    template.data = _build_ortep_template_mesh(scene.cgn_ortep_ellipse_thickness)
-    if old_mesh.users == 0:
+    template.data = _build_ortep_template_mesh(thickness)
+    if old_mesh is not None and old_mesh.users == 0:
         bpy.data.meshes.remove(old_mesh)
     template.update_tag(refresh={"OBJECT", "DATA"})
-    if context.view_layer is not None:
-        context.view_layer.update()
 
 
 def _unit_cell_settings_updated(self, context):
@@ -967,8 +1018,14 @@ def _ellipsoid_base_components(atom, size_scale=1.0):
     return (radius, radius, radius), (0.0, 0.0, 0.0)
 
 
-def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
-    """Create a clipped ellipsoid template with cut faces and three rings."""
+def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
+    """Return (vertices, faces, face_types, smooth_faces, tube_radius).
+
+    Only the three ellipse tubes depend on ``ellipse_thickness``; the sphere
+    shell and the clipped inner fan are fixed.  The topology is therefore
+    stable while the thickness slider moves, which lets the caller refresh the
+    mesh in place instead of rebuilding it for every tick.
+    """
     latitude_steps = 32
     longitude_steps = 64
     vertices = [(0.0, 0.0, 1.0)]
@@ -1126,6 +1183,14 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
                 face_types.extend(((False, False, True),) * 2)
                 smooth_faces.extend((True, True))
 
+    return vertices, faces, face_types, smooth_faces, tube_radius
+
+
+def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
+    """Create a clipped ellipsoid template with cut faces and three rings."""
+    vertices, faces, face_types, smooth_faces, tube_radius = (
+        _ortep_template_geometry(ellipse_thickness)
+    )
     mesh = bpy.data.meshes.new("CGN_ORTEP_Template_Mesh")
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
@@ -1142,6 +1207,31 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     mesh["cgn_ortep_template_version"] = 3
     mesh["cgn_ortep_ellipse_thickness"] = tube_radius
     return mesh
+
+
+def _update_ortep_template_mesh(mesh, ellipse_thickness):
+    """Refresh an existing template mesh in place.
+
+    Returns ``False`` when the mesh cannot be updated in place (missing or
+    stale attributes, different topology), in which case the caller must
+    rebuild it.  ``foreach_set`` avoids reallocating the mesh and recreating
+    the faces/attributes on every thickness tick.
+    """
+    if mesh is None or mesh.get("cgn_ortep_template_version") != 3:
+        return False
+    vertices, faces, _face_types, _smooth_faces, tube_radius = (
+        _ortep_template_geometry(ellipse_thickness)
+    )
+    if len(mesh.vertices) != len(vertices) or len(mesh.polygons) != len(faces):
+        return False
+    for name in ("cgn_ortep_surface", "cgn_ortep_inner", "cgn_ortep_ellipse"):
+        if mesh.attributes.get(name) is None:
+            return False
+    coordinates = [component for vertex in vertices for component in vertex]
+    mesh.vertices.foreach_set("co", coordinates)
+    mesh.update()
+    mesh["cgn_ortep_ellipse_thickness"] = tube_radius
+    return True
 
 
 def _ensure_ortep_template():
@@ -1364,6 +1454,9 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
 
 @persistent
 def _orient_ortep_for_render(scene):
+    # Slider changes are debounced; apply any pending one now so the rendered
+    # frame never shows stale ellipsoid thickness or bonds.
+    _flush_debounce()
     if scene.camera is not None:
         _orient_ortep_to_camera(scene, scene.camera)
     _ORTEP_VIEW_SIGNATURES.pop(scene.as_pointer(), None)
@@ -1907,8 +2000,46 @@ def _update_model(scene, context):
 
 
 def _update_hydrogen_scale(scene, context):
-    if scene.cgn_model == "ELLIPSOID":
-        _update_model(scene, context)
+    if _current_model(scene) != "ELLIPSOID":
+        return
+    _debounce("hydrogen_scale", lambda: _apply_hydrogen_scale(scene))
+
+
+def _apply_hydrogen_scale(scene):
+    """Resize the ellipsoid-mode hydrogen spheres without rebuilding atoms.
+
+    In ORTEP (ELLIPSOID) the hydrogen atoms are plain spheres produced by the
+    atom node group, so only that modifier's ``Radius`` input has to change.
+    Non-hydrogen atoms use per-point ``cgn_scale`` attributes and are
+    unaffected by the hydrogen scale.
+    """
+    root = _active_root(scene)
+    if root is None or _current_model(scene) != "ELLIPSOID":
+        return
+    scale = float(scene.cgn_hydrogen_scale)
+    for obj in root.objects:
+        if (
+            obj.get("cgn_role") != "atoms"
+            or str(obj.get("cgn_element", "")).upper() != "H"
+        ):
+            continue
+        radius = (
+            float(obj.get("cgn_vdw_radius", _DEFAULT_VDW_RADIUS))
+            * _BALL_ATOM_VDW_FACTOR
+            * scale
+            * _DISPLAY_SCALE
+        )
+        updated = False
+        for modifier in obj.modifiers:
+            if (
+                modifier.type == "NODES"
+                and modifier.node_group is not None
+                and modifier.node_group.name == _NODE_GROUP_ATOMS
+            ):
+                _set_modifier_input(modifier, modifier.node_group, "Radius", radius)
+                updated = True
+        if updated:
+            obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
 def _update_wire_sticks_radius(scene, context):
@@ -4055,14 +4186,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
 
 
 def _update_bond_style(scene, context):
+    _debounce("bond_style", lambda: _rebuild_bonds(scene))
+
+
+def _rebuild_bonds(scene):
+    """Rebuild all bond objects for the active structure (the heavy core)."""
     root = _active_root(scene)
     if root is None:
         return
     try:
         atoms = _structure_atoms(root)
         _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
-        if context.view_layer is not None:
-            context.view_layer.update()
     except Exception:
         traceback.print_exc()
 
@@ -4147,7 +4281,7 @@ def _update_bond_radius_scale(scene, context):
         and int(obj.get("cgn_bond_order", 1)) == 1
     ]
     if any("cgn_base_radius" not in obj for obj in bonds):
-        _update_bond_style(scene, context)
+        _rebuild_bonds(scene)
         root = _active_root(scene)
         bonds = [
             obj
@@ -4176,7 +4310,7 @@ def _update_multiple_bond_radius_scale(scene, context):
         if obj.get("cgn_role") == "bonds" and int(obj.get("cgn_bond_order", 1)) > 1
     ]
     if any("cgn_base_radius" not in obj for obj in bonds):
-        _update_bond_style(scene, context)
+        _rebuild_bonds(scene)
         root = _active_root(scene)
         bonds = [
             obj
@@ -6671,6 +6805,7 @@ def register():
 
 
 def unregister():
+    _cancel_all_debounce()
     _invalidate_structure_cache()
     if _orient_ortep_for_render in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.remove(_orient_ortep_for_render)

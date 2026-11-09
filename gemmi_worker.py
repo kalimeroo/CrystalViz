@@ -221,6 +221,34 @@ def _cart_distance(unit_cell, frac_a, frac_b):
     return math.sqrt(sum(value * value for value in cart))
 
 
+def _cart_from_frac(frac, cell_matrix):
+    """Cartesian from fractional using the column-major cell matrix.
+
+    ``cell_matrix[row + 3 * col]`` is column ``col``'s ``row`` component:
+    cart[row] = sum_col cell_matrix[row + 3*col] * frac[col].
+    """
+    return [
+        frac[0] * cell_matrix[axis]
+        + frac[1] * cell_matrix[3 + axis]
+        + frac[2] * cell_matrix[6 + axis]
+        for axis in range(3)
+    ]
+
+
+def _periodic_distance(frac_a, frac_b, cell_matrix):
+    """Minimum periodic Cartesian distance (Å) between two fractional points.
+
+    Pure Python / gemmi-free, so both the worker (growth) and the Blender-side
+    bond builder can share one periodic-distance definition without duplicating
+    the nearest-image logic.  Uses the nearest integer image of ``frac_a -
+    frac_b``, which is the crystallographic minimum distance under PBC.
+    """
+    delta = [float(frac_a[axis]) - float(frac_b[axis]) for axis in range(3)]
+    delta = [value - round(value) for value in delta]
+    cart = _cart_from_frac(delta, cell_matrix)
+    return math.sqrt(sum(value * value for value in cart))
+
+
 # --------------------------------------------------------------------------
 # Symmetry
 # --------------------------------------------------------------------------
@@ -253,14 +281,33 @@ def _expand_site(ops, unit_cell, frac):
     """
     images = []
     for operation in ops:
-        image = _wrapped_fractional(operation.apply_to_xyz(frac))
         if any(
-            _cart_distance(unit_cell, image, other[0]) <= _CART_TOLERANCE
+            _cart_distance(unit_cell, _symmetry_image(operation, frac), other[0])
+            <= _CART_TOLERANCE
             for other in images
         ):
             continue
+        image = _wrapped_fractional(operation.apply_to_xyz(frac))
         images.append((image, operation))
     return images
+
+
+def _symmetry_image(operation, frac):
+    """Wrapped fractional position of ``frac`` under one symmetry operation."""
+    return _wrapped_fractional(operation.apply_to_xyz(frac))
+
+
+def _symmetry_mates(ops, unit_cell, frac):
+    """Distinct symmetry-equivalent positions of a fractional point, P1 style.
+
+    Thin convenience API over :func:`_expand_site` that returns just the
+    distinct wrapped positions (no operations).  This is the foundation the
+    deferred periodic-lattice / VESTA-style instance rendering consumes to
+    enumerate all symmetry mates of an asymmetric-unit atom without needing a
+    full site table or Blender.  Distinctness uses the same periodic
+    ``_cart_distance`` tolerance as ``_expand_site``.
+    """
+    return [image for image, _operation in _expand_site(ops, unit_cell, frac)]
 
 
 def _wrapped_fractional(frac):
@@ -785,11 +832,30 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
                                      windows_by_element, canonical=None):
     """For each cell atom, list its bonded (base atom, cell offset) pairs.
 
-    Uses gemmi's UnitCell.find_nearest_pbc_images() (C++ cell-list search)
-    instead of a hand-rolled Python bucket grid over (-cells..+cells)^3
-    translations. Returns the same (candidate_index, tx, ty, tz) tuples.
+    Uses gemmi's UnitCell.find_nearest_pbc_images() (C++ search) to resolve the
+    exact periodic images.  To avoid an O(N^2) all-pairs scan, a gemmi
+    NeighborSearch is built once (as a pure spatial index) and used only to
+    prune the candidate ``j`` list to atoms actually within the largest enabled
+    window; the authoritative image/translation still comes from
+    find_nearest_pbc_images().  Because NeighborSearch only shrinks the set of
+    ``(i, j)`` pairs checked (never changes which atoms pair up or their
+    (tx, ty, tz)), the returned (candidate_index, tx, ty, tz) tuples are
+    byte-identical to the all-pairs scan on the example CIFs.
     """
     cell = unit_cell.cell  # gemmi.UnitCell
+    cell_matrix = unit_cell._columns  # column-major, matches _cart_from_frac
+
+    # Spatial index over the base atoms for candidate pruning.  radius covers
+    # the largest enabled window; a tiny epsilon keeps boundary hits safe (any
+    # extra candidate is filtered back out by the authoritative distance check).
+    global_max = 0.0
+    for pair_windows in windows_by_element.values():
+        for bounds in pair_windows.values():
+            global_max = max(global_max, bounds[1])
+    index = None
+    if global_max > 0.0 and base_atoms:
+        index = _neighbor_search_index(unit_cell, base_atoms, global_max + 1e-4)
+
     table = []
     for base_index, base_atom in enumerate(base_atoms):
         if canonical is not None and canonical[base_index] != base_index:
@@ -800,25 +866,30 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
             table.append(())
             continue
         frac_i = gemmi.Fractional(*base_atom["frac"])
+        if index is None:
+            candidates = list(range(len(base_atoms)))
+        else:
+            search, sites = index
+            candidates = sorted(
+                {mark.atom_idx for mark in search.find_site_neighbors(
+                    sites[base_index], 0.0, global_max + 1e-4
+                )}
+            )
         neighbours = []
         seen = set()
-        for j, atom_j in enumerate(base_atoms):
+        for j in candidates:
             element_j = base_elements[j]
             bounds = pair_windows.get(element_j)
             if bounds is None:
                 continue
-            frac_j = gemmi.Fractional(*atom_j["frac"])
+            frac_j = gemmi.Fractional(*base_atoms[j]["frac"])
             for im in cell.find_nearest_pbc_images(frac_i, bounds[1], frac_j, 0):
                 f_img = cell.fract_image(im, frac_j)
                 tx = int(round(f_img.x - frac_j.x))
                 ty = int(round(f_img.y - frac_j.y))
                 tz = int(round(f_img.z - frac_j.z))
-                c_img = cell.orthogonalize(f_img)
-                c_i = cell.orthogonalize(frac_i)
-                dist = math.sqrt(
-                    (c_img.x - c_i.x) ** 2
-                    + (c_img.y - c_i.y) ** 2
-                    + (c_img.z - c_i.z) ** 2
+                dist = _periodic_distance(
+                    base_atom["frac"], [f_img.x, f_img.y, f_img.z], cell_matrix
                 )
                 if dist <= 1e-12:
                     continue
@@ -830,6 +901,28 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
                     neighbours.append((j, tx, ty, tz))
         table.append(tuple(neighbours))
     return table
+
+
+def _neighbor_search_index(unit_cell, base_atoms, radius):
+    """Build a gemmi.NeighborSearch spatial index over the base atoms.
+
+    Returns ``(search, sites)`` where ``sites`` parallels ``base_atoms`` so a
+    query atom can be addressed by base-atom index.
+    """
+    sites = []
+    for i, atom in enumerate(base_atoms):
+        site = gemmi.SmallStructure.Site()
+        site.fract = gemmi.Fractional(*atom["frac"])
+        site.type_symbol = atom["element"]
+        site.label = atom.get("label") or str(i)
+        sites.append(site)
+    structure = gemmi.SmallStructure()
+    structure.cell = unit_cell.cell
+    structure.sites = sites
+    search = gemmi.NeighborSearch(structure, radius)
+    for n, site in enumerate(structure.sites):
+        search.add_site(site, n)
+    return search, sites
 
 
 def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,

@@ -2750,7 +2750,7 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
         )
         if cache_key not in cache:
             cache[cache_key] = _polyhedron_geometry(
-                atoms, cache_key[1], pool, cell_matrix, windows, removed_quads
+                atoms, cache_key[2], pool, cell_matrix, windows, removed_quads
             )
         geometry = cache[cache_key]
         if geometry is None:
@@ -5329,6 +5329,9 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         atoms = _materialize_atoms(sites, cell_matrix, new_instances, new_initial_count)
 
         self._finish(context)
+        snapshot = _snapshot_structure_state(
+            root, context.scene.cgn_connectivity_pairs
+        )
         root["cgn_instances"] = json.dumps(new_instances)
         root["cgn_initial_count"] = new_initial_count
         try:
@@ -5338,6 +5341,23 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
             _remap_polyhedra(root, removed, atoms, context.scene, removed_quads)
         except Exception as exc:
             traceback.print_exc()
+            # Roll the stored state back so the viewport and data stay
+            # consistent even when a rebuild fails mid-way (e.g. a polyhedron
+            # regen error) instead of leaving half-mutated instances behind.
+            try:
+                _rollback_structure_state(
+                    root,
+                    snapshot,
+                    context.scene,
+                    context.scene.cgn_connectivity_pairs,
+                )
+            except Exception as rollback_exc:  # pragma: no cover - defensive
+                traceback.print_exc()
+                self.report(
+                    {"ERROR"},
+                    f"Delete failed and rollback also failed: {rollback_exc}",
+                )
+                return {"CANCELLED"}
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         self.report(

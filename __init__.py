@@ -34,7 +34,7 @@ from bpy.props import (
 )
 from bpy.types import AddonPreferences, Menu, Operator, Panel, PropertyGroup
 from gpu_extras.batch import batch_for_shader
-from mathutils import Euler, Matrix, Vector
+from mathutils import Matrix, Vector
 
 
 def _srgb_to_linear(value):
@@ -970,54 +970,6 @@ def _ellipsoid_probability_factor(probability):
     return math.sqrt(0.5 * (lower + upper) / _ELLIPSOID_CHI2_50)
 
 
-def _ellipsoid_base_components(atom, size_scale=1.0):
-    """Return (semi-axes in BU, Euler XYZ rotation) at 50 % probability.
-
-    The axes come from the Cartesian ADP tensor when present. Atoms without
-    displacement parameters remain spherical using the ball-and-stick radius.
-    """
-    try:
-        import numpy
-    except ImportError:
-        numpy = None
-
-    values = atom.get("u_cart")
-    if numpy is not None and values and len(values) == 6:
-        u11, u22, u33, u12, u13, u23 = (float(value) for value in values)
-        if (
-            all(math.isfinite(value) for value in values)
-            and u11 > 0.0
-            and u22 > 0.0
-            and u33 > 0.0
-        ):
-            tensor = numpy.array(
-                (
-                    (u11, u12, u13),
-                    (u12, u22, u23),
-                    (u13, u23, u33),
-                ),
-                dtype=float,
-            )
-            try:
-                eigenvalues, eigenvectors = numpy.linalg.eigh(tensor)
-                eigenvalues = numpy.clip(eigenvalues, 0.0, None)
-                axes = numpy.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
-                axes = numpy.maximum(axes * _DISPLAY_SCALE * size_scale, 1e-4)
-                if numpy.linalg.det(eigenvectors) < 0.0:
-                    eigenvectors[:, 2] *= -1.0
-                rotation = Matrix(eigenvectors.tolist()).to_euler("XYZ")
-                return (
-                    tuple(float(value) for value in axes),
-                    (float(rotation.x), float(rotation.y), float(rotation.z)),
-                )
-            except Exception:
-                pass
-
-    radius = _atom_radius(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), "BALL_STICK")
-    radius *= size_scale
-    return (radius, radius, radius), (0.0, 0.0, 0.0)
-
-
 def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     """Return (vertices, faces, face_types, smooth_faces, tube_radius).
 
@@ -1394,61 +1346,206 @@ def _make_ellipsoid_node_group():
     return node_group
 
 
+def _euler_xyz_rotation_matrices(euler_values):
+    """Return (N, 3, 3) rotation matrices for XYZ Euler triples.
+
+    Matches ``mathutils.Euler(values, "XYZ").to_matrix()``, i.e. the
+    composition ``R = Rz @ Ry @ Rx``.
+    """
+    angles = np.asarray(euler_values, dtype=np.float64).reshape(-1, 3)
+    cos = np.cos(angles)
+    sin = np.sin(angles)
+    cx, cy, cz = cos[:, 0], cos[:, 1], cos[:, 2]
+    sx, sy, sz = sin[:, 0], sin[:, 1], sin[:, 2]
+    matrices = np.empty((angles.shape[0], 3, 3), dtype=np.float64)
+    matrices[:, 0, 0] = cz * cy
+    matrices[:, 0, 1] = cz * sy * sx - sz * cx
+    matrices[:, 0, 2] = cz * sy * cx + sz * sx
+    matrices[:, 1, 0] = sz * cy
+    matrices[:, 1, 1] = sz * sy * sx + cz * cx
+    matrices[:, 1, 2] = sz * sy * cx - cz * sx
+    matrices[:, 2, 0] = -sy
+    matrices[:, 2, 1] = cy * sx
+    matrices[:, 2, 2] = cy * cx
+    return matrices
+
+
+def _matrix_to_euler_xyz(matrices):
+    """Return (N, 3) XYZ Euler angles for (N, 3, 3) rotation matrices.
+
+    Inverse of :func:`_euler_xyz_rotation_matrices`, following the same
+    convention as ``mathutils.Matrix.to_euler("XYZ")``.
+    """
+    matrix = np.asarray(matrices, dtype=np.float64)
+    cosine_y = np.hypot(matrix[:, 0, 0], matrix[:, 1, 0])
+    x = np.arctan2(matrix[:, 2, 1], matrix[:, 2, 2])
+    y = np.arctan2(-matrix[:, 2, 0], cosine_y)
+    z = np.arctan2(matrix[:, 1, 0], matrix[:, 0, 0])
+    singular = cosine_y < 1e-8
+    if np.any(singular):
+        # Gimbal lock (y = ±90°): the X/Z split is ambiguous, so fold the
+        # rotation into X and set Z to zero.
+        negative = matrix[:, 2, 0] < 0.0
+        gimbal_x = np.arctan2(
+            np.where(negative, matrix[:, 0, 1], -matrix[:, 0, 1]),
+            np.where(negative, matrix[:, 0, 2], -matrix[:, 0, 2]),
+        )
+        gimbal_y = np.where(negative, 0.5 * np.pi, -0.5 * np.pi)
+        x = np.where(singular, gimbal_x, x)
+        y = np.where(singular, gimbal_y, y)
+        z = np.where(singular, 0.0, z)
+    return np.stack((x, y, z), axis=1)
+
+
 def _add_ellipsoid_attributes(mesh, atoms):
-    """Store per-point semi-axes and rotations on an atom point mesh."""
+    """Store per-point semi-axes and rotations on an atom point mesh.
+
+    All displacement tensors are decomposed in one batched ``eigh`` call and
+    both attributes are written with ``foreach_set``.  The previous per-atom
+    ``eigh`` plus per-element attribute writes dominated import time on large
+    structures.
+    """
     scene = getattr(bpy.context, "scene", None)
     hydrogen_scale = scene.cgn_hydrogen_scale if scene is not None else 1.0
-    scale_attribute = mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
-    rotation_attribute = mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
+    count = len(atoms)
+    scales = np.empty((count, 3), dtype=np.float64)
+    rotations = np.zeros((count, 3), dtype=np.float64)
+
+    tensors = []
+    tensor_indices = []
+    tensor_size_scales = []
     for index, atom in enumerate(atoms):
         size_scale = (
             hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
         )
-        axes, rotation = _ellipsoid_base_components(atom, size_scale)
-        scale_attribute.data[index].vector = axes
-        rotation_attribute.data[index].vector = rotation
+        values = atom.get("u_cart")
+        if values and len(values) == 6:
+            numbers = [float(value) for value in values]
+            u11, u22, u33 = numbers[0], numbers[1], numbers[2]
+            if (
+                all(math.isfinite(value) for value in numbers)
+                and u11 > 0.0
+                and u22 > 0.0
+                and u33 > 0.0
+            ):
+                u12, u13, u23 = numbers[3], numbers[4], numbers[5]
+                tensors.append(
+                    ((u11, u12, u13), (u12, u22, u23), (u13, u23, u33))
+                )
+                tensor_indices.append(index)
+                tensor_size_scales.append(size_scale)
+                continue
+        # No usable ADP: keep the atom spherical on the ball-and-stick radius.
+        radius = _atom_radius(
+            atom.get("vdw_radius", _DEFAULT_VDW_RADIUS), "BALL_STICK"
+        )
+        scales[index] = radius * size_scale
+
+    if tensors:
+        eigenvalues, eigenvectors = np.linalg.eigh(
+            np.asarray(tensors, dtype=np.float64)
+        )
+        eigenvalues = np.clip(eigenvalues, 0.0, None)
+        axes = np.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
+        axes = np.maximum(
+            axes
+            * _DISPLAY_SCALE
+            * np.asarray(tensor_size_scales, dtype=np.float64)[:, np.newaxis],
+            1e-4,
+        )
+        flip = np.linalg.det(eigenvectors) < 0.0
+        eigenvectors[flip, :, 2] *= -1.0
+        indices = np.asarray(tensor_indices, dtype=np.intp)
+        scales[indices] = axes
+        rotations[indices] = _matrix_to_euler_xyz(eigenvectors)
+
+    scale_attribute = mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
+    rotation_attribute = mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
+    scale_attribute.data.foreach_set(
+        "vector", scales.astype(np.float32).ravel()
+    )
+    rotation_attribute.data.foreach_set(
+        "vector", rotations.astype(np.float32).ravel()
+    )
 
 
 def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
+    """Point each ellipsoid's open quadrant at the viewer/camera.
+
+    Works on the whole ``cgn_scale`` attribute at once (``foreach_get`` /
+    ``foreach_set``) instead of building a ``mathutils.Euler`` and writing one
+    element at a time per vertex.
+    """
     root = _active_root(scene)
     if root is None or scene.cgn_model != "ELLIPSOID":
         return
+    if camera_position is not None:
+        camera_vector = np.array(tuple(camera_position), dtype=np.float64)
+        direction_world = None
+    elif view_direction is not None:
+        camera_vector = None
+        direction_world = np.array(tuple(view_direction), dtype=np.float64)
+    else:
+        return
+
     for obj in root.objects:
         if (
             obj.get("cgn_role") != "atoms"
             or str(obj.get("cgn_element", "")).upper() == "H"
         ):
             continue
-        scale_attribute = obj.data.attributes.get("cgn_scale")
-        rotation_attribute = obj.data.attributes.get("cgn_rotation")
+        data = obj.data
+        scale_attribute = data.attributes.get("cgn_scale")
+        rotation_attribute = data.attributes.get("cgn_rotation")
         if scale_attribute is None or rotation_attribute is None:
             continue
-        changed = False
+        count = len(data.vertices)
+        if count == 0:
+            continue
+        scales = np.empty(count * 3, dtype=np.float32)
+        rotations = np.empty(count * 3, dtype=np.float32)
+        scale_attribute.data.foreach_get("vector", scales)
+        rotation_attribute.data.foreach_get("vector", rotations)
+        scales = scales.reshape(-1, 3).astype(np.float64)
+        rotations = rotations.reshape(-1, 3)
+
         world_to_object = obj.matrix_world.to_3x3().inverted_safe()
-        for index, vertex in enumerate(obj.data.vertices):
-            if camera_position is not None:
-                point = obj.matrix_world @ vertex.co
-                direction = world_to_object @ (camera_position - point)
-            elif view_direction is not None:
-                direction = world_to_object @ view_direction
-            else:
-                continue
-            rotation = Euler(rotation_attribute.data[index].vector, "XYZ").to_matrix()
-            local_direction = rotation.transposed() @ direction
-            current = scale_attribute.data[index].vector
-            magnitudes = tuple(abs(value) for value in current)
-            oriented = tuple(
-                magnitude if component >= 0.0 else -magnitude
-                for magnitude, component in zip(magnitudes, local_direction)
+        to_object = np.array(
+            [
+                [world_to_object[row][column] for column in range(3)]
+                for row in range(3)
+            ],
+            dtype=np.float64,
+        )
+        if camera_vector is None:
+            direction = to_object @ direction_world
+            directions = np.broadcast_to(direction, scales.shape)
+        else:
+            coordinates = np.empty(count * 3, dtype=np.float32)
+            data.vertices.foreach_get("co", coordinates)
+            coordinates = coordinates.reshape(-1, 3).astype(np.float64)
+            world_matrix = obj.matrix_world
+            to_world = np.array(
+                [
+                    [world_matrix[row][column] for column in range(3)]
+                    for row in range(3)
+                ],
+                dtype=np.float64,
             )
-            if any(
-                not math.isclose(current[axis], oriented[axis], abs_tol=1e-8)
-                for axis in range(3)
-            ):
-                scale_attribute.data[index].vector = oriented
-                changed = True
-        if changed:
-            obj.data.update()
+            translation = np.array(
+                tuple(world_matrix.translation), dtype=np.float64
+            )
+            points = coordinates @ to_world.T + translation
+            directions = (camera_vector - points) @ to_object.T
+
+        matrices = _euler_xyz_rotation_matrices(rotations)
+        local_directions = np.einsum("nji,nj->ni", matrices, directions)
+        oriented = np.abs(scales) * np.where(local_directions >= 0.0, 1.0, -1.0)
+        if np.any(oriented != scales):
+            scale_attribute.data.foreach_set(
+                "vector", oriented.astype(np.float32).ravel()
+            )
+            data.update()
             obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
@@ -1483,10 +1580,57 @@ def _ortep_view_signature(view_direction=None, camera=None):
     return ("view", *(round(value, 4) for value in direction))
 
 
+_ORTEP_VIEW_TIMER_INTERVAL = 0.25
+
+
+def _start_ortep_view_timer():
+    if not bpy.app.timers.is_registered(_update_ortep_view_orientation):
+        bpy.app.timers.register(
+            _update_ortep_view_orientation,
+            first_interval=_ORTEP_VIEW_TIMER_INTERVAL,
+            persistent=True,
+        )
+
+
+def _stop_ortep_view_timer():
+    if bpy.app.timers.is_registered(_update_ortep_view_orientation):
+        bpy.app.timers.unregister(_update_ortep_view_orientation)
+
+
+def _sync_ortep_view_timer(scene=None):
+    """Run the ORTEP view timer only while some scene is in ELLIPSOID.
+
+    The ellipsoids have to follow the viewport, but outside ORTEP mode there is
+    nothing to orient: keeping the 4 Hz timer registered forever woke Blender
+    up for no reason.  Every scene is considered so switching between scenes
+    cannot leave the timer stopped while an ORTEP scene is still open.
+    """
+    scenes = list(getattr(bpy.data, "scenes", ()))
+    if scene is not None and scene.name not in {item.name for item in scenes}:
+        scenes.append(scene)
+    if any(_current_model(item) == "ELLIPSOID" for item in scenes):
+        _start_ortep_view_timer()
+    else:
+        _stop_ortep_view_timer()
+
+
+@persistent
+def _sync_ortep_view_timer_after_load(_unused=None):
+    """Re-evaluate the ELLIPSOID-only timer after a .blend is loaded."""
+    _sync_ortep_view_timer()
+
+
 def _update_ortep_view_orientation():
+    if not any(
+        _current_model(item) == "ELLIPSOID" for item in bpy.data.scenes
+    ):
+        # Safety net: if the model changed without going through
+        # _update_model, stop instead of polling forever.
+        return None
     scene = bpy.context.scene
-    if scene is None or scene.cgn_model != "ELLIPSOID":
-        return 0.25
+    if scene is None or _current_model(scene) != "ELLIPSOID":
+        # Another scene is in ORTEP mode; keep the timer alive for it.
+        return _ORTEP_VIEW_TIMER_INTERVAL
     view_direction = None
     camera = None
     window_manager = getattr(bpy.context, "window_manager", None)
@@ -1519,7 +1663,7 @@ def _update_ortep_view_orientation():
         else:
             _orient_ortep_openings(scene, view_direction=view_direction)
         _ORTEP_VIEW_SIGNATURES[scene_key] = signature
-    return 0.25
+    return _ORTEP_VIEW_TIMER_INTERVAL
 
 
 def _set_modifier_input(modifier, node_group, socket_name, value):
@@ -2186,6 +2330,7 @@ def _make_atom_objects(root, atoms):
                 radius = _atom_radius(obj["cgn_vdw_radius"], model)
                 radius *= size_scale
             _add_geometry_nodes_modifier(obj, node_group_for_atom, radius, material)
+    _sync_ortep_view_timer(scene)
 
 
 def _rebuild_atom_objects(root, atoms):
@@ -6798,19 +6943,19 @@ def register():
     bpy.types.TOPBAR_MT_file_import.append(_draw_file_import)
     if _orient_ortep_for_render not in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.append(_orient_ortep_for_render)
-    if not bpy.app.timers.is_registered(_update_ortep_view_orientation):
-        bpy.app.timers.register(
-            _update_ortep_view_orientation, first_interval=0.25, persistent=True
-        )
+    if _sync_ortep_view_timer_after_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_sync_ortep_view_timer_after_load)
+    _sync_ortep_view_timer()
 
 
 def unregister():
     _cancel_all_debounce()
     _invalidate_structure_cache()
+    _stop_ortep_view_timer()
     if _orient_ortep_for_render in bpy.app.handlers.render_pre:
         bpy.app.handlers.render_pre.remove(_orient_ortep_for_render)
-    if bpy.app.timers.is_registered(_update_ortep_view_orientation):
-        bpy.app.timers.unregister(_update_ortep_view_orientation)
+    if _sync_ortep_view_timer_after_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_sync_ortep_view_timer_after_load)
     bpy.types.TOPBAR_MT_file_import.remove(_draw_file_import)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_menu)
     del bpy.types.Scene.cgn_ortep_ellipse_thickness

@@ -1825,7 +1825,7 @@ def _update_model(scene, context):
 
 
 def _update_hydrogen_scale(scene, context):
-    if scene.cgn_model in {"ELLIPSOID", "SPACE_FILLING"}:
+    if scene.cgn_model == "ELLIPSOID":
         _update_model(scene, context)
 
 
@@ -1923,7 +1923,7 @@ def _make_atom_objects(root, atoms):
         style = _atom_style(scene, element)
         size_scale = (
             scene.cgn_hydrogen_scale
-            if element == "H" and model in {"ELLIPSOID", "SPACE_FILLING"}
+            if element == "H" and model == "ELLIPSOID"
             else 1.0
         )
         is_ortep_ellipsoid = ellipsoids and element != "H"
@@ -6088,7 +6088,7 @@ class CGN_PT_model_style(Panel):
                 text="Ellipse Thickness",
                 slider=True,
             )
-        if scene.cgn_model in {"ELLIPSOID", "SPACE_FILLING"}:
+        if scene.cgn_model == "ELLIPSOID":
             layout.prop(
                 scene,
                 "cgn_hydrogen_scale",
@@ -6512,7 +6512,10 @@ def register():
     )
     bpy.types.Scene.cgn_hydrogen_scale = FloatProperty(
         name="Hydrogen Size",
-        description="Scale hydrogen atoms without changing their probability level",
+        description=(
+            "Scale hydrogen atoms in the ORTEP/ellipsoid model; "
+            "space-filling always uses the full van der Waals radius"
+        ),
         default=1.0,
         min=0.1,
         max=3.0,

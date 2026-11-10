@@ -179,8 +179,8 @@ _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _MULTIPLE_BOND_RADIUS_SCALE_DEFAULT = 1.0
 _CHEMDRAW_BOND_SPACING_DEFAULT = 0.32
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
-_AROMATIC_TORUS_SIZE_DEFAULT = 0.62
-_AROMATIC_TORUS_WIDTH_DEFAULT = 0.75
+_AROMATIC_TORUS_SIZE_DEFAULT = 0.55
+_AROMATIC_TORUS_WIDTH_DEFAULT = 0.5
 _AROMATIC_BOND_LENGTH_SPREAD_MAX = 0.06
 _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE = {2: 0.9, 3: 0.85}
 _CHEMDRAW_MAX_VALENCE = {
@@ -201,20 +201,11 @@ _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
 _DEFAULT_BOND_RADIUS = _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
 # Default connectivity window, as a fraction of (r_a + r_b) with the covalent
-# radii of the two elements: the same 0.6 / 1.2 multiples Diamond uses.  The
-# lower bound rejects collapsed contacts such as the 1.18 A K-K pair in
+# radii of the two elements.
+# The lower bound rejects collapsed contacts such as the 1.18 A K-K pair in
 # Ca_autored.cif.
 _BOND_MIN_SCALE = 0.6
 _BOND_MAX_SCALE = 1.2
-# Diamond's 1.2 factor is calibrated on its own compact radii; applied to the
-# larger covalent radii below it would be *more* permissive than the previous
-# additive default for every pair with a big radius sum (3.84 A instead of
-# 3.60 A for Ti-Ti, which re-draws spurious brookite contacts).  Keeping the
-# additive slack as a ceiling means the covalent window can only ever tighten.
-# Cation-anion pairs with declared opposite charges bypass it: there the
-# reference is the Shannon ionic sum (see _default_pair_window), and the
-# ceiling would clip the long contacts that belong to the coordination sphere
-# (Ag-O in Ag2Cr2O7 reaches 2.75 A against a 3.06 A limit).
 _BOND_MAX_SLACK = 0.4
 # Cap applied to same-sign metal-metal pairs (for example Ti(IV)-Ti(IV) in an
 # oxide, or Cu(I)-Cu(I) in Cu2O): only contacts shorter than this fraction of
@@ -662,8 +653,7 @@ def _update_polyhedron_style(self, context):
     for obj in legacy:
         try:
             centers.extend(
-                int(index)
-                for index in json.loads(obj.get("cgn_poly_centers", "[]"))
+                int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]"))
             )
         except (TypeError, ValueError):
             continue
@@ -2142,10 +2132,7 @@ def _rollback_structure_state(root, snapshot, scene, pair_settings):
         }:
             _remove_object(obj)
     for child in list(root.children):
-        if (
-            child.get("cgn_role") == "polyhedron_prototypes"
-            and not child.all_objects
-        ):
+        if child.get("cgn_role") == "polyhedron_prototypes" and not child.all_objects:
             bpy.data.collections.remove(child)
     try:
         atoms = _structure_atoms(root)
@@ -3082,10 +3069,7 @@ def _clear_polyhedra(root, element=None):
     # Drop the helper collection once its last prototype is gone; leaving empty
     # child collections behind clutters the outliner on every clear/rebuild.
     for child in list(root.children):
-        if (
-            child.get("cgn_role") == "polyhedron_prototypes"
-            and not child.all_objects
-        ):
+        if child.get("cgn_role") == "polyhedron_prototypes" and not child.all_objects:
             bpy.data.collections.remove(child)
 
 
@@ -3610,7 +3594,13 @@ def _polyhedron_prototype_collection(root):
 
 
 def _make_polyhedron_prototype_mesh(
-    name, local_vertices, local_faces, local_edges, thickness, face_material, edge_material
+    name,
+    local_vertices,
+    local_faces,
+    local_edges,
+    thickness,
+    face_material,
+    edge_material,
 ):
     """Build one canonical polyhedron (faces + edge tubes) at the origin.
 
@@ -4471,9 +4461,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         delta_y = y - other_cart[1]
                         delta_z = z - other_cart[2]
                         distance_squared = (
-                            delta_x * delta_x
-                            + delta_y * delta_y
-                            + delta_z * delta_z
+                            delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
                         )
                         if distance_squared > reject_limit:
                             continue
@@ -6557,12 +6545,8 @@ def _build_polyhedra_objects(
         obj["cgn_poly_element"] = element
         obj["cgn_poly_site_label"] = site_label
         obj["cgn_p1_index"] = p1_index
-        obj["cgn_poly_centers"] = json.dumps(
-            [int(center) for center in merged]
-        )
-        obj["cgn_poly_map"] = json.dumps(
-            {str(int(center)): [] for center in merged}
-        )
+        obj["cgn_poly_centers"] = json.dumps([int(center) for center in merged])
+        obj["cgn_poly_map"] = json.dumps({str(int(center)): [] for center in merged})
         obj["cgn_poly_edge_width"] = float(thickness)
         obj["cgn_poly_prototype"] = prototype.name
         root.objects.link(obj)

@@ -237,6 +237,8 @@ _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
 _LEGACY_NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids"
+_NODE_GROUP_POLYHEDRA = "CGN_GN_Polyhedra"
+_POLY_PROTOTYPE_COLLECTION = "CGN_Polyhedron_Prototypes"
 _ORTEP_TEMPLATE_OBJECT = "CGN_ORTEP_Template"
 _ORTEP_INNER_COLOR = (0.12, 0.12, 0.16, 1.0)
 _ORTEP_ELLIPSE_COLOR = (0.015, 0.015, 0.02, 1.0)
@@ -606,27 +608,32 @@ def _update_polyhedron_style(self, context):
     face_material = _make_polyhedron_face_material(element, self, site_label)
     edge_material = _make_polyhedron_edge_material(element, self, site_label)
     _face, _edge, thickness = _polyhedron_style_values(self)
-    matching = []
-    rebuild = False
-    for obj in list(root.objects):
+
+    prototypes = {}
+    prototype_users = {}
+    legacy = []
+    for obj in list(root.all_objects):
         if obj.get("cgn_role") != "polyhedron":
             continue
         if str(obj.get("cgn_poly_element", "")) != element:
             continue
         if str(obj.get("cgn_poly_site_label", "")) != site_label:
             continue
-        mesh = obj.data if isinstance(obj.data, bpy.types.Mesh) else None
+        prototype = _polyhedron_prototype_for(obj)
+        if prototype is None:
+            # Scaffold from the baked-mesh implementation (or a prototype the
+            # user deleted): fall back to a full rebuild below.
+            legacy.append(obj)
+            continue
+        prototypes[prototype.name] = prototype
+        prototype_users.setdefault(prototype.name, []).append(obj)
+
+    for name, prototype in prototypes.items():
+        mesh = prototype.data if isinstance(prototype.data, bpy.types.Mesh) else None
         if mesh is None:
             continue
-        matching.append(obj)
-        # A colour/transparency change only swaps material slots; the edge
-        # width is baked into the tube geometry, so it needs a rebuild.
-        try:
-            stored_width = float(obj.get("cgn_poly_edge_width", thickness))
-        except (TypeError, ValueError):
-            stored_width = thickness
-        if abs(stored_width - thickness) > 1e-9:
-            rebuild = True
+        # Colour/transparency changes only swap the prototype's material slots;
+        # every image is an instance of it, so nothing else needs rebuilding.
         if len(mesh.materials) >= 2:
             mesh.materials[0] = face_material
             mesh.materials[1] = edge_material
@@ -634,31 +641,48 @@ def _update_polyhedron_style(self, context):
             mesh.materials.clear()
             mesh.materials.append(face_material)
             mesh.materials.append(edge_material)
-    if rebuild and matching:
-        centers = []
-        for obj in matching:
-            try:
-                centers.extend(
-                    int(index)
-                    for index in json.loads(obj.get("cgn_poly_centers", "[]"))
-                )
-            except (TypeError, ValueError):
-                continue
-        for obj in matching:
-            _remove_object(obj)
-        if centers:
-            try:
-                atoms = _structure_atoms(root)
-            except (ValueError, TypeError):
-                return
-            _build_polyhedra_objects(
-                root,
-                atoms,
-                centers,
-                scene,
-                clear_existing=False,
-                extend_structure=False,
+        try:
+            stored_width = float(prototype.get("cgn_poly_edge_width", thickness))
+        except (TypeError, ValueError):
+            stored_width = thickness
+        # Custom properties are stored as 32-bit floats, so compare with a
+        # tolerance above float32 rounding instead of 1e-9: otherwise every
+        # colour tweak after a width change would rebuild the tubes again.
+        if abs(stored_width - thickness) > 1e-6 and _rebuild_polyhedron_prototype(
+            prototype, thickness
+        ):
+            # Keep the scaffold's stored width in sync so the next style change
+            # does not rebuild the prototype again for the same value.
+            for obj in prototype_users.get(name, ()):
+                obj["cgn_poly_edge_width"] = float(thickness)
+
+    if not legacy:
+        return
+    centers = []
+    for obj in legacy:
+        try:
+            centers.extend(
+                int(index)
+                for index in json.loads(obj.get("cgn_poly_centers", "[]"))
             )
+        except (TypeError, ValueError):
+            continue
+    for obj in legacy:
+        _remove_object(obj)
+    if not centers:
+        return
+    try:
+        atoms = _structure_atoms(root)
+    except (ValueError, TypeError):
+        return
+    _build_polyhedra_objects(
+        root,
+        atoms,
+        centers,
+        scene,
+        clear_existing=False,
+        extend_structure=False,
+    )
 
 
 class CGN_PolyhedronStyle(PropertyGroup):
@@ -940,6 +964,57 @@ def _make_unit_cell_node_group():
     links.new(realize.outputs["Geometry"], join.inputs["Geometry"])
     links.new(join.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
     _apply_quality_settings(getattr(bpy.context, "scene", None))
+    return node_group
+
+
+def _make_polyhedra_node_group():
+    """Shared Geometry Nodes graph: instance one site prototype on its images.
+
+    A polyhedron is a single canonical mesh (faces + edge tubes, two material
+    slots) instanced once per image of the crystallographic site.  The points
+    scaffold fed into this group holds one vertex per image, so growing a site
+    only appends a point instead of duplicating the whole polyhedron geometry.
+
+    Instances are realized at the end of the graph: that keeps the object
+    editable (Apply converts it to an ordinary mesh) and lets every exporter
+    see the faces without special-casing instances.  The memory/file-size win
+    remains — the prototype is stored once per site and the scaffold is one
+    point per image.
+    """
+    node_group = bpy.data.node_groups.get(_NODE_GROUP_POLYHEDRA)
+    if node_group is not None:
+        return node_group
+
+    node_group = bpy.data.node_groups.new(_NODE_GROUP_POLYHEDRA, "GeometryNodeTree")
+    geometry_in = node_group.interface.new_socket(
+        name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+    )
+    node_group.interface.new_socket(
+        name="Prototype", in_out="INPUT", socket_type="NodeSocketObject"
+    )
+    geometry_out = node_group.interface.new_socket(
+        name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+    )
+
+    nodes = node_group.nodes
+    links = node_group.links
+    group_in = nodes.new("NodeGroupInput")
+    group_out = nodes.new("NodeGroupOutput")
+    info = nodes.new("GeometryNodeObjectInfo")
+    instance = nodes.new("GeometryNodeInstanceOnPoints")
+    realize = nodes.new("GeometryNodeRealizeInstances")
+    group_in.location = (-600, 0)
+    info.location = (-350, -150)
+    instance.location = (0, 100)
+    realize.location = (300, 0)
+    group_out.location = (550, 0)
+
+    info.transform_space = "ORIGINAL"
+    links.new(group_in.outputs["Geometry"], instance.inputs["Points"])
+    links.new(group_in.outputs["Prototype"], info.inputs["Object"])
+    links.new(info.outputs["Geometry"], instance.inputs["Instance"])
+    links.new(instance.outputs["Instances"], realize.inputs["Geometry"])
+    links.new(realize.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
     return node_group
 
 
@@ -2056,15 +2131,22 @@ def _rollback_structure_state(root, snapshot, scene, pair_settings):
     # Rebuild bonds with the pairs that produced the captured bond signature so
     # the rollback is faithful even if the user toggled pairs in the meantime.
     rollback_pairs = _pairs_from_records(snapshot.get("pairs")) or pair_settings
-    for obj in list(root.objects):
+    for obj in list(root.all_objects):
         role = obj.get("cgn_role")
         if role in {
             "atoms",
             "bonds",
             "growth_selection",
             "polyhedron",
+            "polyhedron_prototype",
         }:
             _remove_object(obj)
+    for child in list(root.children):
+        if (
+            child.get("cgn_role") == "polyhedron_prototypes"
+            and not child.all_objects
+        ):
+            bpy.data.collections.remove(child)
     try:
         atoms = _structure_atoms(root)
     except (ValueError, TypeError):
@@ -2725,6 +2807,7 @@ def _update_quality_manual(self, context):
 # --------------------------------------------------------------------------
 
 _POLY_ROLE_ROLES = ("polyhedron",)
+_POLY_DELETE_ROLES = ("polyhedron", "polyhedron_prototype")
 
 
 def _enabled_pair_windows(pair_settings):
@@ -2989,13 +3072,21 @@ def _cached_polyhedron_elements(root, scene):
 
 
 def _clear_polyhedra(root, element=None):
-    """Remove polyhedra objects; pass an element to keep the others."""
-    for obj in list(root.objects):
-        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
+    """Remove polyhedron scaffolds and their prototypes (all, or one element)."""
+    for obj in list(root.all_objects):
+        if obj.get("cgn_role") not in _POLY_DELETE_ROLES:
             continue
         if element is not None and str(obj.get("cgn_poly_element", "")) != element:
             continue
         _remove_object(obj)
+    # Drop the helper collection once its last prototype is gone; leaving empty
+    # child collections behind clutters the outliner on every clear/rebuild.
+    for child in list(root.children):
+        if (
+            child.get("cgn_role") == "polyhedron_prototypes"
+            and not child.all_objects
+        ):
+            bpy.data.collections.remove(child)
 
 
 def _polyhedron_geometry(
@@ -3502,6 +3593,114 @@ def _polyhedron_edge_tube_geometry(vertices, edges, radius, resolution=8):
                 )
             )
     return tube_vertices, tube_faces
+
+
+def _polyhedron_prototype_collection(root):
+    """Hidden child collection holding the per-site polyhedron prototypes."""
+    for child in root.children:
+        if child.get("cgn_role") == "polyhedron_prototypes":
+            return child
+    collection = bpy.data.collections.new(_POLY_PROTOTYPE_COLLECTION)
+    collection["cgn_role"] = "polyhedron_prototypes"
+    collection.hide_viewport = True
+    collection.hide_render = True
+    collection.hide_select = True
+    root.children.link(collection)
+    return collection
+
+
+def _make_polyhedron_prototype_mesh(
+    name, local_vertices, local_faces, local_edges, thickness, face_material, edge_material
+):
+    """Build one canonical polyhedron (faces + edge tubes) at the origin.
+
+    The mesh is stored once per crystallographic site and instanced on every
+    image by the ``CGN_GN_Polyhedra`` node group.  Material slot 0 is the face
+    material, slot 1 the edge-tube material, matching the old baked layout.
+    """
+    tube_vertices, tube_faces = _polyhedron_edge_tube_geometry(
+        local_vertices, local_edges, thickness * _DISPLAY_SCALE
+    )
+    vertices = [tuple(vertex) for vertex in local_vertices] + list(tube_vertices)
+    base = len(local_vertices)
+    faces = [tuple(loop) for loop in local_faces] + [
+        tuple(base + index for index in loop) for loop in tube_faces
+    ]
+    material_indices = [0] * len(local_faces) + [1] * len(tube_faces)
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    for polygon, material_index in zip(mesh.polygons, material_indices):
+        polygon.use_smooth = False
+        polygon.material_index = material_index
+    mesh.materials.append(face_material)
+    mesh.materials.append(edge_material)
+    return mesh
+
+
+def _polyhedron_prototype_for(obj):
+    """Return the prototype object of a polyhedron scaffold, if it still exists."""
+    name = str(obj.get("cgn_poly_prototype", "") or "")
+    if not name:
+        return None
+    prototype = bpy.data.objects.get(name)
+    if prototype is None or prototype.get("cgn_role") != "polyhedron_prototype":
+        return None
+    return prototype
+
+
+def _rebuild_polyhedron_prototype(prototype, thickness):
+    """Recompute the edge-tube geometry of one prototype at a new width.
+
+    Only the prototype changes: every image of the site is an instance of it,
+    so the scaffold points and their transforms are untouched.
+    """
+    try:
+        local_vertices = json.loads(prototype.get("cgn_poly_local_vertices", "[]"))
+        local_faces = json.loads(prototype.get("cgn_poly_local_faces", "[]"))
+        local_edges = json.loads(prototype.get("cgn_poly_local_edges", "[]"))
+    except (TypeError, ValueError):
+        return False
+    if not local_vertices or not local_faces:
+        return False
+    tube_vertices, tube_faces = _polyhedron_edge_tube_geometry(
+        local_vertices, local_edges, thickness * _DISPLAY_SCALE
+    )
+    vertices = [tuple(vertex) for vertex in local_vertices] + list(tube_vertices)
+    base = len(local_vertices)
+    faces = [tuple(loop) for loop in local_faces] + [
+        tuple(base + index for index in loop) for loop in tube_faces
+    ]
+    material_indices = [0] * len(local_faces) + [1] * len(tube_faces)
+    mesh = prototype.data
+    mesh.clear_geometry()
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    for polygon, material_index in zip(mesh.polygons, material_indices):
+        polygon.use_smooth = False
+        polygon.material_index = material_index
+    prototype["cgn_poly_edge_width"] = float(thickness)
+    return True
+
+
+def _append_polyhedron_points(obj, points):
+    """Append image centres to a polyhedron scaffold (points-only mesh).
+
+    Appending vertices alone is safe; the Blender 5.2 ``Mesh.edges.add`` crash
+    only affects meshes that already hold edges, and this scaffold never has
+    any.  The prototype geometry is shared, so a grow is O(new images).
+    """
+    if not points:
+        return 0
+    mesh = obj.data
+    base = len(mesh.vertices)
+    mesh.vertices.add(len(points))
+    for offset, point in enumerate(points):
+        mesh.vertices[base + offset].co = tuple(point)
+    mesh.update()
+    obj.update_tag(refresh={"OBJECT", "DATA"})
+    return len(points)
 
 
 def _pair_key(element_a, element_b):
@@ -6109,18 +6308,18 @@ class CGN_OT_grow_further(Operator):
 def _build_polyhedra_objects(
     root, atoms, center_indices, scene, clear_existing=True, extend_structure=True
 ):
-    """Build one polyhedron object per crystallographic site.
+    """Build one Geometry Nodes polyhedron object per crystallographic site.
 
-    Centers are grouped by ``p1_index`` so a single canonical polyhedron is
-    built per site and baked onto every corresponding atom image.  All images
-    live in one mesh object (faces + edge tubes, two material slots), which —
-    like the per-element atom and per-pair bond objects — keeps the outliner
-    flat: one entry per site, not one per polyhedron or one per atom image.
+    Centers are grouped by ``p1_index`` so a single canonical prototype is
+    built per site.  Each object holds a points scaffold (one vertex per image)
+    and instances the prototype with the ``CGN_GN_Polyhedra`` node group, which
+    keeps the outliner flat (one entry per site, not one per image) while
+    storing the face/edge geometry only once per site.
 
     When ``clear_existing`` is True (default), existing polyhedra of the
     element(s) being built are removed first — other elements are left
-    untouched.  When False, new polyhedra are added without removing existing
-    ones; new images of an already-built site are merged into its object.
+    untouched.  When False, new images of an already-built site are appended to
+    its scaffold, which is O(new images): the prototype is shared.
 
     When ``extend_structure`` is False, newly discovered ligand images are
     not added to the instance table — used by ``_remap_polyhedra`` after
@@ -6157,16 +6356,19 @@ def _build_polyhedra_objects(
             site_rep[p1_index] = center
 
     # Existing site objects.  When adding (clear_existing=False) the new images
-    # of an existing site must be merged into its single object instead of the
-    # whole site being skipped, otherwise a freshly grown image could never get
-    # a polyhedron ("Create from Selected" reported a bogus skip).
+    # of an existing site are appended to its scaffold, otherwise a freshly
+    # grown image could never get a polyhedron ("Create from Selected" reported
+    # a bogus skip).  A scaffold whose prototype vanished is rebuilt instead.
     existing_sites = {}
     if not clear_existing:
-        for obj in root.objects:
+        for obj in list(root.objects):
             if obj.get("cgn_role") != "polyhedron":
                 continue
             p1 = obj.get("cgn_p1_index")
             if p1 is None:
+                continue
+            if _polyhedron_prototype_for(obj) is None:
+                _remove_object(obj)
                 continue
             try:
                 previous = [
@@ -6184,18 +6386,23 @@ def _build_polyhedra_objects(
 
     for p1_index, centers in site_groups.items():
         p1_index = int(p1_index)
-        build_centers = list(centers)
         existing = existing_sites.get(p1_index)
+        previous = []
         if existing is not None:
             existing_obj, previous = existing
             valid_previous = [index for index in previous if 0 <= index < len(atoms)]
-            merged = list(dict.fromkeys(valid_previous + build_centers))
+            merged = list(dict.fromkeys(valid_previous + centers))
             if len(merged) == len(valid_previous):
-                # Every requested image is already baked into the site object.
+                # Every requested image is already represented by the scaffold.
                 skipped_total += len(centers)
                 continue
-            _remove_object(existing_obj)
-            build_centers = merged
+            known = set(valid_previous)
+            centers_to_add = [center for center in merged if center not in known]
+            previous = valid_previous
+        else:
+            existing_obj = None
+            merged = list(dict.fromkeys(centers))
+            centers_to_add = merged
 
         rep_center = site_rep[p1_index]
         rep_atom = atoms[rep_center]
@@ -6216,25 +6423,19 @@ def _build_polyhedra_objects(
             center_cart, element, pool, cell_matrix, windows
         )
         if len(ligands) < _POLY_MIN_LIGANDS:
-            skipped_total += len(build_centers)
+            skipped_total += len(centers_to_add)
             continue
-        ligand_positions = [item[0] for item in ligands]
-        topology = _polyhedron_topology(ligand_positions)
-        if topology is None:
-            skipped_total += len(build_centers)
-            continue
-        local_vertices, _kept, local_faces, local_edges = topology
 
-        # Collect ligand quads so the structure can be extended with them.
-        # The coordination search runs once around the representative image;
-        # every other selected image of the same site has the same shell
-        # shifted by its integer cell translation.  Translating the quads (and
-        # not just using the representative's) is what makes a box-selected
+        # Collect ligand quads for the images being added so the structure can
+        # be extended with them.  The coordination search runs once around the
+        # representative image; every other image of the same site has the same
+        # shell shifted by its integer cell translation.  Translating the quads
+        # (and not just using the representative's) is what makes a box-selected
         # batch complete the edge atoms of *every* polyhedron.
         rep_translation = tuple(
             int(value) for value in rep_atom.get("growth_translation", (0, 0, 0))
         )
-        for center in build_centers:
+        for center in centers_to_add:
             translation = tuple(
                 int(value)
                 for value in atoms[center].get("growth_translation", (0, 0, 0))
@@ -6253,6 +6454,28 @@ def _build_polyhedra_objects(
                     new_ligand_keys.add(quad)
                     new_ligand_quads.append(quad)
 
+        if existing_obj is not None:
+            # Growing an existing site only appends one vertex per new image;
+            # the canonical prototype (and its materials) is already there.
+            _append_polyhedron_points(
+                existing_obj,
+                [_display_point(atoms[center]["cart"]) for center in centers_to_add],
+            )
+            existing_obj["cgn_poly_centers"] = json.dumps(
+                [int(center) for center in merged]
+            )
+            existing_obj["cgn_poly_map"] = json.dumps(
+                {str(int(center)): [] for center in merged}
+            )
+            built_total += 1
+            continue
+
+        topology = _polyhedron_topology([item[0] for item in ligands])
+        if topology is None:
+            skipped_total += len(centers_to_add)
+            continue
+        local_vertices, _kept, local_faces, local_edges = topology
+
         # Shift canonical vertices so the site centre is at the origin.
         # ``local_vertices`` are already in display units (the ligand search
         # returns ``_display_point`` positions), so only the display-space
@@ -6261,59 +6484,65 @@ def _build_polyhedra_objects(
         local = [(v[0] - cx, v[1] - cy, v[2] - cz) for v in local_vertices]
 
         _face, _edge, thickness = _polyhedron_style_values(style)
-        tube_vertices, tube_faces = _polyhedron_edge_tube_geometry(
-            local, local_edges, thickness * _DISPLAY_SCALE
+        face_material = _make_polyhedron_face_material(element, style, site_label)
+        edge_material = _make_polyhedron_edge_material(element, style, site_label)
+
+        prototype = bpy.data.objects.new(
+            f"CGN_Polyhedron_Prototype_{element}_P1{p1_index}",
+            _make_polyhedron_prototype_mesh(
+                f"CGN_Polyhedron_Prototype_{element}_P1{p1_index}",
+                local,
+                local_faces,
+                local_edges,
+                thickness,
+                face_material,
+                edge_material,
+            ),
         )
+        prototype["cgn_role"] = "polyhedron_prototype"
+        prototype["cgn_poly_element"] = element
+        prototype["cgn_poly_site_label"] = site_label
+        prototype["cgn_p1_index"] = p1_index
+        prototype["cgn_poly_edge_width"] = float(thickness)
+        prototype["cgn_poly_local_vertices"] = json.dumps(
+            [list(vertex) for vertex in local]
+        )
+        prototype["cgn_poly_local_faces"] = json.dumps(
+            [list(loop) for loop in local_faces]
+        )
+        prototype["cgn_poly_local_edges"] = json.dumps(
+            [list(edge) for edge in local_edges]
+        )
+        _polyhedron_prototype_collection(root).objects.link(prototype)
 
-        # One mesh object per crystallographic site, like the per-element atom
-        # and per-pair bond objects: every grown/translated image of the site
-        # is baked into this single object (faces + edge tubes), so the
-        # outliner shows one entry per site instead of one per polyhedron.
-        vertices = []
-        faces = []
-        material_indices = []
-        for center in build_centers:
-            offset = _display_point(atoms[center]["cart"])
-            base = len(vertices)
-            vertices.extend(
-                (v[0] + offset[0], v[1] + offset[1], v[2] + offset[2]) for v in local
-            )
-            faces.extend(tuple(base + index for index in loop) for loop in local_faces)
-            material_indices.extend([0] * len(local_faces))
-            tube_base = len(vertices)
-            vertices.extend(
-                (v[0] + offset[0], v[1] + offset[1], v[2] + offset[2])
-                for v in tube_vertices
-            )
-            faces.extend(
-                tuple(tube_base + index for index in loop) for loop in tube_faces
-            )
-            material_indices.extend([1] * len(tube_faces))
-
-        mesh = bpy.data.meshes.new(f"CGN_Polyhedron_{element}_P1{p1_index}")
-        mesh.from_pydata(vertices, [], faces)
+        # The scaffold is a points-only mesh: one vertex per image.  The node
+        # group instances the prototype on those points and realizes the
+        # instances so the object stays editable and exports without special
+        # cases.
+        mesh = bpy.data.meshes.new(f"CGN_Polyhedron_{element}_P1{p1_index}_Points")
+        mesh.from_pydata(
+            [_display_point(atoms[center]["cart"]) for center in merged], [], []
+        )
         mesh.update()
-        for polygon, material_index in zip(mesh.polygons, material_indices):
-            polygon.use_smooth = False
-            polygon.material_index = material_index
-        mesh.materials.append(
-            _make_polyhedron_face_material(element, style, site_label)
-        )
-        mesh.materials.append(
-            _make_polyhedron_edge_material(element, style, site_label)
-        )
 
-        obj = bpy.data.objects.new(mesh.name, mesh)
+        obj = bpy.data.objects.new(f"CGN_Polyhedron_{element}_P1{p1_index}", mesh)
         obj["cgn_role"] = "polyhedron"
         obj["cgn_poly_element"] = element
         obj["cgn_poly_site_label"] = site_label
         obj["cgn_p1_index"] = p1_index
-        obj["cgn_poly_centers"] = json.dumps([int(center) for center in build_centers])
+        obj["cgn_poly_centers"] = json.dumps(
+            [int(center) for center in merged]
+        )
         obj["cgn_poly_map"] = json.dumps(
-            {str(int(center)): [] for center in build_centers}
+            {str(int(center)): [] for center in merged}
         )
         obj["cgn_poly_edge_width"] = float(thickness)
+        obj["cgn_poly_prototype"] = prototype.name
         root.objects.link(obj)
+
+        modifier = obj.modifiers.new("Geometry Nodes", "NODES")
+        modifier.node_group = _make_polyhedra_node_group()
+        _set_modifier_input(modifier, modifier.node_group, "Prototype", prototype)
 
         built_total += 1
 

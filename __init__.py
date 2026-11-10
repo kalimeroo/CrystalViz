@@ -4405,15 +4405,33 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             if obj.get("cgn_role") == "bonds":
                 _remove_object(obj)
 
+    # One lookup entry per (element, neighbour element): the enabled window and
+    # its canonical pair key.  Rebuilding that key (two ``str.upper`` plus
+    # ``sorted``) for every spatial candidate used to dominate the search on
+    # packed supercells, although only a few percent of candidates are bonds.
+    pair_entries = {}
+    for (element_a, element_b), (low, high) in enabled.items():
+        entry = (low, high, (element_a, element_b))
+        pair_entries.setdefault(element_a, {})[element_b] = entry
+        pair_entries.setdefault(element_b, {})[element_a] = entry
+    max_distance_squared = max_distance * max_distance
+    # Squared early rejection must never discard a pair the exact test would
+    # accept, so it is slackened by one part in a billion on the sum.
+    reject_limit = max_distance_squared + 1e-9
+
     if cache_matches:
         buckets = cached["buckets"]
         vdw_by_element = cached["vdw_by_element"]
+        elements = list(cached["elements"])
+        elements.extend([None] * (len(atoms) - len(elements)))
     else:
         buckets = {}
         vdw_by_element = {}
+        elements = [None] * len(atoms)
         for index in range(start_index):
             atom = atoms[index]
             element = str(atom.get("element", "X")).upper()
+            elements[index] = element
             vdw_by_element.setdefault(
                 element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
             )
@@ -4427,11 +4445,14 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     by_pair = {}
     for index in range(start_index, len(atoms)):
         atom = atoms[index]
+        atom_cart = atom["cart"]
         element = str(atom.get("element", "X")).upper()
+        elements[index] = element
+        element_entries = pair_entries.get(element, {})
         vdw_by_element.setdefault(
             element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
         )
-        x, y, z = atom["cart"]
+        x, y, z = atom_cart
         cell = (
             math.floor(x / cell_width),
             math.floor(y / cell_width),
@@ -4442,28 +4463,33 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                 for dz in (-1, 0, 1):
                     neighbor_cell = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
                     for other_index in buckets.get(neighbor_cell, ()):
+                        # Cheapest rejections first: the distance needs no string
+                        # work, and most candidates fall outside the widest window.
                         other = atoms[other_index]
-                        key = _pair_key(atom.get("element"), other.get("element"))
-                        bounds = enabled.get(key)
-                        if bounds is None:
+                        other_cart = other["cart"]
+                        delta_x = x - other_cart[0]
+                        delta_y = y - other_cart[1]
+                        delta_z = z - other_cart[2]
+                        distance_squared = (
+                            delta_x * delta_x
+                            + delta_y * delta_y
+                            + delta_z * delta_z
+                        )
+                        if distance_squared > reject_limit:
                             continue
-                        delta = (
-                            x - other["cart"][0],
-                            y - other["cart"][1],
-                            z - other["cart"][2],
-                        )
-                        distance_squared = sum(
-                            component * component for component in delta
-                        )
                         if distance_squared <= 1e-12:
                             continue
+                        other_element = elements[other_index]
+                        entry = element_entries.get(other_element)
+                        if entry is None:
+                            continue
                         distance = math.sqrt(distance_squared)
-                        if bounds[0] <= distance <= bounds[1]:
-                            by_pair.setdefault(key, []).append(
+                        if entry[0] <= distance <= entry[1]:
+                            by_pair.setdefault(entry[2], []).append(
                                 (
-                                    other["cart"],
-                                    atom["cart"],
-                                    str(other.get("element", "X")).upper(),
+                                    other_cart,
+                                    atom_cart,
+                                    other_element,
                                     element,
                                 )
                             )
@@ -4475,6 +4501,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         "atom_count": len(atoms),
         "atoms": atoms,
         "buckets": buckets,
+        "elements": elements,
         "vdw_by_element": vdw_by_element,
     }
 

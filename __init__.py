@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 3),
+    "version": (0, 9, 5),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -18,6 +18,7 @@ import re
 import traceback
 import uuid
 
+import bmesh
 import bpy
 import gpu
 import numpy as np
@@ -4027,6 +4028,122 @@ def _cached_atoms_for_growth(root, pair_settings, atom_count, new_atoms):
     return cached["atoms"] + new_atoms
 
 
+def _bond_group_objects(root, pair_name, order, element=None):
+    """Return the bond objects that all represent one pair/order(/element) group.
+
+    ``element`` selects the two-colour half-bond object of that element; when
+    ``None`` the single-colour object (which has no ``cgn_bond_element``) is
+    returned.  A healthy structure has exactly one match per group, but files
+    grown with older builds can contain several (``CGN_Bonds_C_O.001``…); the
+    caller merges them back into one.
+    """
+    matches = []
+    for obj in root.objects:
+        if obj.get("cgn_role") != "bonds" or obj.get("cgn_aromatic_torus"):
+            continue
+        if obj.get("cgn_pair") != pair_name:
+            continue
+        if int(obj.get("cgn_bond_order", 1)) != int(order):
+            continue
+        if element is None:
+            if "cgn_bond_element" in obj:
+                continue
+        elif str(obj.get("cgn_bond_element", "")) != str(element):
+            continue
+        matches.append(obj)
+    return matches
+
+
+def _bond_object_segments(obj):
+    """Read an existing bond mesh back as display-space ``(start, end)`` pairs."""
+    mesh = obj.data
+    coordinates = [vertex.co for vertex in mesh.vertices]
+    return [
+        (coordinates[edge.vertices[0]], coordinates[edge.vertices[1]])
+        for edge in mesh.edges
+    ]
+
+
+def _bond_mesh_edge_keys(obj):
+    """Return the display-space edge keys already present in a bond mesh."""
+    mesh = obj.data
+    coordinates = [vertex.co for vertex in mesh.vertices]
+    return {
+        _bond_edge_key(
+            coordinates[edge.vertices[0]],
+            coordinates[edge.vertices[1]],
+        )
+        for edge in mesh.edges
+    }
+
+
+def _append_bond_segments(obj, segments, dedupe=False):
+    """Append display-space segments to an existing bond edge mesh.
+
+    Blender 5.2 crashes when ``Mesh.edges.add()`` is called on a mesh that
+    already holds edges (``ED_mesh_edges_add``), so in-place edge growth is not
+    an option.  The new segments are added through a bmesh copy instead: that
+    keeps the per-edge work in optimized C and is roughly 8x cheaper than
+    rebuilding Python vertex/edge lists and calling ``from_pydata``.
+
+    ``segments`` is deduped against itself.  ``dedupe`` additionally compares
+    against the mesh's existing edges; it is only used when folding duplicate
+    bond objects left behind by older builds, because the grow path never
+    re-derives a bond it already drew.
+    """
+    if not segments:
+        return 0
+    mesh = obj.data
+    seen = _bond_mesh_edge_keys(obj) if dedupe else set()
+    new_segments = []
+    for first, second in segments:
+        key = _bond_edge_key(first, second)
+        if key in seen:
+            continue
+        seen.add(key)
+        new_segments.append((tuple(first), tuple(second)))
+    if not new_segments:
+        return 0
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    for first, second in new_segments:
+        start = bm.verts.new(first)
+        end = bm.verts.new(second)
+        bm.edges.new((start, end))
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    obj.update_tag(refresh={"OBJECT", "DATA"})
+    return len(new_segments)
+
+
+def _merge_into_existing_bond_object(root, pair_name, order, element, segments):
+    """Extend the existing bond object for a group instead of creating one.
+
+    Returns ``True`` when an existing object was found (and therefore nothing
+    new should be created).  Any duplicate objects left behind by older builds
+    are folded into the first match and deleted, so the outliner converges back
+    to one object per pair/order(/element) instead of growing on every grow.
+    """
+    matches = _bond_group_objects(root, pair_name, order, element)
+    if not matches:
+        return False
+    target = matches[0]
+    duplicates = matches[1:]
+    if not duplicates:
+        # Fast grow path: append the new bonds only.
+        _append_bond_segments(target, segments)
+        return True
+    # One-off repair of a legacy .blend: collect the duplicate geometry, fold
+    # it into the survivor and remove the extra objects.
+    merged = list(segments)
+    for duplicate in duplicates:
+        merged.extend(_bond_object_segments(duplicate))
+        _remove_object(duplicate)
+    _append_bond_segments(target, merged, dedupe=True)
+    return True
+
+
 def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     """Build (or, with ``append_only``, extend) the structure's bond objects.
 
@@ -4241,6 +4358,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         (midpoint, second)
                     )
                 for element, element_segments in sorted(segments_by_element.items()):
+                    if append_only and _merge_into_existing_bond_object(
+                        root,
+                        "|".join(key),
+                        order,
+                        element,
+                        [
+                            (_display_point(first), _display_point(second))
+                            for first, second in element_segments
+                        ],
+                    ):
+                        continue
                     vertices = []
                     edges = []
                     for first, second in element_segments:
@@ -4270,6 +4398,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         obj, node_group, order_bond_radius, material
                     )
             else:
+                if append_only and _merge_into_existing_bond_object(
+                    root,
+                    "|".join(key),
+                    order,
+                    None,
+                    [
+                        (_display_point(first), _display_point(second))
+                        for first, second, _first_element, _second_element in order_segments
+                    ],
+                ):
+                    continue
                 vertices = []
                 edges = []
                 for first, second, _first_element, _second_element in order_segments:
@@ -4330,33 +4469,74 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         # One shared bevel radius: use the largest so no ring is under-drawn.
         torus_base_bond_radius = max(base_radii)
         torus_bond_radius = torus_base_bond_radius * torus_width
-        obj_name = "CGN_Bonds_Aromatic"
-        mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
-        mesh.from_pydata(vertices, edges, [])
-        mesh.update()
-        obj = bpy.data.objects.new(obj_name, mesh)
-        obj["cgn_role"] = "bonds"
-        obj["cgn_aromatic_torus"] = True
-        # Store the raw ring definitions so the style updater can rebuild every
-        # ring polyline in the single mesh from a size/width/color change.
-        obj["cgn_aromatic_rings"] = json.dumps(
-            [
-                list(map(list, (center, axis_u, axis_v))) + [radius, element]
-                for center, axis_u, axis_v, radius, element in aromatic_rings
-            ]
-        )
-        obj["cgn_aromatic_base_bond_radius"] = torus_base_bond_radius
-        obj["cgn_base_radius"] = torus_bond_radius
-        root.objects.link(obj)
-        material = _make_material(
-            "CGN_Aromatic_Torus_Mat",
-            getattr(
-                scene,
-                "cgn_aromatic_torus_color",
-                _ELEMENT_COLORS["C"],
+        existing_torus = next(
+            (
+                obj
+                for obj in root.objects
+                if obj.get("cgn_role") == "bonds" and obj.get("cgn_aromatic_torus")
             ),
+            None,
         )
-        _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
+        if append_only and existing_torus is not None:
+            # Fold the rings detected during this grow into the single aromatic
+            # object: creating a new one per grow would add
+            # CGN_Bonds_Aromatic.001, .002, ... to the outliner forever.
+            try:
+                entries = list(
+                    json.loads(existing_torus.get("cgn_aromatic_rings", "[]"))
+                )
+            except (TypeError, ValueError):
+                entries = []
+            known = {
+                (tuple(_bond_point_key(entry[0])), round(float(entry[3]), 4))
+                for entry in entries
+            }
+            for center, axis_u, axis_v, radius, element in aromatic_rings:
+                key = (tuple(_bond_point_key(center)), round(float(radius), 4))
+                if key in known:
+                    continue
+                known.add(key)
+                entries.append(
+                    list(map(list, (center, axis_u, axis_v))) + [radius, element]
+                )
+            existing_torus["cgn_aromatic_rings"] = json.dumps(entries)
+            existing_torus["cgn_aromatic_base_bond_radius"] = max(
+                float(existing_torus.get("cgn_aromatic_base_bond_radius", 0.0)),
+                torus_base_bond_radius,
+            )
+            try:
+                _update_aromatic_torus_style(scene, bpy.context)
+            except Exception:
+                traceback.print_exc()
+        else:
+            obj_name = "CGN_Bonds_Aromatic"
+            mesh = bpy.data.meshes.new(f"{obj_name}_Edges")
+            mesh.from_pydata(vertices, edges, [])
+            mesh.update()
+            obj = bpy.data.objects.new(obj_name, mesh)
+            obj["cgn_role"] = "bonds"
+            obj["cgn_aromatic_torus"] = True
+            # Store the raw ring definitions so the style updater can rebuild
+            # every ring polyline in the single mesh from a size/width/color
+            # change.
+            obj["cgn_aromatic_rings"] = json.dumps(
+                [
+                    list(map(list, (center, axis_u, axis_v))) + [radius, element]
+                    for center, axis_u, axis_v, radius, element in aromatic_rings
+                ]
+            )
+            obj["cgn_aromatic_base_bond_radius"] = torus_base_bond_radius
+            obj["cgn_base_radius"] = torus_bond_radius
+            root.objects.link(obj)
+            material = _make_material(
+                "CGN_Aromatic_Torus_Mat",
+                getattr(
+                    scene,
+                    "cgn_aromatic_torus_color",
+                    _ELEMENT_COLORS["C"],
+                ),
+            )
+            _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
     root["cgn_bond_settings_signature"] = settings_signature
     return bond_count
 

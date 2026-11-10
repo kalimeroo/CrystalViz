@@ -242,7 +242,7 @@ _MODEL_ITEMS = (
     ("ELLIPSOID", "ORTEP", "ORTEP anisotropic displacement ellipsoids"),
     (
         "SPACE_FILLING",
-        "Space-filling (Use VdW radii)",
+        "Space-filling",
         "Spheres at full van der Waals radius, without bonds",
     ),
     ("WIRE_STICKS", "Wire-sticks", "Thin atoms and thin bonds"),
@@ -250,7 +250,7 @@ _MODEL_ITEMS = (
 _CIF_CELL_VALUE_RE = re.compile(
     r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$"
 )
-_DOCS_URL = "https://github.com/kalimeroo/BlenderCCTBX"
+_DOCS_URL = "https://github.com/kalimeroo/CrystalViz"
 
 
 def _gemmi_status():

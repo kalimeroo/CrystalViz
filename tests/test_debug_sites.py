@@ -19,10 +19,6 @@ bpy.ops.cgn.grow_further()
 atoms2 = CrystalViz._structure_atoms(root)
 
 # Replicate the grouping logic from _build_polyhedra_objects
-from CrystalViz import _p1_pool, _enabled_pair_windows
-pool, cell_matrix = _p1_pool(root)
-windows = _enabled_pair_windows(scene.cgn_connectivity_pairs)
-
 ag_indices = [i for i, a in enumerate(atoms2) if str(a.get("element", "X")).upper() == "AG"]
 print(f"Total Ag atoms: {len(ag_indices)}")
 
@@ -46,14 +42,12 @@ for p1, centers in sorted(site_groups.items()):
         print(f"    center {c}: translation={trans}")
 
 # Check which sites qualify (4+ ligands)
+search = CrystalViz._polyhedron_search(root, scene)
 for p1, centers in sorted(site_groups.items()):
     rep = site_rep[p1]
     rep_atom = atoms2[rep]
     element = str(rep_atom.get("element", "X")).upper()
-    from CrystalViz import _polyhedron_ligands_for_center
-    ligands = _polyhedron_ligands_for_center(
-        rep_atom["cart"], element, pool, cell_matrix, windows
-    )
+    ligands = search.ligands(rep_atom["cart"], element)
     print(f"  P1={p1}: {len(ligands)} ligands (need 4+) -> {'QUALIFIES' if len(ligands) >= 4 else 'SKIP'}")
 
 CrystalViz.unregister()

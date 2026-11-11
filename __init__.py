@@ -227,7 +227,6 @@ _POLY_FACE_ALPHA = 0.25
 _POLY_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _POLY_EDGE_THICKNESS = 0.04
 _POLY_MIN_LIGANDS = 4
-_POLY_ELEMENTS_CACHE = None
 _NODE_GROUP_ATOMS = "CGN_GN_AtomSpheres"
 _NODE_GROUP_BONDS = "CGN_GN_BondTubes"
 _NODE_GROUP_ELLIPSOIDS = "CGN_GN_AtomEllipsoids_ORTEP"
@@ -2023,8 +2022,9 @@ def _structure_cache_key(root):
 
 def _invalidate_structure_cache():
     """Drop the parsed-structure cache (e.g. on import/unregister)."""
-    global _STRUCTURE_CACHE
+    global _STRUCTURE_CACHE, _POLY_SEARCH_CACHE
     _STRUCTURE_CACHE = None
+    _POLY_SEARCH_CACHE = None
 
 
 def _bump_structure_revision(root):
@@ -2879,10 +2879,10 @@ def _p1_pool(root):
     try:
         sites = json.loads(root.get("cgn_sites", "[]"))
     except (TypeError, ValueError):
-        return []
+        return [], []
     cell_matrix = _stored_cell_matrix(root)
     if not cell_matrix:
-        return []
+        return [], []
     pool = []
     for site in sites:
         try:
@@ -2908,27 +2908,15 @@ def _p1_pool(root):
     return pool, cell_matrix
 
 
-def _polyhedron_ligands_for_center(
-    center_cart, center_element, pool, cell_matrix, windows
-):
-    """Ligand display positions for one center, including periodic images.
+def _gemmi_cell(cell_matrix):
+    """gemmi.UnitCell built from the column-major orthogonalized cell matrix.
 
-    The search radius and acceptance range come from the enabled connectivity
-    window for the (center, ligand) element pair, so polyhedra use exactly the
-    same connectivity as the rendered bonds.  Pairs without an enabled window
-    (e.g. an unchecked Ti-Ti pair) never produce ligands.
+    The matrix holds the cell vectors as COLUMNS (that is how ``_p1_pool`` and
+    the worker read it), so a is ``(m0, m1, m2)``.  Reading it row-wise instead
+    gives a sheared cell for every triclinic structure (Ag2Cr2O7:
+    a/b/c = 7.004/7.520/6.072 instead of 6.968/7.148/6.544), which produced
+    wrong coordination spheres there.
     """
-    if not pool or not cell_matrix or not windows:
-        return []
-
-    # Derive cell parameters (a, b, c, alpha, beta, gamma) from the
-    # column-major orthogonalized cell matrix, then use gemmi's
-    # UnitCell.find_nearest_pbc_images() for C++ cell-list PBC search.
-    # The matrix holds the cell vectors as COLUMNS (that is how
-    # _p1_pool and the worker already read it), so a is (m0, m1, m2).
-    # Reading it row-wise instead gives a sheared cell for every triclinic
-    # structure (Ag2Cr2O7: a/b/c = 7.004/7.520/6.072 instead of
-    # 6.968/7.148/6.544), which produced wrong coordination spheres there.
     worker = _gemmi_worker()
     a_vec = (cell_matrix[0], cell_matrix[1], cell_matrix[2])
     b_vec = (cell_matrix[3], cell_matrix[4], cell_matrix[5])
@@ -2945,52 +2933,226 @@ def _polyhedron_ligands_for_center(
         dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
         return math.degrees(math.acos(max(-1.0, min(1.0, dot / (lu * lv)))))
 
-    a_len = _vec_len(a_vec)
-    b_len = _vec_len(b_vec)
-    c_len = _vec_len(c_vec)
-    alpha = _vec_angle(b_vec, c_vec)
-    beta = _vec_angle(a_vec, c_vec)
-    gamma = _vec_angle(a_vec, b_vec)
+    return worker.gemmi.UnitCell(
+        _vec_len(a_vec),
+        _vec_len(b_vec),
+        _vec_len(c_vec),
+        _vec_angle(b_vec, c_vec),
+        _vec_angle(a_vec, c_vec),
+        _vec_angle(a_vec, b_vec),
+    )
 
-    cell = worker.gemmi.UnitCell(a_len, b_len, c_len, alpha, beta, gamma)
-    center_frac = cell.fractionalize(worker.gemmi.Position(*center_cart))
 
-    ligands = []
-    seen = set()
-    for atom in pool:
-        bounds = windows.get(_pair_key(center_element, atom["element"]))
-        if bounds is None:
-            continue
-        minimum, maximum = bounds
-        if maximum <= 0.0:
-            continue
-        pj = atom["frac"]
-        site_index = atom["index"]
-        pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
-        for im in cell.find_nearest_pbc_images(center_frac, maximum, pj_gemmi, 0):
-            f_img = cell.fract_image(im, pj_gemmi)
-            tx = int(round(f_img.x - pj[0]))
-            ty = int(round(f_img.y - pj[1]))
-            tz = int(round(f_img.z - pj[2]))
-            c_img = cell.orthogonalize(f_img)
-            delta = (
-                center_cart[0] - c_img.x,
-                center_cart[1] - c_img.y,
-                center_cart[2] - c_img.z,
+class _PolyhedronSearch:
+    """Coordination search for one structure revision, shared by every pass.
+
+    The eligibility scan (``_cached_polyhedron_elements``) and the build pass
+    (``_build_polyhedra_objects``) ask for the same ligand lists, so one gemmi
+    ``NeighborSearch`` is built per revision, ligand lists are memoised per
+    (element, centre position), and only the atoms gemmi reports near a centre
+    are asked for exact periodic images.  Before this, every centre rebuilt its
+    own ``gemmi.UnitCell`` and rescanned every P1 site in Python.
+    """
+
+    def __init__(self, pool, cell_matrix):
+        self.pool = pool
+        self.cell_matrix = cell_matrix
+        self.windows = {}
+        self.windows_key = ()
+        self.radius = 0.0
+        self._reach = {}
+        self.cell = None
+        self._index = None
+        self._ligands = {}
+        self._eligible = None
+        if pool and cell_matrix:
+            try:
+                self.cell = _gemmi_cell(cell_matrix)
+            except Exception:
+                self.cell = None
+
+    def update_windows(self, windows):
+        """Adopt the enabled windows; drops the memo only if they changed."""
+        key = tuple(sorted(windows.items()))
+        if key == self.windows_key:
+            return
+        self.windows_key = key
+        self.windows = dict(windows)
+        # Widest window involving each element: a ligand of a centre can never
+        # be further away, so the spatial index query can stop there.
+        reach = {}
+        for (element_a, element_b), (_minimum, maximum) in windows.items():
+            reach[element_a] = max(reach.get(element_a, 0.0), maximum)
+            reach[element_b] = max(reach.get(element_b, 0.0), maximum)
+        self._reach = reach
+        self.radius = max(reach.values(), default=0.0)
+        self._index = None
+        self._ligands.clear()
+        self._eligible = None
+
+    def _neighbor_index(self):
+        """gemmi ``NeighborSearch`` over the P1 pool, built once per revision.
+
+        Returns ``(search, structure, query)`` or ``None`` when no index can be
+        built (no cell, no window, or a gemmi error), in which case the caller
+        scans the whole pool.  The structure must outlive the search, and the
+        query site is reused for every centre.
+        """
+        if self._index is not None:
+            return self._index or None
+        if self.cell is None or self.radius <= 0.0:
+            self._index = ()
+            return None
+        worker = _gemmi_worker()
+        gemmi = worker.gemmi
+        structure = gemmi.SmallStructure()
+        structure.cell = self.cell
+        sites = []
+        for atom in self.pool:
+            site = gemmi.SmallStructure.Site()
+            frac = atom["frac"]
+            site.fract = gemmi.Fractional(frac[0], frac[1], frac[2])
+            site.label = str(atom["index"])
+            sites.append(site)
+        structure.sites = sites
+        try:
+            search = gemmi.NeighborSearch(structure, self.radius + 1e-4)
+            for position, site in enumerate(structure.sites):
+                search.add_site(site, position)
+        except Exception:
+            self._index = ()
+            return None
+        self._index = (search, structure, gemmi.SmallStructure.Site())
+        return self._index
+
+    def eligible_elements(self):
+        """Elements with at least one site carrying enough ligands."""
+        if self._eligible is None:
+            eligible = set()
+            elements = {site["element"] for site in self.pool}
+            for site in self.pool:
+                element = site["element"]
+                if element in eligible:
+                    continue
+                ligands = self.ligands(
+                    site["cart"], element, limit=_POLY_MIN_LIGANDS
+                )
+                if len(ligands) >= _POLY_MIN_LIGANDS:
+                    eligible.add(element)
+                    if len(eligible) == len(elements):
+                        break
+            self._eligible = sorted(eligible)
+        return self._eligible
+
+    def ligands(self, center_cart, center_element, limit=None):
+        """Ligand display positions for one centre, including periodic images.
+
+        ``limit`` stops the scan once that many ligands are found, for callers
+        that only ask "is this centre eligible?"; such a partial answer is not
+        memoised, so a later full request recomputes it.
+        """
+        if self.cell is None or not self.windows:
+            return ()
+        key = (
+            center_element,
+            round(float(center_cart[0]), 6),
+            round(float(center_cart[1]), 6),
+            round(float(center_cart[2]), 6),
+        )
+        cached = self._ligands.get(key)
+        if cached is not None:
+            return cached
+        ligands = self._search(center_cart, center_element, limit)
+        if limit is None or len(ligands) < limit:
+            self._ligands[key] = ligands
+        return ligands
+
+    def _search(self, center_cart, center_element, limit):
+        reach = self._reach.get(center_element)
+        if reach is None:
+            return ()
+        worker = _gemmi_worker()
+        cell = self.cell
+        center_frac = cell.fractionalize(worker.gemmi.Position(*center_cart))
+        index = self._neighbor_index()
+        if index is None:
+            candidates = range(len(self.pool))
+        else:
+            search, _structure, query = index
+            query.fract = center_frac
+            candidates = sorted(
+                {
+                    mark.atom_idx
+                    for mark in search.find_site_neighbors(query, 0.0, reach)
+                }
             )
-            d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
-            if d2 <= 1e-12:
+        ligands = []
+        seen = set()
+        for position in candidates:
+            atom = self.pool[position]
+            bounds = self.windows.get(
+                _pair_key(center_element, atom["element"])
+            )
+            if bounds is None:
                 continue
-            distance = math.sqrt(d2)
-            if distance < minimum or distance > maximum:
+            minimum, maximum = bounds
+            if maximum <= 0.0:
                 continue
-            pos = _display_point(c_img)
-            key = tuple(round(v, 6) for v in pos)
-            if key in seen:
-                continue
-            seen.add(key)
-            ligands.append((pos, site_index, (tx, ty, tz)))
-    return ligands
+            pj = atom["frac"]
+            site_index = atom["index"]
+            pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
+            for im in cell.find_nearest_pbc_images(
+                center_frac, maximum, pj_gemmi, 0
+            ):
+                f_img = cell.fract_image(im, pj_gemmi)
+                tx = int(round(f_img.x - pj[0]))
+                ty = int(round(f_img.y - pj[1]))
+                tz = int(round(f_img.z - pj[2]))
+                c_img = cell.orthogonalize(f_img)
+                delta = (
+                    center_cart[0] - c_img.x,
+                    center_cart[1] - c_img.y,
+                    center_cart[2] - c_img.z,
+                )
+                d2 = delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2
+                if d2 <= 1e-12:
+                    continue
+                distance = math.sqrt(d2)
+                if distance < minimum or distance > maximum:
+                    continue
+                pos = _display_point(c_img)
+                key = tuple(round(v, 6) for v in pos)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ligands.append((pos, site_index, (tx, ty, tz)))
+                if limit is not None and len(ligands) >= limit:
+                    break
+            if limit is not None and len(ligands) >= limit:
+                break
+        return tuple(ligands)
+
+
+_POLY_SEARCH_CACHE = None
+
+
+def _polyhedron_search(root, scene):
+    """The shared ligand search for this structure revision and scene."""
+    global _POLY_SEARCH_CACHE
+    if root is None or not root.get("cgn_sites"):
+        return None
+    key = _structure_cache_key(root)
+    cached = _POLY_SEARCH_CACHE
+    if cached is not None and cached[0] == key:
+        search = cached[1]
+    else:
+        pool, cell_matrix = _p1_pool(root)
+        if not pool:
+            return None
+        search = _PolyhedronSearch(pool, cell_matrix)
+        _POLY_SEARCH_CACHE = (key, search)
+    search.update_windows(_enabled_pair_windows(scene.cgn_connectivity_pairs))
+    return search
 
 
 def _polyhedron_style_values(style):
@@ -3089,38 +3251,15 @@ def _make_polyhedron_edge_material(element, style, site_label=""):
 
 
 def _cached_polyhedron_elements(root, scene):
-    """Eligible center elements based on P1 sites + periodic images."""
-    global _POLY_ELEMENTS_CACHE
-    if root is None or not root.get("cgn_sites"):
+    """Eligible center elements based on P1 sites + periodic images.
+
+    Backed by the structure's shared ligand search, so a panel redraw asks the
+    memoised ligand lists rather than rescanning every site.
+    """
+    search = _polyhedron_search(root, scene)
+    if search is None:
         return []
-    try:
-        pool, cell_matrix = _p1_pool(root)
-    except Exception:
-        return []
-    if not pool:
-        return []
-    windows = _enabled_pair_windows(scene.cgn_connectivity_pairs)
-    cache_key = (
-        root.get("cgn_instance_id", root.name),
-        len(pool),
-        tuple(sorted(windows.items())),
-    )
-    cached = _POLY_ELEMENTS_CACHE
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    if not windows:
-        _POLY_ELEMENTS_CACHE = (cache_key, [])
-        return []
-    eligible = set()
-    for site in pool:
-        ligands = _polyhedron_ligands_for_center(
-            site["cart"], site["element"], pool, cell_matrix, windows
-        )
-        if len(ligands) >= _POLY_MIN_LIGANDS:
-            eligible.add(site["element"])
-    elements = sorted(eligible)
-    _POLY_ELEMENTS_CACHE = (cache_key, elements)
-    return elements
+    return search.eligible_elements()
 
 
 def _clear_polyhedra(root, element=None):
@@ -3138,13 +3277,13 @@ def _clear_polyhedra(root, element=None):
             bpy.data.collections.remove(child)
 
 
-def _polyhedron_geometry(
-    atoms, centers, pool, cell_matrix, windows, removed_quads=None
-):
+def _polyhedron_geometry(atoms, centers, search, removed_quads=None):
     """Face/edge geometry for *centers*.
 
-    Returns ``(vertices, faces, edges, built_centers)`` or ``None`` when no
-    centre still has enough ligands to enclose a polyhedron.
+    ``search`` is the structure's shared ``_PolyhedronSearch``; the ligand
+    lists it already memoised are reused.  Returns
+    ``(vertices, faces, edges, built_centers)`` or ``None`` when no centre
+    still has enough ligands to enclose a polyhedron.
 
     ``removed_quads`` lists the ``(site, tx, ty, tz)`` images the user just
     erased.  If any of them is a ligand of *center*, the whole polyhedron is
@@ -3157,12 +3296,9 @@ def _polyhedron_geometry(
     for center in centers:
         if not 0 <= center < len(atoms):
             continue
-        ligands = _polyhedron_ligands_for_center(
+        ligands = search.ligands(
             atoms[center]["cart"],
             str(atoms[center].get("element", "X")).upper(),
-            pool,
-            cell_matrix,
-            windows,
         )
         if removed_quads and any(
             (site_index, tx, ty, tz) in removed_quads
@@ -6485,11 +6621,8 @@ def _build_polyhedra_objects(
     """
     if scene is None:
         scene = bpy.context.scene
-    pool, cell_matrix = _p1_pool(root)
-    if not pool or not cell_matrix:
-        return 0, len(center_indices)
-    windows = _enabled_pair_windows(scene.cgn_connectivity_pairs)
-    if not windows:
+    search = _polyhedron_search(root, scene)
+    if search is None or not search.pool or not search.windows:
         return 0, len(center_indices)
 
     if clear_existing:
@@ -6577,9 +6710,7 @@ def _build_polyhedra_objects(
 
         # Canonical geometry at the representative (home-cell) center.
         center_cart = rep_atom["cart"]
-        ligands = _polyhedron_ligands_for_center(
-            center_cart, element, pool, cell_matrix, windows
-        )
+        ligands = search.ligands(center_cart, element)
         if len(ligands) < _POLY_MIN_LIGANDS:
             skipped_total += len(centers_to_add)
             continue

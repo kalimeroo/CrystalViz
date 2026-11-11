@@ -71,7 +71,14 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 39/39 pass.
+`pwsh tests/run_all.ps1` → 40/40 pass.
+
+- `test_polyhedron_search_parity.py` pins the shared coordination search
+  (`_PolyhedronSearch`): on every example CIF it must return exactly the ligand
+  lists of the old per-centre brute force (so the gemmi `NeighborSearch` index
+  can never drop a ligand), plus a synthetic small cell where several periodic
+  images of one atom fall inside the window, the pool-scan fallback, and the
+  memo/window-change contract the panel draw relies on.
 
 - `test_optionb_multi.py` used to run on `aromatic.cif`, whose imported ASU is
   already the complete molecule, so no connectivity pair could grow atoms and

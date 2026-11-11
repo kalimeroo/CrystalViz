@@ -215,6 +215,15 @@ class _UnitCell:
 
 
 def _cart_distance(unit_cell, frac_a, frac_b):
+    """Cartesian distance (Å) after component-wise rounding of the deltas.
+
+    This is a *deduplication* metric for wrapped symmetry-equivalent images,
+    not a general minimum-image distance: in a skewed (triclinic) cell the
+    component-wise rounded image is not always the closest one.  Never use it
+    for bond lengths -- resolve the image with gemmi's
+    ``UnitCell.find_nearest_pbc_images`` and measure it with
+    ``_image_distance`` instead.
+    """
     delta = [float(frac_a[axis]) - float(frac_b[axis]) for axis in range(3)]
     delta = [value - round(value) for value in delta]
     cart = unit_cell.orthogonalize(delta)
@@ -235,16 +244,13 @@ def _cart_from_frac(frac, cell_matrix):
     ]
 
 
-def _periodic_distance(frac_a, frac_b, cell_matrix):
-    """Minimum periodic Cartesian distance (Å) between two fractional points.
+def _image_distance(frac_a, frac_b, cell_matrix):
+    """Cartesian distance (Å) between two fractional points, no periodicity.
 
-    Pure Python / gemmi-free, so both the worker (growth) and the Blender-side
-    bond builder can share one periodic-distance definition without duplicating
-    the nearest-image logic.  Uses the nearest integer image of ``frac_a -
-    frac_b``, which is the crystallographic minimum distance under PBC.
+    Use this once a specific periodic image has been chosen (for example an
+    image returned by ``UnitCell.find_nearest_pbc_images``).
     """
     delta = [float(frac_a[axis]) - float(frac_b[axis]) for axis in range(3)]
-    delta = [value - round(value) for value in delta]
     cart = _cart_from_frac(delta, cell_matrix)
     return math.sqrt(sum(value * value for value in cart))
 
@@ -888,7 +894,7 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
                 tx = int(round(f_img.x - frac_j.x))
                 ty = int(round(f_img.y - frac_j.y))
                 tz = int(round(f_img.z - frac_j.z))
-                dist = _periodic_distance(
+                dist = _image_distance(
                     base_atom["frac"], [f_img.x, f_img.y, f_img.z], cell_matrix
                 )
                 if dist <= 1e-12:

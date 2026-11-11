@@ -11,7 +11,7 @@ import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF"
+CIF = _env.CIF_DIR
 scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Brookite.cif"))

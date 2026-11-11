@@ -1,10 +1,15 @@
-"""Open the saved GN-polyhedra file, verify evaluation and OBJ export."""
+"""Open the saved GN-polyhedra file, verify evaluation and OBJ export.
+
+Reads the file written by `test_gn_persist_build.py` (which runs first).
+"""
 import os
 import sys
+import tempfile
+
 import bpy
 
-BLEND = r"C:\Users\Erwann Jeanneau\AppData\Local\Temp\opencode\gn_polyhedra.blend"
-OBJ = r"C:\Users\Erwann Jeanneau\AppData\Local\Temp\opencode\gn_polyhedra_export.obj"
+BLEND = os.path.join(tempfile.gettempdir(), "crystalviz_gn_polyhedra.blend")
+OBJ = os.path.join(tempfile.gettempdir(), "crystalviz_gn_polyhedra_export.obj")
 FAILURES = []
 
 

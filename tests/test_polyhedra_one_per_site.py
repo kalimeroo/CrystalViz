@@ -15,7 +15,7 @@ import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF\Ag2Cr2O7.cif"
+CIF = _env.cif("Ag2Cr2O7.cif")
 FAILURES = []
 
 

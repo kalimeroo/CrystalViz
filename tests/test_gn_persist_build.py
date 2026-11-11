@@ -1,14 +1,22 @@
-"""Build a GN-polyhedra scene and save it for the persistence check."""
+"""Build a GN-polyhedra scene and save it for the persistence tests.
+
+Run order matters: `test_gn_persist_build.py` -> `test_gn_persist_check.py` ->
+`test_gn_persist_export.py` (alphabetical, as `run_all.ps1` does it).  All three
+share the file below through the OS temp directory.
+"""
+import os
 import sys
+import tempfile
+
 import bpy
 
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF\Ag2Cr2O7.cif"
-BLEND = r"C:\Users\Erwann Jeanneau\AppData\Local\Temp\opencode\gn_polyhedra.blend"
+CIF = _env.cif("Ag2Cr2O7.cif")
+BLEND = os.path.join(tempfile.gettempdir(), "crystalviz_gn_polyhedra.blend")
 
 scene = bpy.context.scene
 bpy.ops.cgn.import_cif(filepath=CIF)

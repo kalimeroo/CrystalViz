@@ -58,3 +58,8 @@ GEMMI_DIR = _gemmi_dir()
 for _path in (GEMMI_DIR, ADDON_PARENT):
     if _path and _path not in sys.path:
         sys.path.insert(0, _path)
+
+
+def cif(name):
+    """Absolute path to an example CIF in the repo ``CIF/`` folder."""
+    return os.path.join(CIF_DIR, name)

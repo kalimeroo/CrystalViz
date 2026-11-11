@@ -1,8 +1,9 @@
 """Rigorous Option-B (issue #14) validation on a MULTI-PAIR structure.
 
-Uses aromatic.cif, which renders several distinct element pairs.  The scenario
-mimics the user's report:
-  1. Build the full bond set (many pairs).
+Uses Ag2Cr2O7.cif: a periodic oxide that (a) renders two distinct bond pairs
+(Ag|O, Cr|O) and (b) really grows from a seed selection, so the preservation
+assertions below are not vacuous.  The scenario mimics the user's report:
+  1. Build the full bond set (both pairs).
   2. Disable ALL connectivity pairs, then re-enable only ONE of them.
   3. Grow from a seed selection.
   4. Assert the previously-built OTHER bond pairs are NOT lost, the total bond
@@ -15,7 +16,7 @@ import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF"
+CIF = _env.CIF_DIR
 scene = bpy.context.scene
 scene.cgn_chemdraw = False
 
@@ -42,7 +43,7 @@ def atom_count(root):
 
 # --- import multi-pair structure; build full bond set ---
 scene.cgn_connectivity_pairs.clear()
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Ag2Cr2O7.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.rebuild_connectivity("INVOKE_DEFAULT")
 bpy.context.view_layer.update()
@@ -56,11 +57,8 @@ check("setup: MULTIPLE distinct bond pairs present", len(full_pairs) > 1, str(fu
 # --- find a re-enabled pair that actually grows new atoms from seeds ---
 grew_any = False
 for pair_def in [
-    {"C", "C"},
-    {"N", "N"},
-    {"C", "N"},
-    {"C", "O"},
-    {"H", "N"},
+    {"AG", "O"},
+    {"CR", "O"},
 ]:
     # restore full bond set first so each attempt starts from the same base
     for p in scene.cgn_connectivity_pairs:
@@ -71,7 +69,7 @@ for pair_def in [
             p.enabled = True
             re_enabled = p
             break
-    root["cgn_selected_indices"] = json.dumps(list(range(20)))
+    root["cgn_selected_indices"] = json.dumps(list(range(atom_count(root))))
     res = bpy.ops.cgn.grow_further("INVOKE_DEFAULT", all_atoms=False)
     bpy.context.view_layer.update()
     a = atom_count(root)

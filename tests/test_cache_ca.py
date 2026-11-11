@@ -10,7 +10,7 @@ import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF\Ca_autored.cif"
+CIF = _env.cif("Ca_autored.cif")
 scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 

@@ -19,7 +19,7 @@ import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 CrystalViz.register()
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF\aromatic.cif"
+CIF = _env.cif("aromatic.cif")
 
 FAILURES = []
 

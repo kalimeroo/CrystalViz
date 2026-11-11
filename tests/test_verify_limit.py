@@ -12,10 +12,7 @@ sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(_
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
 
-CIF = (
-    r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz"
-    r"\CIF\diamond.cif"
-)
+CIF = _env.cif("diamond.cif")
 CrystalViz.register()
 scene = bpy.context.scene
 bpy.ops.cgn.import_cif(filepath=CIF)

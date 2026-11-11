@@ -71,14 +71,20 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 34/35 pass.
+`pwsh tests/run_all.ps1` → 35/35 pass.
 
-- `test_optionb_multi.py` — **known failing, pre-existing.** Its setup step
-  ("at least one re-enabled pair grows new atoms from the aromatic.cif seeds")
-  no longer produces growth because the imported ASU already contains the whole
-  molecule (35 atoms in, 35 out for every pair). Everything after that setup
-  check is skipped by design. Not caused by the fill-limit or bond-search
-  changes; verify the growth window / seed assumption before trusting it.
+- `test_optionb_multi.py` used to run on `aromatic.cif`, whose imported ASU is
+  already the complete molecule, so no connectivity pair could grow atoms and
+  the preservation assertions were vacuous. It now runs on `Ag2Cr2O7.cif`
+  (11 → 20 atoms, pairs `AG|O` / `CR|O`), so both Option-B checks are real.
+
+## Ordered suites
+
+`test_gn_persist_build.py` → `test_gn_persist_check.py` → `test_gn_persist_export.py`
+form one chain: the build saves a `.blend` in the OS temp directory, and the
+other two reopen it. Alphabetical order (what `run_all.ps1` uses) gives the
+right sequence, so a `-Only` filter must select all three, e.g.
+`-Only "*persist*"`.
 
 ## Archived groups
 

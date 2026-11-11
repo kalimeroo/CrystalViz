@@ -15,7 +15,7 @@ import _env  # noqa: F401  (puts a gemmi build on sys.path)
 sys.path.insert(0, _env.REPO_DIR)  # so `import gemmi_worker` resolves
 import gemmi_worker as gw
 
-CIF = r"C:\Users\Erwann Jeanneau\Documents\Python_Scripts\Blender_addon\CrystalViz\CIF"
+CIF = _env.CIF_DIR
 CIFS = ["Brookite.cif", "aromatic.cif", "test.cif"]
 
 FAILURES = []

@@ -754,11 +754,53 @@ class CGN_PolyhedronStyle(PropertyGroup):
 
 
 def _active_root(scene):
+    """Return the active structure collection if this scene actually shows it.
+
+    ``scene.cgn_active_structure`` holds only a name, so it still resolves after
+    the user unlinks the collection from the scene (or moves it to another
+    scene) while the datablock survives in ``bpy.data.collections``.  A plain
+    lookup would let operators and panels act on invisible data, so check that
+    the collection really is under this scene's collection tree.
+    """
     name = scene.cgn_active_structure
     root = bpy.data.collections.get(name) if name else None
-    if root is not None and root.get("cgn_role") == "structure":
-        return root
-    return None
+    if root is None or root.get("cgn_role") != "structure":
+        return None
+    if not _collection_in_scene(scene, root):
+        return None
+    return root
+
+
+def _collection_in_scene(scene, collection):
+    """True when *collection* is linked somewhere under *scene* (any depth)."""
+    target = collection.name
+    return any(
+        child.name == target for child in scene.collection.children_recursive
+    )
+
+
+def _unlinked_active_structure(scene):
+    """The active structure datablock, but only when *scene* does not show it."""
+    name = scene.cgn_active_structure
+    root = bpy.data.collections.get(name) if name else None
+    if root is None or root.get("cgn_role") != "structure":
+        return None
+    return None if _collection_in_scene(scene, root) else root
+
+
+def _no_structure_message(scene, action):
+    """Error text for an operator that needs an active structure in *scene*.
+
+    Saying "import a CIF" is wrong when the structure exists but was unlinked
+    from the scene, so name that case explicitly.
+    """
+    unlinked = _unlinked_active_structure(scene)
+    if unlinked is not None:
+        return (
+            f"The active structure '{unlinked.name}' is not linked to this "
+            f"scene; link it in the Outliner before {action}."
+        )
+    return f"Import a CIF before {action}."
 
 
 def _socket_identifier(node_group, name, in_out="INPUT"):
@@ -5329,7 +5371,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
     """Replace displayed atoms with the ASU, completed cell, or packed cells."""
     root = _active_root(context.scene)
     if root is None:
-        operator.report({"ERROR"}, "Import a CIF before filling the structure.")
+        operator.report({"ERROR"}, _no_structure_message(context.scene, "filling the structure"))
         return {"CANCELLED"}
     try:
         sites, _instances, cell_matrix, _initial_count = _structure_tables(root)
@@ -5555,7 +5597,7 @@ class CGN_OT_rebuild_connectivity(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before resetting connectivity.")
+            self.report({"ERROR"}, _no_structure_message(context.scene, "resetting connectivity"))
             return {"CANCELLED"}
         try:
             atoms = _structure_atoms(root)
@@ -5709,7 +5751,7 @@ class CGN_OT_pack_cell_boxes(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before packing unit cells.")
+            self.report({"ERROR"}, _no_structure_message(context.scene, "packing unit cells"))
             return {"CANCELLED"}
         cell_matrix = _stored_cell_matrix(root)
         if cell_matrix is None:
@@ -5838,7 +5880,7 @@ class _CGN_OT_select_atoms(Operator):
 
     max_pixel_distance = 20.0
     box_drag_threshold = 6.0
-    select_error = "Import a CIF before selecting atoms."
+    select_action = "selecting atoms"
     status_text = ""
     keep_stored_selection = True
     # The grow operator keeps its seed sphere visible until the deferred grow
@@ -5853,7 +5895,7 @@ class _CGN_OT_select_atoms(Operator):
             return {"CANCELLED"}
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, self.select_error)
+            self.report({"ERROR"}, _no_structure_message(context.scene, self.select_action))
             return {"CANCELLED"}
         self._region = next(
             (region for region in context.area.regions if region.type == "WINDOW"),
@@ -6091,7 +6133,7 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
     # (cgn.grow_further, deferred to a timer) land as two separate undo steps.
     bl_options = {"REGISTER", "UNDO"}
 
-    select_error = "Import a CIF before selecting growth atoms."
+    select_action = "selecting growth atoms"
     status_text = (
         "Click atoms to add/remove, drag a box to select; Shift adds. "
         "Enter/right-click grows around them, Esc cancels."
@@ -6119,7 +6161,7 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    select_error = "Import a CIF before deleting atoms."
+    select_action = "deleting atoms"
     status_text = (
         "Click atoms to add/remove, drag a box to select; Shift adds. "
         "Enter/right-click deletes them, Esc cancels."
@@ -6236,7 +6278,7 @@ class CGN_OT_grow_further(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before growing the structure.")
+            self.report({"ERROR"}, _no_structure_message(context.scene, "growing the structure"))
             return {"CANCELLED"}
         enabled_pairs = [
             item
@@ -6699,7 +6741,7 @@ class CGN_OT_create_polyhedra(Operator):
         scene = context.scene
         root = _active_root(scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before creating polyhedra.")
+            self.report({"ERROR"}, _no_structure_message(context.scene, "creating polyhedra"))
             return {"CANCELLED"}
         try:
             atoms = _structure_atoms(root)
@@ -6754,7 +6796,7 @@ class CGN_OT_create_polyhedra_selected(_CGN_OT_select_atoms):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    select_error = "Import a CIF before selecting polyhedron centers."
+    select_action = "selecting polyhedron centers"
     status_text = (
         "Click atoms to add/remove, drag a box to select; Shift adds. "
         "Enter/right-click creates the polyhedra, Esc cancels."
@@ -6837,7 +6879,7 @@ class CGN_OT_clear_polyhedra(Operator):
     def execute(self, context):
         root = _active_root(context.scene)
         if root is None:
-            self.report({"ERROR"}, "Import a CIF before clearing polyhedra.")
+            self.report({"ERROR"}, _no_structure_message(context.scene, "clearing polyhedra"))
             return {"CANCELLED"}
         target = str(self.element).upper() if self.element else None
         _clear_polyhedra(root, target)
@@ -6876,7 +6918,14 @@ class CGN_PT_panel(Panel):
         layout.operator("cgn.import_cif", icon="IMPORT")
         root = _active_root(context.scene)
         if root is None:
-            layout.label(text="Import a CIF to begin.")
+            unlinked = _unlinked_active_structure(context.scene)
+            layout.label(
+                text=(
+                    f"'{unlinked.name}' is not linked to this scene."
+                    if unlinked is not None
+                    else "Import a CIF to begin."
+                )
+            )
             return
 
         cif_path = root.get("cgn_cif_path", "")

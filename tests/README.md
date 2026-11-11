@@ -71,7 +71,19 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 41/41 pass.
+`pwsh tests/run_all.ps1` → 42/42 pass.
+
+- `test_selection_highlight.py` pins the growth-selection highlight fix: the
+  selection modal keeps the live set in memory and `_apply_selection` now calls
+  `_refresh_growth_selection` (visual-only, no re-serialization) instead of
+  `_update_growth_selection` on every click/box release. The latter reuses the
+  single `growth_selection` object in place (`clear_geometry` + `from_pydata`)
+  rather than tearing down and recreating the object/material/modifier graph
+  each update, and persists exactly once, at the modal boundary in `_finish`.
+  The test verifies one reused object across updates, correct vertex counts,
+  `_refresh_growth_selection` never writes `cgn_selected_indices`, empty
+  selection removes the object and persists `[]`, and recreation after a clear
+  is still a single object.
 
 - `test_bond_per_pair_reach.py` pins the per-pair early rejection in the bond
   builder (`_bond_objects`): a centre now rejects far candidates against its

@@ -2494,29 +2494,66 @@ def _rebuild_atom_objects(root, atoms):
 
 
 def _update_growth_selection(root, atoms, indices):
+    """Persist the selected-atom indices and refresh the highlight object.
+
+    Used at modal boundaries and after structural operations, where persistence
+    is the point.  The highlight mesh itself is reused in place via
+    ``_set_growth_selection_mesh`` so repeated updates do not rebuild the
+    object/material/modifier graph.
+    """
     root["cgn_selected_indices"] = json.dumps(sorted(set(indices)))
-    for obj in list(root.objects):
-        if obj.get("cgn_role") == "growth_selection":
-            _remove_object(obj)
+    _set_growth_selection_mesh(root, atoms, indices)
+
+
+def _refresh_growth_selection(root, atoms, indices):
+    """Refresh only the on-screen highlight, without touching persisted state.
+
+    The selection modal already keeps the live set in memory during the drag,
+    so re-serializing ``cgn_selected_indices`` on every click/box release is
+    wasted work; the value is only read back at a modal boundary.
+    """
+    _set_growth_selection_mesh(root, atoms, indices)
+
+
+def _set_growth_selection_mesh(root, atoms, indices):
+    """Update the highlight point object for the selected atoms.
+
+    Reuses the existing ``growth_selection`` object (and its mesh, material and
+    Geometry-Nodes modifier) when present, only rewriting the mesh vertices;
+    it is created once and removed when nothing is selected.
+    """
     selected_atoms = [
         atoms[index] for index in sorted(set(indices)) if 0 <= index < len(atoms)
     ]
-    if not selected_atoms:
-        return
-
-    mesh = bpy.data.meshes.new("CGN_GrowthSelection_Points")
-    mesh.from_pydata([_display_point(atom["cart"]) for atom in selected_atoms], [], [])
-    mesh.update()
-    obj = bpy.data.objects.new("CGN_GrowthSelection", mesh)
-    obj["cgn_role"] = "growth_selection"
-    root.objects.link(obj)
-    material = _make_material("CGN_GrowthSelection_Material", (1.0, 0.48, 0.02, 1.0))
-    _add_geometry_nodes_modifier(
-        obj,
-        _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False),
-        0.9 * _DISPLAY_SCALE,
-        material,
+    obj = next(
+        (o for o in root.objects if o.get("cgn_role") == "growth_selection"),
+        None,
     )
+    if not selected_atoms:
+        if obj is not None:
+            _remove_object(obj)
+        return
+    if obj is None:
+        mesh = bpy.data.meshes.new("CGN_GrowthSelection_Points")
+        obj = bpy.data.objects.new("CGN_GrowthSelection", mesh)
+        obj["cgn_role"] = "growth_selection"
+        root.objects.link(obj)
+        material = _make_material("CGN_GrowthSelection_Material", (1.0, 0.48, 0.02, 1.0))
+        _add_geometry_nodes_modifier(
+            obj,
+            _make_node_group(_NODE_GROUP_ATOMS, is_bond_group=False),
+            0.9 * _DISPLAY_SCALE,
+            material,
+        )
+    # ``from_pydata`` on a mesh that already has vertices cannot resize it
+    # (the co buffer length is fixed), so drop the old geometry first and
+    # rewrite in place.  The object, material and Geometry-Nodes modifier are
+    # still reused --- only the mesh data is rewritten, not the object graph.
+    obj.data.clear_geometry()
+    obj.data.from_pydata(
+        [_display_point(atom["cart"]) for atom in selected_atoms], [], []
+    )
+    obj.data.update()
 
 
 def _unit_cell_values(settings=None):
@@ -6138,14 +6175,17 @@ class _CGN_OT_select_atoms(Operator):
 
     def _finish(self, context, cancel=False):
         if cancel:
-            self._selected = set(self._initial_selection)
-            root = bpy.data.collections.get(self._root_name)
-            if root is not None and root.get("cgn_instance_id") == self._root_id:
-                _update_growth_selection(root, self._atoms, self._selected)
+            final = set(self._initial_selection)
         elif not self.keep_selection_sphere:
-            root = bpy.data.collections.get(self._root_name)
-            if root is not None and root.get("cgn_instance_id") == self._root_id:
-                _update_growth_selection(root, self._atoms, [])
+            final = set()
+        else:
+            final = set(self._selected)
+        root = bpy.data.collections.get(self._root_name)
+        if root is not None and root.get("cgn_instance_id") == self._root_id:
+            # Persist the final selection exactly once, at the modal boundary.
+            # The live set is kept in memory during the modal, so ``_apply``
+            # only refreshes the highlight and never re-serializes here.
+            _update_growth_selection(root, self._atoms, final)
         if getattr(self, "_draw_handle", None) is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handle, "WINDOW")
             self._draw_handle = None
@@ -6253,7 +6293,7 @@ class _CGN_OT_select_atoms(Operator):
             )
             _select_click(self._selected, nearest, self._drag_additive)
 
-        _update_growth_selection(root, self._atoms, self._selected)
+        _refresh_growth_selection(root, self._atoms, self._selected)
         context.area.tag_redraw()
 
     def modal(self, context, event):
@@ -6323,8 +6363,12 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
         "Select atoms in the viewport, then confirm to grow around them; "
         "click a selected atom to remove it, Shift adds to the selection"
     )
-    # Undo step at modal end, so the seed selection and the subsequent growth
-    # (cgn.grow_further, deferred to a timer) land as two separate undo steps.
+    # NOTE: this REGISTER/UNDO modal, together with the grow operator it defers
+    # to a bpy.app.timers callback, MERGES into a single undo step in Blender
+    # 5.2 (verified empirically). One Ctrl+Z reverts the whole select-and-grow
+    # back to the pre-modal baseline -- it does NOT restore an intermediate
+    # "seeds still selected, growth reverted" state. The old comment claiming
+    # two separate undo steps was wrong; don't rely on that.
     bl_options = {"REGISTER", "UNDO"}
 
     select_action = "selecting growth atoms"
@@ -6341,7 +6385,9 @@ class CGN_OT_select_growth_atoms(_CGN_OT_select_atoms):
         self._finish(context)
         # The grow operator is modal on the cctbx build, and starting a modal
         # operator from inside this modal does not receive events. Defer it
-        # until the selection operator has returned.
+        # until the selection operator has returned. (On this gemmi build the
+        # grow is synchronous, so the deferral only buys a 10 ms window with a
+        # stale seed sphere on screen -- harmless, kept for cctbx parity.)
         bpy.app.timers.register(_grow_from_selection, first_interval=0.01)
         return {"FINISHED"}
 

@@ -4631,15 +4631,21 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     # its canonical pair key.  Rebuilding that key (two ``str.upper`` plus
     # ``sorted``) for every spatial candidate used to dominate the search on
     # packed supercells, although only a few percent of candidates are bonds.
+    # ``reach[element]`` is that element's widest enabled window, which bounds
+    # how far away any of its bonds can lie.  It is only an early-rejection
+    # distance: the bucket geometry stays at the global ``cell_width`` with a
+    # one-cell halo (identical coverage to before), but a centre rejects far
+    # candidates against its *own* reach instead of the largest global window,
+    # so one permissive pair never inflates every centre's distance tests --
+    # only centres of that element pay for it.
     pair_entries = {}
+    reach = {}
     for (element_a, element_b), (low, high) in enabled.items():
         entry = (low, high, (element_a, element_b))
         pair_entries.setdefault(element_a, {})[element_b] = entry
         pair_entries.setdefault(element_b, {})[element_a] = entry
-    max_distance_squared = max_distance * max_distance
-    # Squared early rejection must never discard a pair the exact test would
-    # accept, so it is slackened by one part in a billion on the sum.
-    reject_limit = max_distance_squared + 1e-9
+        reach[element_a] = max(reach.get(element_a, 0.0), high)
+        reach[element_b] = max(reach.get(element_b, 0.0), high)
 
     if cache_matches:
         buckets = cached["buckets"]
@@ -4675,6 +4681,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         element = str(atom.get("element", "X")).upper()
         elements[index] = element
         element_entries = pair_entries.get(element, {})
+        element_reach = reach.get(element, 0.0)
+        if element_reach <= 0.0:
+            buckets.setdefault(
+                (
+                    math.floor(atom_cart[0] / cell_width),
+                    math.floor(atom_cart[1] / cell_width),
+                    math.floor(atom_cart[2] / cell_width),
+                ),
+                [],
+            ).append(index)
+            continue
         vdw_by_element.setdefault(
             element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
         )
@@ -4684,13 +4701,21 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             math.floor(y / cell_width),
             math.floor(z / cell_width),
         )
+        # ``reach_squared`` is this element's own widest window squared -- the
+        # safe upper bound for every bond it can form (each enabled window
+        # involving the element has ``high <= reach``).  Far candidates are
+        # rejected against it rather than the global maximum distance, so a
+        # single permissive pair no longer forces every other centre to test
+        # out to that answer.
+        reach_squared = element_reach * element_reach
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 for dz in (-1, 0, 1):
                     neighbor_cell = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
                     for other_index in buckets.get(neighbor_cell, ()):
                         # Cheapest rejections first: the distance needs no string
-                        # work, and most candidates fall outside the widest window.
+                        # work, and most candidates fall outside this element's
+                        # own reach (not the largest global window).
                         other = atoms[other_index]
                         other_cart = other["cart"]
                         delta_x = x - other_cart[0]
@@ -4699,7 +4724,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         distance_squared = (
                             delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
                         )
-                        if distance_squared > reject_limit:
+                        if distance_squared > reach_squared:
                             continue
                         if distance_squared <= 1e-12:
                             continue

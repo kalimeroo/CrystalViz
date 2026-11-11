@@ -71,7 +71,17 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 40/40 pass.
+`pwsh tests/run_all.ps1` → 41/41 pass.
+
+- `test_bond_per_pair_reach.py` pins the per-pair early rejection in the bond
+  builder (`_bond_objects`): a centre now rejects far candidates against its
+  own element's widest enabled window (`reach[element]`) instead of the largest
+  window in the whole table, so one permissive pair no longer inflates every
+  centre's distance tests.  On several arrangements (disparate reaches, a
+  permissive pair for one element, an element with no enabled pair, asymmetric
+  reach, the grow/append path, and a non-zero `min_distance`) the built bond set
+  must be byte-identical to an exhaustive O(N^2) reference that tests each pair
+  against its own window.
 
 - `test_polyhedron_search_parity.py` pins the shared coordination search
   (`_PolyhedronSearch`): on every example CIF it must return exactly the ligand

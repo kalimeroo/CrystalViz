@@ -374,12 +374,29 @@ def _cancel_all_debounce():
         bpy.app.timers.unregister(_debounce_timer)
 
 
+def _principled_shader(material):
+    """Return *material*'s Principled BSDF node, enabling nodes if necessary.
+
+    Materials are looked up by name, so a same-named datablock can already
+    exist with ``use_nodes`` disabled (the user toggled it, or it came from an
+    appended/imported file).  ``material.node_tree`` is None in that state, so
+    every caller must go through here instead of dereferencing it.
+    """
+    if material is None:
+        return None
+    if material.node_tree is None:
+        material.use_nodes = True
+    if material.node_tree is None:  # pragma: no cover - Blender always builds one
+        return None
+    return material.node_tree.nodes.get("Principled BSDF")
+
+
 def _update_atom_style(self, context):
     material = bpy.data.materials.get(f"CGN_Mat_{self.element}")
     if material is None:
         return
     material.diffuse_color = self.color
-    shader = material.node_tree.nodes.get("Principled BSDF")
+    shader = _principled_shader(material)
     if shader is not None:
         shader.inputs["Base Color"].default_value = self.color
         shader.inputs["Roughness"].default_value = self.roughness
@@ -446,7 +463,7 @@ def _update_ortep_materials(scene, context):
         if material is None:
             continue
         material.diffuse_color = color
-        shader = material.node_tree.nodes.get("Principled BSDF")
+        shader = _principled_shader(material)
         if shader is not None:
             shader.inputs["Base Color"].default_value = color
             shader.inputs["Roughness"].default_value = roughness
@@ -1778,9 +1795,11 @@ def _make_material(name, color, roughness=0.25):
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name)
-        material.use_nodes = True
+    # An existing material of this name may have nodes disabled, which would
+    # make material.node_tree None.
+    material.use_nodes = True
     material.diffuse_color = color
-    shader = material.node_tree.nodes.get("Principled BSDF")
+    shader = _principled_shader(material)
     if shader is not None:
         shader.inputs["Base Color"].default_value = color
         shader.inputs["Roughness"].default_value = roughness

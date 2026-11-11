@@ -71,7 +71,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 35/35 pass.
+`pwsh tests/run_all.ps1` → 36/36 pass.
 
 - `test_optionb_multi.py` used to run on `aromatic.cif`, whose imported ASU is
   already the complete molecule, so no connectivity pair could grow atoms and

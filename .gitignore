@@ -7,3 +7,8 @@ Thumbs.db
 # (running `download` regenerates both wheels/ and the manifest's wheels
 # array), so they are not committed.
 wheels/*.whl
+
+# Test artifacts: logs written by tests/run_all.ps1, and gemmi unpacked out of
+# wheels/ on the first test run.
+tests/_logs/
+tests/_gemmi/

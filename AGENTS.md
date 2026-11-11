@@ -6,7 +6,7 @@ Blender **Extension** `crystalviz`. Imports CIF (crystallographic) files via **g
 
 - Targets **Blender 5.2+**, which ships **CPython 3.13** — that's why `build_extension.py` hardcodes `_PY_TAG = "cp313"` and only downloads cp313 wheels.
 - `bl_info` in `__init__.py` is legacy; `blender_manifest.toml` governs extension builds. Keep both in sync on version bumps.
-- No tests, no CI, no lint/format config. Verification is manual (below). Never claim a feature works without it.
+- `tests/` holds the headless Blender suites (`pwsh tests/run_all.ps1`); no CI, no lint/format config. Verification is still manual (below). Never claim a feature works without it.
 - Never trust a CIF to be complete: validate input and fail with a meaningful message; don't reinvent math gemmi already provides.
 
 ## Build & release
@@ -52,6 +52,8 @@ Any symmetry/coordinate change should be validated against the example CIFs (sam
 Worker speaks **Ångström**; Blender converts with `_DISPLAY_SCALE = 0.1` (1 Blender unit = 10 Å ≈ scene scale where 1 Å = 1 cm). Keep conversions in one place (`_display_point`, radius helpers). Preserve fractional coordinates, unit-cell parameters, space-group info and symmetry operators end to end.
 
 ## Verification (manual)
+
+- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 33/34, see `tests/README.md` for the one known failure and the archived groups.
 
 - Syntax: `python -m py_compile __init__.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
 - Worker standalone: `pip install gemmi` and run/ad-hoc-test `gemmi_worker.load_structure(...)` in a normal Python — no Blender needed.

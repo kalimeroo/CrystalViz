@@ -5370,6 +5370,17 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         new_instances = _extend_cell_boundary_instances(
             sites, new_instances, pack_repeats=pack_repeats
         )
+        # The loop above only bounds the pre-extension count.  Boundary images
+        # multiply that by up to 8x (corner atoms get every +1 axis combination),
+        # so the final atom count must be checked again or the fill limit can be
+        # silently exceeded by up to eight times.
+        if len(new_instances) // 4 > _MAX_FILL_ATOMS:
+            operator.report(
+                {"ERROR"},
+                f"This fill would create more than "
+                f"{_MAX_FILL_ATOMS} atoms; reduce the repeats.",
+            )
+            return {"CANCELLED"}
         cell_atom_count = len(new_instances) // 4
 
     atoms = _materialize_atoms(

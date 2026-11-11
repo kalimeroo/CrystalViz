@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 5),
+    "version": (0, 9, 6),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -212,6 +212,10 @@ _BOND_MAX_SLACK = 0.4
 # the covalent radius sum survive, which keeps genuine cluster bonds
 # (Rh2(OAc)4, Re2Cl8(2-)) while dropping cation-cation contacts.
 _BOND_METAL_CAP_SCALE = 0.85
+# Hard ceiling for a connectivity window (A).  Anything wider than this is not
+# a chemical bond; it only multiplies the periodic image bank, so the UI caps
+# both bounds here and the computed defaults are clamped to the same value.
+_MAX_BOND_WINDOW = 10.0
 _MAX_FILL_REPEATS = 20
 _MAX_FILL_ATOMS = 200000
 _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
@@ -316,14 +320,14 @@ class CGN_ConnectivityPair(PropertyGroup):
         name="Min (Å)",
         default=0.1,
         min=0.0,
-        max=20.0,
+        max=_MAX_BOND_WINDOW,
         precision=3,
     )
     max_distance: FloatProperty(
         name="Max (Å)",
         default=3.0,
         min=0.0,
-        max=20.0,
+        max=_MAX_BOND_WINDOW,
         precision=3,
     )
 
@@ -3724,14 +3728,16 @@ def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=Non
         and element_b in ionic
     ):
         reference = ionic[element_a] + ionic[element_b]
-        return _BOND_MIN_SCALE * reference, min(20.0, _BOND_MAX_SCALE * reference)
+        return _BOND_MIN_SCALE * reference, min(
+            _MAX_BOND_WINDOW, _BOND_MAX_SCALE * reference
+        )
     reference = radii[element_a] + radii[element_b]
     maximum = min(_BOND_MAX_SCALE * reference, reference + _BOND_MAX_SLACK)
     if element_a in metals and element_b in metals:
         if charge_a and charge_b and (charge_a > 0.0) == (charge_b > 0.0):
             maximum = _BOND_METAL_CAP_SCALE * reference
     minimum = min(_BOND_MIN_SCALE * reference, maximum)
-    return minimum, max(minimum, min(20.0, maximum))
+    return minimum, max(minimum, min(_MAX_BOND_WINDOW, maximum))
 
 
 def _bond_point_key(point):
@@ -5060,6 +5066,20 @@ def _unwrapped_cell_instances(
     reach = [max_distance * inverse.row[axis].length for axis in range(3)]
     cells = [max(1, int(math.ceil(value))) for value in reach]
 
+    # The image bank costs len(sites) * prod(2*cells[i]+1) entries and the
+    # adjacency pass visits every one of them, so bound the product *before*
+    # allocating it.  A small cell with a wide bond window explodes here: the
+    # 10 A ceiling in a 1 A cell is 21^3 = 9261 images per site.
+    image_count = len(sites)
+    for axis in range(3):
+        image_count *= 2 * cells[axis] + 1
+    if image_count > max_instances:
+        raise ValueError(
+            f"The connectivity window spans {image_count} cell images "
+            f"({2 * cells[0] + 1}x{2 * cells[1] + 1}x{2 * cells[2] + 1} per "
+            f"site); reduce the max bond distance or use a larger unit cell."
+        )
+
     fracs = [Vector(site["frac"]) for site in sites]
     carts = [matrix @ frac for frac in fracs]
     elements = [str(site.get("element", "X")).upper() for site in sites]
@@ -5199,7 +5219,7 @@ def _unwrapped_cell_instances(
 
 
 def _extend_cell_boundary_instances(
-    sites, instances, pack_repeats=None, tolerance=1e-4
+    sites, instances, pack_repeats=None, tolerance=1e-4, max_instances=None
 ):
     """Extend P1 cell instances so atoms appear at both [0] and [1] cell faces.
 
@@ -5220,6 +5240,9 @@ def _extend_cell_boundary_instances(
     identically; ``seen`` handles deduplication.
 
     Returns an extended flat quadruple list with boundary images appended.
+
+    When *max_instances* is given the atom count is checked while the images
+    are generated, so an over-limit fill is abandoned instead of allocated.
     """
     if not instances:
         return instances
@@ -5238,6 +5261,11 @@ def _extend_cell_boundary_instances(
         )
         expanded.extend(key)
         seen.add(key)
+    if max_instances is not None and len(seen) > max_instances:
+        raise ValueError(
+            f"This fill would create more than {max_instances} atoms; "
+            "reduce the repeats."
+        )
 
     # Add boundary images where local frac is near 0 on any axis.  Every cell
     # extends by +1 on all axes; duplicates at internal faces are skipped
@@ -5269,6 +5297,11 @@ def _extend_cell_boundary_instances(
             if key not in seen:
                 seen.add(key)
                 expanded.extend(key)
+                if max_instances is not None and len(seen) > max_instances:
+                    raise ValueError(
+                        f"This fill would create more than {max_instances} "
+                        "atoms; reduce the repeats."
+                    )
 
     return expanded
 
@@ -5367,13 +5400,18 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         # Scheme: [0,1)[0,1)[0,1]...[0,1] along each axis; seen() prevents
         # duplicates at shared internal faces.
         pack_repeats = repeats if mode == "PACK" else None
-        new_instances = _extend_cell_boundary_instances(
-            sites, new_instances, pack_repeats=pack_repeats
-        )
-        # The loop above only bounds the pre-extension count.  Boundary images
-        # multiply that by up to 8x (corner atoms get every +1 axis combination),
-        # so the final atom count must be checked again or the fill limit can be
-        # silently exceeded by up to eight times.
+        try:
+            new_instances = _extend_cell_boundary_instances(
+                sites,
+                new_instances,
+                pack_repeats=pack_repeats,
+                max_instances=_MAX_FILL_ATOMS,
+            )
+        except ValueError as exc:
+            operator.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        # The raise above stops the extension mid-loop; this final check keeps
+        # the guarantee explicit for callers that pass no max_instances.
         if len(new_instances) // 4 > _MAX_FILL_ATOMS:
             operator.report(
                 {"ERROR"},

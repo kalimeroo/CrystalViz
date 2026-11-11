@@ -71,7 +71,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 33/34 pass.
+`pwsh tests/run_all.ps1` → 34/35 pass.
 
 - `test_optionb_multi.py` — **known failing, pre-existing.** Its setup step
   ("at least one re-enabled pair grows new atoms from the aromatic.cif seeds")

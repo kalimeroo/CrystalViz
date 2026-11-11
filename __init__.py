@@ -4400,6 +4400,27 @@ def _merge_into_existing_bond_object(root, pair_name, order, element, segments):
     return True
 
 
+def _canonical_atom_indices(atoms):
+    """Index of the representative atom for every element/position duplicate.
+
+    Disordered CIFs can list the same element twice at one site, and the P1
+    expansion then contains two atoms at the same point.  For bonding they are
+    one atom: only the first occurrence is bucketed and receives bonds, so a
+    disordered site yields one drawn bond instead of a pair of overlapping
+    ones.  Mirrors the worker's canonical base-atom rule (``element`` plus the
+    rounded position), which is what stops growth adding the copies.
+    """
+    groups = {}
+    canonical = []
+    for index, atom in enumerate(atoms):
+        key = (
+            str(atom.get("element", "X")).upper(),
+            _bond_point_key(atom["cart"]),
+        )
+        canonical.append(groups.setdefault(key, index))
+    return canonical
+
+
 def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     """Build (or, with ``append_only``, extend) the structure's bond objects.
 
@@ -4411,6 +4432,11 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     under earlier connectivity settings.  Connectivity toggles therefore only
     *add* to the scene; re-deriving everything from the current windows is the
     explicit job of the "Rebuild Bonds" operator (``append_only=False``).
+
+    Duplicate atoms — same element at the same point, e.g. a disordered CIF
+    that lists one site twice — are bonded as a single atom: the copies get no
+    bonds of their own, so the pair cannot produce a zero-length bond (and a
+    doubled set of bonds to its neighbours) when ``min_distance`` is 0.
     """
     global _BOND_SPATIAL_CACHE
     start_index = max(0, min(int(start_index), len(atoms)))
@@ -4449,6 +4475,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
 
     cell_width = max(max_distance, 1e-6)
     root_id = root.get("cgn_instance_id", root.name)
+    # Duplicate atoms (same element, same point) collapse onto their
+    # representative: only it is bucketed and only it receives bonds.
+    canonical = _canonical_atom_indices(atoms)
     cached = _BOND_SPATIAL_CACHE
     cache_matches = (
         cached is not None
@@ -4486,6 +4515,8 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         vdw_by_element = {}
         elements = [None] * len(atoms)
         for index in range(start_index):
+            if canonical[index] != index:
+                continue
             atom = atoms[index]
             element = str(atom.get("element", "X")).upper()
             elements[index] = element
@@ -4501,6 +4532,8 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             buckets.setdefault(cell, []).append(index)
     by_pair = {}
     for index in range(start_index, len(atoms)):
+        if canonical[index] != index:
+            continue
         atom = atoms[index]
         atom_cart = atom["cart"]
         element = str(atom.get("element", "X")).upper()

@@ -847,6 +847,13 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
     ``(i, j)`` pairs checked (never changes which atoms pair up or their
     (tx, ty, tz)), the returned (candidate_index, tx, ty, tz) tuples are
     byte-identical to the all-pairs scan on the example CIFs.
+
+    Both seeds and candidates are restricted to canonical atoms.  A
+    non-canonical atom is a duplicate copy of another site (same element, same
+    position to 1e-5 A), so listing it as a candidate would let growth add an
+    atom sitting on top of its representative whenever the enabled window
+    admits the ~1e-6 A separation -- i.e. with ``min_distance`` set to 0,
+    where the ``dist <= 1e-12`` self filter no longer catches it.
     """
     cell = unit_cell.cell  # gemmi.UnitCell
     cell_matrix = unit_cell._columns  # column-major, matches _cart_from_frac
@@ -884,6 +891,10 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
         neighbours = []
         seen = set()
         for j in candidates:
+            if canonical is not None and canonical[j] != j:
+                # Duplicate copy of another site; the representative lists its
+                # neighbours already.
+                continue
             element_j = base_elements[j]
             bounds = pair_windows.get(element_j)
             if bounds is None:

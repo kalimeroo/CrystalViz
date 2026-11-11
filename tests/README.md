@@ -71,12 +71,21 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 37/37 pass.
+`pwsh tests/run_all.ps1` → 39/39 pass.
 
 - `test_optionb_multi.py` used to run on `aromatic.cif`, whose imported ASU is
   already the complete molecule, so no connectivity pair could grow atoms and
   the preservation assertions were vacuous. It now runs on `Ag2Cr2O7.cif`
   (11 → 20 atoms, pairs `AG|O` / `CR|O`), so both Option-B checks are real.
+- `test_grow_duplicate_sites.py` builds a synthetic P1 table with same-element
+  duplicate sites 2e-6 Å apart (above the 1e-12 self filter, below the 1e-5
+  canonical grouping resolution) and asserts that growth never walks into the
+  duplicate copy, with `min_distance` at both 0 and the 0.1 default.
+- `test_bond_duplicate_sites.py` covers the Blender-side counterpart: the bond
+  builder bonds a disordered site once (no zero-length bond, no doubled bonds
+  to its neighbours) for exact and near duplicates, leaves coincident
+  different-element disorder unbonded, and does the same on the grow/append
+  path.
 
 ## Ordered suites
 

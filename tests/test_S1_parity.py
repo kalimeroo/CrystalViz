@@ -27,7 +27,12 @@ def check(name, cond, detail=""):
 
 
 def reference_table(unit_cell, base_atoms, base_elements, windows_by_element, canonical):
-    """The ORIGINAL all-pairs algorithm (pre-optimisation)."""
+    """The ORIGINAL all-pairs algorithm (pre-optimisation).
+
+    Keeps the canonical-atom rules (non-canonical rows empty, non-canonical
+    candidates skipped); the only difference from the shipped table is the
+    NeighborSearch pruning, which is what this test checks is neutral.
+    """
     cell = unit_cell.cell
     table = []
     for base_index, base_atom in enumerate(base_atoms):
@@ -42,6 +47,8 @@ def reference_table(unit_cell, base_atoms, base_elements, windows_by_element, ca
         neighbours = []
         seen = set()
         for j, atom_j in enumerate(base_atoms):
+            if canonical is not None and canonical[j] != j:
+                continue
             element_j = base_elements[j]
             bounds = pair_windows.get(element_j)
             if bounds is None:

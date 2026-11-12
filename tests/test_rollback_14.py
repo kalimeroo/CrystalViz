@@ -58,19 +58,28 @@ def baseline():
         ),
     }
 
-def one_shot_bond_fail():
-    """Patches _bond_objects so the FIRST call succeeds then raises, and all
-    later calls (including the rollback rebuild) run normally."""
-    orig = CrystalViz._bond_objects
+def one_shot_fail(attr):
+    """Patch ``CrystalViz.<attr>`` so the FIRST call succeeds then raises, and
+    all later calls (including the rollback rebuild) run normally."""
+    original = getattr(CrystalViz, attr)
     state = {"fired": False}
     def wrapper(*args, **kwargs):
         if not state["fired"]:
             state["fired"] = True
-            orig(*args, **kwargs)
+            original(*args, **kwargs)
             raise RuntimeError("INJECTED mid-rebuild failure")
-        return orig(*args, **kwargs)
-    CrystalViz._bond_objects = wrapper
-    return lambda: setattr(CrystalViz, "_bond_objects", orig)
+        return original(*args, **kwargs)
+    setattr(CrystalViz, attr, wrapper)
+    return lambda: setattr(CrystalViz, attr, original)
+
+def one_shot_bond_fail():
+    """Failure injection for the grow/polyhedra paths (they rebuild bonds)."""
+    return one_shot_fail("_bond_objects")
+
+def one_shot_unit_cell_fail():
+    """Failure injection for the fill path: fills build no bonds, so the first
+    bond-free rebuild step (``_apply_unit_cell_settings``) is the hook."""
+    return one_shot_fail("_apply_unit_cell_settings")
 
 # ---------------- GROW test ----------------
 print("\n=== GROW rollback test (Brookite, seed-grow) ===")
@@ -82,6 +91,12 @@ def _brookite():
         pair = scene.cgn_connectivity_pairs.add()
         pair.element_a = "Ti"; pair.element_b = "O"; pair.enabled = True
         pair.min_distance = 0.1; pair.max_distance = 3.0
+    # Import builds no bonds; build the baseline set explicitly so the grow
+    # rollback compares against a state that already has bonds (and a bond
+    # settings signature).
+    CrystalViz._bond_objects(
+        r, CrystalViz._structure_atoms(r), scene.cgn_connectivity_pairs
+    )
     bpy.context.view_layer.update()
     return r
 
@@ -125,7 +140,7 @@ bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 f_before = baseline()
-restore = one_shot_bond_fail()
+restore = one_shot_unit_cell_fail()
 try:
     res = bpy.ops.cgn.fill_cell("INVOKE_DEFAULT")
 except Exception as exc:

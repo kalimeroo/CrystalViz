@@ -5,6 +5,9 @@ into the existing per-pair/order(/element) bond objects.  The object count must
 therefore stay at "one object per distinct bond group" instead of growing by
 one set of CGN_Bonds_* objects (with .001, .002 suffixes) per grow.
 
+Import displays atoms only (no bonds), so this test builds the baseline bond
+set explicitly with ``_bond_objects`` — the same call the grow path uses.
+
 Run:
   blender --background --factory-startup --python test_bond_grow_objects.py
 """
@@ -82,6 +85,12 @@ def exercise(two_color):
     bpy.ops.cgn.import_cif(filepath=CIF)
     root = bpy.data.collections.get(scene.cgn_active_structure)
     CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
+    # A fill/import shows atoms only; build the baseline bond set so the grow
+    # assertions below start from existing per-group objects.
+    CrystalViz._bond_objects(
+        root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
+    )
+    bpy.context.view_layer.update()
 
     label = "two-colour" if two_color else "single-colour"
     print(f"=== {label} ===")
@@ -136,6 +145,10 @@ scene = bpy.context.scene
 bpy.ops.cgn.import_cif(filepath=CIF)
 root = bpy.data.collections.get(scene.cgn_active_structure)
 CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
+CrystalViz._bond_objects(
+    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
+)
+bpy.context.view_layer.update()
 objs = bond_objects(root)
 victim = objs[0]
 duplicate = victim.copy()

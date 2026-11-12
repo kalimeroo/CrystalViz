@@ -71,7 +71,51 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 43/43 pass.
+`pwsh tests/run_all.ps1` → 48/48 pass.
+
+- `test_reset_default_pairs.py` pins that **Reset Default** restores the exact
+  import-time connectivity windows. The reset recomputed defaults from covalent
+  radii alone, but import derives them from the CIF's formal charges plus Shannon
+  ionic radii for ionically bonded pairs (e.g. Ti-O in Brookite: (1.2, 2.41) vs
+  the covalent (1.36, 2.66)). The import now persists that chemistry on the
+  structure root and the reset reads it, with a covalent fallback for roots that
+  predate it.
+
+- `test_bond_clear_on_rebuild.py` pins that a full `_bond_objects` rebuild
+  (``append_only=False``) drops the previous bond set when nothing can be
+  bonded — the reported sequence Fill → Grow → Delete (box-select every atom but
+  one) leaves no bond object behind, and the same early-return cleanup applies
+  to an empty/single-atom structure, every connectivity pair disabled, a zero
+  max-distance window, and the space-filling model. Append-only growth still
+  preserves existing bonds.
+
+- `test_import_no_bonds.py` pins that importing a CIF behaves like Fill →
+  Asymmetric Unit: atoms, unit cell and the default connectivity windows are
+  stored, but no bond objects (nor chemdraw tori) are created. Re-importing
+  replaces a bonded structure with a bond-less one (no stray bond object
+  survives), and bonds come back through the existing actions — grow (full set,
+  initial–initial bonds included), Create Polyhedra and a rendering-model
+  switch.
+
+- `test_fill_no_bonds.py` pins that the three fill modes (Asymmetric Unit,
+  Unit-Cell, Pack Unit-cells) display atoms only: every pre-existing bond object
+  is dropped, chemdraw aromatic tori included, no bond is rebuilt, and the atom
+  counts/vertices stay consistent. It then proves bonds come back through the
+  existing actions — the `_bond_objects` call used by polyhedra/delete and a
+  rendering-model switch — and that a second fill clears them again. Finally it
+  pins that a grow right after a fill builds the bonds among the *initial*
+  atoms as well as those to the new atoms (the grow path falls back from
+  append-only to a full build when the structure has no bonds to preserve).
+
+- `test_polyhedra_bond_visibility.py` pins the "Hide Bonds Inside Polyhedra"
+  option (scene boolean `cgn_hide_polyhedron_bonds`): the centre→ligand bonds
+  are dropped from the per-pair bond objects and come back unticked. It also
+  covers the mask edge cases — a "Create from Selected" subset hides only its
+  own spokes, clearing polyhedra restores every bond, polyhedra created while
+  the option is already on are masked immediately, grown Ti images without a
+  polyhedron keep their bonds, and deleting a ligand re-derives the mask from
+  the rebuilt polyhedra (the delete path now remaps polyhedra *before* the bond
+  rebuild so stale centre indices can never hide the wrong bonds).
 
 - `test_polyhedra_ligand_delete.py` pins that deleting a ligand atom sitting on a
   polyhedron vertex removes that image's polyhedron — the same outcome as

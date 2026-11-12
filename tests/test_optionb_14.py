@@ -8,8 +8,10 @@ Scenario (mimics the user's report):
   4. Assert the previously-built bond objects/pairs are NOT lost (Option B fix)
      and the structure gained atoms.
 
-Also checks the explicit "Rebuild Bonds" operator still reconciles to the
-current pairs on demand (the intended apply-after-change mechanism).
+Fills build no bonds, so the test builds the full bond set explicitly with
+``_bond_objects`` (the same call the grow path uses) before exercising the
+append-only grow behaviour.  "Reset Default" only restores the connectivity
+windows; it never tears down bonds either.
 """
 import sys, os, json, bpy
 
@@ -53,6 +55,11 @@ root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.fill_cell("INVOKE_DEFAULT")
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.rebuild_connectivity("INVOKE_DEFAULT")
+# A fill displays atoms only; build the bond set explicitly so the test can
+# prove grow appends to bonds that already existed.
+CrystalViz._bond_objects(
+    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
+)
 bpy.context.view_layer.update()
 
 full_pairs = bond_pairs(root)

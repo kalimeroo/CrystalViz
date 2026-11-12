@@ -2,7 +2,9 @@
 
 Uses Ag2Cr2O7.cif: a periodic oxide that (a) renders two distinct bond pairs
 (Ag|O, Cr|O) and (b) really grows from a seed selection, so the preservation
-assertions below are not vacuous.  The scenario mimics the user's report:
+assertions below are not vacuous.  Import builds no bonds, so the full bond set
+is built explicitly with ``_bond_objects``.  The scenario mimics the user's
+report:
   1. Build the full bond set (both pairs).
   2. Disable ALL connectivity pairs, then re-enable only ONE of them.
   3. Grow from a seed selection.
@@ -46,6 +48,11 @@ scene.cgn_connectivity_pairs.clear()
 bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Ag2Cr2O7.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.rebuild_connectivity("INVOKE_DEFAULT")
+# Import (like a fill) displays atoms only; build the full bond set explicitly
+# so the grow below has bonds that Option B must preserve.
+CrystalViz._bond_objects(
+    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
+)
 bpy.context.view_layer.update()
 
 full_pairs = bond_pairs(root)

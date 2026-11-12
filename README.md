@@ -65,11 +65,17 @@ element's van der Waals radius and bond tubes use 0.1× the mean van der Waals
 radius of the bonded pair, both with smooth shading. On import the
 scene is set to centimeters with **1 Å = 1 cm**: 1 Blender unit = 10 Å = 10 cm
 (Unit Scale `0.1`). A 20 Å cell therefore reads 20 cm and spans 2 Blender units.
+Like **Fill → Asymmetric Unit**, an import displays atoms only and creates no
+bonds; grow the structure, create polyhedra, delete an atom or switch the
+rendering model to build them.
 
 Each unordered element pair gets an independent connectivity checkbox and
 inclusive minimum/maximum distance in Å, inside the collapsible **Connectivity**
-sub-panel. After changing those settings, use **Rebuild Bonds**. Initial maximum
-distances are inferred from the cctbx covalent radii plus 0.4 Å.
+sub-panel. Those windows steer the next grow and every bond rebuild. Defaults
+come from the cctbx covalent radii (plus 0.4 Å), except ionically bonded
+cation-anion pairs (e.g. Ti-O, Ag-O), which import computes from the CIF's
+formal charges and Shannon ionic radii. **Reset Default** restores those exact
+import-time windows without touching bonds already shown.
 
 Atoms use the JMOL CPK colour scheme (the Science Notes table): colours are
 stored as sRGB hex and converted to linear values so Blender displays the
@@ -151,8 +157,11 @@ square faces do not get spurious diagonal edges. Per-element appearance controls
 (face color, defaulting to the central atom's CPK colour, face transparency,
 edge color, edge transparency and edge width) are shown for each element that has
 a style, and individual element types can be removed with **Delete {element}
-polyhedra** or all at once with **Clear All Polyhedra**. Square-planar and other
-fully coplanar coordinations are currently skipped.
+polyhedra** or all at once with **Clear All Polyhedra**. The **Hide Bonds Inside
+Polyhedra** checkbox suppresses the bonds that radiate from each polyhedron
+centre to its ligands, so the faces read as the coordination; the other bonds,
+and the bonds of polyhedra you have not built, stay visible. Square-planar and
+other fully coplanar coordinations are currently skipped.
 
 Switching models rebuilds atom and bond objects from the stored site table, so a
 structure imported before this feature still switches correctly (it simply has
@@ -174,9 +183,12 @@ a, b and c. This displays a repeated cell grid without changing or duplicating
 atoms. Smooth-shaded icosphere markers indicate the cell-outline corners and
 match the unit-cell edge thickness. The cell is drawn with adjustable face
 color, face transparency, edge color and edge thickness.
-Turning **Show Unit Cell** off hides the grid. Fill
-replaces the displayed atoms, clears any growth selection, and rebuilds bonds.
-Packing is limited to 200,000 atoms.
+Turning **Show Unit Cell** off hides the grid. Import and every fill display
+atoms only and create no bonds: the previous bond set is dropped because it
+described the old atom set. Bonds return when you grow the structure, create
+polyhedra, delete an atom, or switch the rendering model. Growing right after an
+import or fill builds the complete bond set, the initial atoms included; later
+grows only append. Packing is limited to 200,000 atoms.
 
 Use **Grow Structure** to add one shell around all atoms. Use **Grow Selected
 Atoms** to enter viewport selection mode; click or box-select atoms, use

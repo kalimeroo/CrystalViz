@@ -2261,6 +2261,15 @@ def _show_hydrogens():
     return bool(getattr(scene, "cgn_show_hydrogens", True))
 
 
+def _hide_polyhedron_bonds(scene=None):
+    """True when centre→ligand bonds must not be drawn (Polyhedra panel)."""
+    if scene is None:
+        scene = getattr(bpy.context, "scene", None)
+    if scene is None:
+        return False
+    return bool(getattr(scene, "cgn_hide_polyhedron_bonds", False))
+
+
 def _apply_hydrogen_visibility(root, visible):
     """Show or hide every hydrogen atom object and its bond objects."""
     if root is None:
@@ -3192,6 +3201,35 @@ def _polyhedron_search(root, scene):
     return search
 
 
+def _polyhedron_centre_keys(root, atoms):
+    """Keys of every displayed polyhedron centre image, in display space.
+
+    ``cgn_poly_centers`` stores atom indices, so the keys are resolved against
+    the *current* atom list: they follow grow (appended atoms keep their
+    indices), delete (``_remap_polyhedra`` rebuilds with fresh indices) and
+    fill (polyhedra are cleared).  Only polyhedra that are actually displayed
+    contribute, so "Create from Selected" subsets mask only their own spokes.
+    """
+    keys = set()
+    if root is None:
+        return keys
+    for obj in root.objects:
+        if obj.get("cgn_role") not in _POLY_ROLE_ROLES:
+            continue
+        try:
+            centers = json.loads(obj.get("cgn_poly_centers", "[]"))
+        except (TypeError, ValueError):
+            continue
+        for index in centers:
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(atoms):
+                keys.add(_bond_point_key(_display_point(atoms[index]["cart"])))
+    return keys
+
+
 def _polyhedron_style_values(style):
     """Return (face_rgba, edge_rgba, thickness) from a per-element style."""
     face_color = tuple(float(channel) for channel in style.face_color)
@@ -3312,6 +3350,21 @@ def _clear_polyhedra(root, element=None):
     for child in list(root.children):
         if child.get("cgn_role") == "polyhedron_prototypes" and not child.all_objects:
             bpy.data.collections.remove(child)
+
+
+def _clear_bonds(root):
+    """Remove every bond object (chemdraw tori included) from the structure.
+
+    Fills display atoms only: the bonds derived from the previous atom set no
+    longer describe the structure, so they are dropped instead of rebuilt.
+    """
+    global _BOND_SPATIAL_CACHE
+    _BOND_SPATIAL_CACHE = None
+    if root is None:
+        return
+    for obj in list(root.all_objects):
+        if obj.get("cgn_role") == "bonds":
+            _remove_object(obj)
 
 
 def _polyhedron_geometry(atoms, centers, search, removed_quads=None):
@@ -4625,7 +4678,10 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     — this is the grow path, which must never tear down bonds that were built
     under earlier connectivity settings.  Connectivity toggles therefore only
     *add* to the scene; re-deriving everything from the current windows is the
-    explicit job of the "Rebuild Bonds" operator (``append_only=False``).
+    job of the full-rebuild callers (``append_only=False``): Create Polyhedra,
+    Delete Atoms, a rendering-model change, the polyhedron bond-visibility
+    toggle, and a grow that starts with no bond objects (right after a fill or
+    import).
 
     Duplicate atoms — same element at the same point, e.g. a disordered CIF
     that lists one site twice — are bonded as a single atom: the copies get no
@@ -4662,8 +4718,12 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             or len(atoms) < 2
             or max_distance <= 0
         ):
-            _BOND_SPATIAL_CACHE = None
             root["cgn_bond_settings_signature"] = settings_signature
+            # Nothing can be bonded, so a full rebuild must also *remove* the
+            # previous set: deleting down to a single atom, disabling every
+            # pair, or switching to space-filling would otherwise leave bonds
+            # that no longer describe the structure.
+            _clear_bonds(root)
             return 0
         start_index = 0
 
@@ -4819,6 +4879,18 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0))
         for atom in atoms
     }
+    # Centre→ligand bonds ("spokes") can be suppressed so the polyhedron faces
+    # read as the coordination instead of being crossed by their own bonds.
+    # The mask comes from the polyhedra that are actually displayed, so a
+    # "Create from Selected" subset only hides its own spokes, and clearing
+    # polyhedra restores every bond.  Filtering happens at emission (below),
+    # after the chemdraw classification, so multiple-bond orders and aromatic
+    # rings are still inferred from the complete bond set.
+    centre_keys = (
+        _polyhedron_centre_keys(root, atoms)
+        if _hide_polyhedron_bonds(scene)
+        else set()
+    )
     bond_orders = (
         _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
     )
@@ -4832,6 +4904,15 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     )
     two_color = getattr(scene, "cgn_bond_style", "SINGLE_COLOR") == "TWO_COLOR"
     for key, segments in sorted(by_pair.items()):
+        if centre_keys:
+            segments = [
+                segment
+                for segment in segments
+                if _bond_point_key(_display_point(segment[0])) not in centre_keys
+                and _bond_point_key(_display_point(segment[1])) not in centre_keys
+            ]
+            if not segments:
+                continue
         rendered_segments = (
             _chemdraw_segments(
                 segments,
@@ -5078,6 +5159,16 @@ def _update_bond_style(scene, context):
     _debounce("bond_style", lambda: _rebuild_bonds(scene))
 
 
+def _update_hide_polyhedron_bonds(scene, context):
+    """Hide/show the centre→ligand bonds by rebuilding the bond objects.
+
+    Bonds are baked per element pair, so the spoke mask is applied while they
+    are built; toggling therefore rebuilds them (debounced like the other bond
+    style changes).
+    """
+    _debounce("polyhedron_bonds", lambda: _rebuild_bonds(scene))
+
+
 def _rebuild_bonds(scene):
     """Rebuild all bond objects for the active structure (the heavy core)."""
     root = _active_root(scene)
@@ -5248,6 +5339,12 @@ def _set_scene_units(scene):
 
 
 def _import_result(scene, result, cif_path):
+    """Display an imported structure as its asymmetric unit, without bonds.
+
+    Same behaviour as Fill → Asymmetric Unit: atoms and unit-cell settings are
+    created, the default connectivity pairs are stored for later grow/bond
+    operations, but no bond objects are built.
+    """
     # A new structure is about to replace the active one; drop any parsed tables
     # cached for the previous structure so they do not linger in memory.
     _invalidate_structure_cache()
@@ -5274,6 +5371,19 @@ def _import_result(scene, result, cif_path):
     _set_instances(root, instances)
     root["cgn_asu_instances"] = json.dumps(instances)
     root["cgn_cell_matrix"] = json.dumps(cell_matrix)
+    # Persist the charge/ionic/metal chemistry so a later "Reset Default" can
+    # recompute the exact import-time connectivity windows.  Without these,
+    # reset falls back to covalent radii and disagrees with import for ionic
+    # cation-anion pairs (e.g. Ti-O, Ag-O) whose Shannon radii enlarge the window.
+    root["cgn_atom_charges"] = json.dumps(
+        result.get("atom_type_charges") or {}, sort_keys=True
+    )
+    root["cgn_ionic_radii"] = json.dumps(
+        result.get("ionic_radii") or {}, sort_keys=True
+    )
+    root["cgn_metal_elements"] = json.dumps(
+        sorted(str(e).upper() for e in (result.get("metal_elements") or []))
+    )
     root["cgn_initial_count"] = initial_count
     root["cgn_selected_indices"] = "[]"
     root["cgn_growth_shells"] = 0
@@ -5318,7 +5428,9 @@ def _import_result(scene, result, cif_path):
                 )
                 item.min_distance = minimum
                 item.max_distance = maximum
-        _bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+        # Import displays atoms only, exactly like Fill → Asymmetric Unit: the
+        # default connectivity pairs above steer later grows/bond rebuilds, but
+        # no bond objects are created here.
         # Single-structure view: drop every previous structure (not just the
         # one the scene pointer happens to name) so repeated imports cannot
         # accumulate hidden collections and their meshes.
@@ -5620,7 +5732,12 @@ def _extend_cell_boundary_instances(
 
 
 def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
-    """Replace displayed atoms with the ASU, completed cell, or packed cells."""
+    """Replace displayed atoms with the ASU, completed cell, or packed cells.
+
+    Fills show atoms only and never create bonds (the previous set is cleared);
+    bonds are built by import, grow, Create Polyhedra, delete or a model
+    change.
+    """
     root = _active_root(context.scene)
     if root is None:
         operator.report({"ERROR"}, _no_structure_message(context.scene, "filling the structure"))
@@ -5747,8 +5864,13 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
     try:
         _rebuild_atom_objects(root, atoms)
         _update_growth_selection(root, atoms, [])
-        _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+        # A fill replaces the displayed atom set and builds no bonds: the old
+        # ones no longer describe the structure, so they are dropped rather
+        # than rebuilt (bonds reappear through grow, Create Polyhedra or a
+        # model change).  Polyhedra are dropped too, since their centre
+        # indices refer to the pre-fill atom list.
         _clear_polyhedra(root)
+        _clear_bonds(root)
         _apply_unit_cell_settings(context.scene)
     except Exception as exc:
         traceback.print_exc()
@@ -5813,10 +5935,36 @@ class CGN_OT_import_cif(Operator):
         return {"FINISHED"}
 
 
-def _default_connectivity_pairs(scene, atoms):
+def _default_connectivity_pairs(scene, atoms, root=None):
     """Repopulate ``scene.cgn_connectivity_pairs`` with the default windows for
-    the elements present in ``atoms`` (covalent-radius defaults, as import
-    computes for the common case)."""
+    the elements present in ``atoms``.
+
+    When *root* is the structure collection it may carry the chemistry the
+    import persisted (``cgn_atom_charges``, ``cgn_ionic_radii``,
+    ``cgn_metal_elements``), which makes the reset reproduce the exact
+    import-time windows for ionic cation-anion pairs.  Without a root (or with
+    a root that predates those props) the covalent-radius defaults are used,
+    exactly as import computes for the common case.
+    """
+    charges = {}
+    ionic = {}
+    metals = set()
+    if root is not None:
+        try:
+            charges = {
+                str(key).upper(): float(value)
+                for key, value in json.loads(root.get("cgn_atom_charges", "{}")).items()
+            }
+            ionic = {
+                str(key).upper(): float(value)
+                for key, value in json.loads(root.get("cgn_ionic_radii", "{}")).items()
+            }
+            metals = {
+                str(element).upper()
+                for element in json.loads(root.get("cgn_metal_elements", "[]"))
+            }
+        except (TypeError, ValueError):
+            charges, ionic, metals = {}, {}, set()
     scene.cgn_connectivity_pairs.clear()
     elements = sorted({str(a.get("element", "X")).upper() for a in atoms})
     radii = {}
@@ -5830,7 +5978,7 @@ def _default_connectivity_pairs(scene, atoms):
             item.element_b = element_b
             item.enabled = True
             minimum, maximum = _default_pair_window(
-                element_a, element_b, radii, {}, set(), {}
+                element_a, element_b, radii, charges, metals, ionic
             )
             item.min_distance = minimum
             item.max_distance = maximum
@@ -5859,7 +6007,7 @@ class CGN_OT_rebuild_connectivity(Operator):
         # Non-destructive: restore the default pair windows but DO NOT tear down
         # the bonds already on screen.  Under Option B the restored settings are
         # used the next time the user grows selected atoms.
-        _default_connectivity_pairs(context.scene, atoms)
+        _default_connectivity_pairs(context.scene, atoms, root=root)
         self.report(
             {"INFO"},
             "Connectivity reset to defaults. Existing bonds kept; the next grow "
@@ -6493,8 +6641,11 @@ class CGN_OT_delete_atoms(_CGN_OT_select_atoms):
         try:
             _rebuild_atom_objects(root, atoms)
             _update_growth_selection(root, atoms, [])
-            _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+            # Polyhedra first: remapping renumbers the surviving centre images,
+            # and the bond rebuild below masks the centre→ligand spokes from the
+            # rebuilt polyhedra (stale indices would hide the wrong bonds).
             _remap_polyhedra(root, removed, atoms, context.scene, removed_quads)
+            _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
         except Exception as exc:
             traceback.print_exc()
             # Roll the stored state back so the viewport and data stay
@@ -6659,16 +6810,27 @@ class CGN_OT_grow_further(Operator):
             # Option B: growing always APPENDS bonds for the newly grown atoms
             # and never tears down bonds that were built under earlier
             # connectivity settings.  The current pair toggles act as a query
-            # filter for this growth only; re-deriving all bonds from them is
-            # the explicit "Rebuild Bonds" operator.
+            # filter for this growth only; a full rebuild is done by the other
+            # actions (Create Polyhedra, Delete Atoms, model change), or by the
+            # fallback below when there is nothing to preserve.
             if _current_model(context.scene) != "SPACE_FILLING":
-                _bond_objects(
-                    root,
-                    atoms,
-                    context.scene.cgn_connectivity_pairs,
-                    start_index=old_atom_count,
-                    append_only=True,
-                )
+                if any(obj.get("cgn_role") == "bonds" for obj in root.all_objects):
+                    _bond_objects(
+                        root,
+                        atoms,
+                        context.scene.cgn_connectivity_pairs,
+                        start_index=old_atom_count,
+                        append_only=True,
+                    )
+                else:
+                    # A fill displays atoms only, so growing right afterwards
+                    # starts from a bond-less structure.  Append-only would
+                    # bond the new atoms to the old ones but never re-derive
+                    # the bonds among the initial atoms; with nothing to
+                    # preserve, build the full set instead.
+                    _bond_objects(
+                        root, atoms, context.scene.cgn_connectivity_pairs
+                    )
             _set_instances(root, instances)
             root["cgn_growth_shells"] = int(root.get("cgn_growth_shells", 0)) + 1
         except Exception as exc:
@@ -7139,6 +7301,11 @@ class CGN_OT_clear_polyhedra(Operator):
             return {"CANCELLED"}
         target = str(self.element).upper() if self.element else None
         _clear_polyhedra(root, target)
+        if _hide_polyhedron_bonds(context.scene):
+            # The mask is baked into the bond objects; rebuild them so the
+            # spokes of the cleared polyhedra become visible again.
+            _rebuild_bonds(context.scene)
+            context.view_layer.update()
         if target:
             self.report({"INFO"}, f"Removed {target} polyhedra.")
         else:
@@ -7394,10 +7561,11 @@ class CGN_PT_model_style(Panel):
             for element in elements:
                 style = _existing_atom_style(scene, element)
                 if style is None:
-                    # No data mutation during draw; styles are created on
-                    # import / bond rebuild. Hint instead of drawing controls.
+                    # No data mutation during draw; styles are created when
+                    # atom objects are built (import / fill / grow / model
+                    # change).  Hint instead of drawing controls.
                     box.label(
-                        text=f"{element}: import or rebuild bonds to configure.",
+                        text=f"{element}: switch the model or re-import to configure.",
                         icon="INFO",
                     )
                     continue
@@ -7497,6 +7665,12 @@ class CGN_PT_polyhedra(Panel):
             "cgn.create_polyhedra_selected",
             text="Create from Selected",
             icon="RESTRICT_SELECT_OFF",
+        )
+        col.prop(
+            scene,
+            "cgn_hide_polyhedron_bonds",
+            text="Hide Bonds Inside Polyhedra",
+            icon="HIDE_ON" if scene.cgn_hide_polyhedron_bonds else "HIDE_OFF",
         )
         # Per-element delete buttons
         present_elements = sorted(
@@ -7666,6 +7840,15 @@ def register():
         description="Show hydrogen atoms and their bonds",
         default=True,
         update=_update_show_hydrogens,
+    )
+    bpy.types.Scene.cgn_hide_polyhedron_bonds = BoolProperty(
+        name="Hide Bonds Inside Polyhedra",
+        description=(
+            "Hide the bonds that radiate from a polyhedron centre to its "
+            "ligands, so the faces read as the coordination"
+        ),
+        default=False,
+        update=_update_hide_polyhedron_bonds,
     )
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(type=CGN_UnitCellSettings)
     bpy.types.Scene.cgn_polyhedron_settings = PointerProperty(
@@ -7901,6 +8084,7 @@ def unregister():
     del bpy.types.Scene.cgn_atom_subdivisions
     del bpy.types.Scene.cgn_bond_resolution
     del bpy.types.Scene.cgn_show_hydrogens
+    del bpy.types.Scene.cgn_hide_polyhedron_bonds
     del bpy.types.Scene.cgn_active_structure
     del bpy.types.Scene.cgn_atom_styles
     del bpy.types.Scene.cgn_connectivity_pairs

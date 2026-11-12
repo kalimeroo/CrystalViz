@@ -1,0 +1,39 @@
+name: Python Quality Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install quality tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff bandit pytest
+
+      - name: Ruff lint
+        run: ruff check --output-format=github .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Bandit security scan
+        run: bandit -r . -ll -x ./tests,./dist,./wheels,./.git
+
+      - name: Run Python tests
+        run: pytest -q tests/ --ignore=tests/external_cctbx

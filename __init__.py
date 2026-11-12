@@ -3368,6 +3368,11 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
     existing polyhedra are cleared and rebuilt for every element that
     previously had them, keeping the displayed coordination consistent with
     the remaining atoms.
+
+    ``removed_quads`` lists the ``(site, tx, ty, tz)`` images the user erased.
+    A centre image whose coordination shell used one of them loses its
+    polyhedron, exactly like deleting that central atom would — the surviving
+    images of the same site keep theirs.
     """
     removed = sorted({int(index) for index in removed_indices})
     if not removed:
@@ -3390,12 +3395,28 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
     }
     _clear_polyhedra(root)
 
+    search = _polyhedron_search(root, scene) if removed_quads else None
     for element in elements_with_poly:
         centers = [
             i
             for i, a in enumerate(atoms)
             if str(a.get("element", "X")).upper() == element
         ]
+        if removed_quads and search is not None:
+            # Drop only the centre images that lost a ligand vertex.  Their
+            # periodic copies use different ligand instances, so they keep a
+            # valid polyhedron -- the same per-image outcome as deleting a
+            # central atom.
+            centers = [
+                index
+                for index in centers
+                if not any(
+                    (site_index, tx, ty, tz) in removed_quads
+                    for _pos, site_index, (tx, ty, tz) in search.ligands(
+                        atoms[index]["cart"], element
+                    )
+                )
+            ]
         if centers:
             _build_polyhedra_objects(
                 root,

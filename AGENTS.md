@@ -53,7 +53,7 @@ Worker speaks **Ångström**; Blender converts with `_DISPLAY_SCALE = 0.1` (1 Bl
 
 ## Verification (manual)
 
-- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 42/42, see `tests/README.md` for the archived groups.
+- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 43/43, see `tests/README.md` for the archived groups.
 
 - Syntax: `python -m py_compile __init__.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
 - Worker standalone: `pip install gemmi` and run/ad-hoc-test `gemmi_worker.load_structure(...)` in a normal Python — no Blender needed.

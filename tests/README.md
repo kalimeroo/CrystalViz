@@ -71,7 +71,15 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 42/42 pass.
+`pwsh tests/run_all.ps1` → 43/43 pass.
+
+- `test_polyhedra_ligand_delete.py` pins that deleting a ligand atom sitting on a
+  polyhedron vertex removes that image's polyhedron — the same outcome as
+  deleting the central atom — while unaffected polyhedra survive. It drives the
+  delete data path (`_remap_polyhedra` with `removed_quads`) against Brookite
+  Ti-centred polyhedra, covers the centre-deletion parity case, and exercises a
+  grown structure so a ligand of a *translated* image is matched per periodic
+  copy (the pre-fix check only inspected the home-cell representative).
 
 - `test_selection_highlight.py` pins the growth-selection highlight fix: the
   selection modal keeps the live set in memory and `_apply_selection` now calls

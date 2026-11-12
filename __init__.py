@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 6),
+    "version": (0, 9, 7),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -5571,6 +5571,13 @@ def _unwrapped_cell_instances(
     translations = [None] * len(sites)
     components = []
     periodic = []
+    # Detect molecular (organic/metal-organic) vs framework structures.
+    # Molecular structures get their molecules unwrapped (atoms may extend
+    # outside [0,1]); frameworks (diamond, Cu, Cu2O, graphite, Brookite, ...)
+    # keep their plain cell contents inside [0,1].
+    _NONMETAL = {"C", "H", "N", "O", "F", "P", "S", "CL", "B", "SI", "BR", "I", "HE", "NE", "AR", "KR", "XE", "RN"}
+    _elements = {str(site.get("element", "X")).upper() for site in sites}
+    is_molecular = ("C" in _elements) and (("H" in _elements) or any(e not in _NONMETAL for e in _elements))
     for start in range(len(sites)):
         if translations[start] is not None:
             continue
@@ -5598,7 +5605,7 @@ def _unwrapped_cell_instances(
                     # finite molecule, so it keeps its plain cell contents.
                     is_periodic = True
         components.append(component)
-        if is_periodic:
+        if is_periodic and not is_molecular:
             periodic.append(len(components) - 1)
 
     instances = set()
@@ -5610,18 +5617,17 @@ def _unwrapped_cell_instances(
             (-translations[index][0], -translations[index][1], -translations[index][2])
             for index in component
         }
-        center = tuple(
-            sum(
-                float(sites[index]["frac"][axis]) + translations[index][axis]
-                for index in component
-            )
-            / len(component)
-            for axis in range(3)
-        )
+        # "Assemble residue": keep the molecule as close to its original cell
+        # position as possible, translating only the cut-off pieces the minimum
+        # amount needed to reconnect them (minimize total displacement).
         anchor = min(
             anchors,
             key=lambda value: (
-                sum((center[axis] + value[axis] - 0.5) ** 2 for axis in range(3)),
+                sum(
+                    (translations[index][axis] + value[axis]) ** 2
+                    for index in component
+                    for axis in range(3)
+                ),
                 value,
             ),
         )
@@ -5639,6 +5645,12 @@ def _unwrapped_cell_instances(
                 raise ValueError(
                     f"Molecule completion exceeds the {max_instances}-atom fill limit."
                 )
+
+    # "Assemble residue": if a site was moved outside the unit cell (non-zero
+    # translation), drop its in-cell (0,0,0) counterpart so the molecule is not
+    # duplicated - the inside atom is replaced by the outside (complete) one.
+    moved_sites = {inst[0] for inst in instances if inst[1:] != (0, 0, 0)}
+    instances = {inst for inst in instances if not (inst[0] in moved_sites and inst[1:] == (0, 0, 0))}
 
     return [value for instance in sorted(instances) for value in instance]
 
@@ -5702,6 +5714,8 @@ def _extend_cell_boundary_instances(
             int(instances[offset + 2]),
             int(instances[offset + 3]),
         )
+        if (tx0, ty0, tz0) != (0, 0, 0):
+            continue
         frac = sites[site_index]["frac"]  # LOCAL fractional position in [0, 1)
 
         # Cumulatively build +1 boundary translations.
@@ -5829,17 +5843,24 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         # appear on all faces/corners for periodic frameworks (diamond, MOFs).
         # Scheme: [0,1)[0,1)[0,1]...[0,1] along each axis; seen() prevents
         # duplicates at shared internal faces.
+        # For molecular structures the unwrapper already completes molecules by
+        # moving fragments, so boundary extension would only create duplicate
+        # (extra) molecules - skip it.
+        _NONMETAL_EXT = {"C", "H", "N", "O", "F", "P", "S", "CL", "B", "SI", "BR", "I", "HE", "NE", "AR", "KR", "XE", "RN"}
+        _elems_ext = {str(s.get("element", "X")).upper() for s in sites}
+        _is_molecular_ext = ("C" in _elems_ext) and (("H" in _elems_ext) or any(e not in _NONMETAL_EXT for e in _elems_ext))
         pack_repeats = repeats if mode == "PACK" else None
-        try:
-            new_instances = _extend_cell_boundary_instances(
-                sites,
-                new_instances,
-                pack_repeats=pack_repeats,
-                max_instances=_MAX_FILL_ATOMS,
-            )
-        except ValueError as exc:
-            operator.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+        if not _is_molecular_ext:
+            try:
+                new_instances = _extend_cell_boundary_instances(
+                    sites,
+                    new_instances,
+                    pack_repeats=pack_repeats,
+                    max_instances=_MAX_FILL_ATOMS,
+                )
+            except ValueError as exc:
+                operator.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
         # The raise above stops the extension mid-loop; this final check keeps
         # the guarantee explicit for callers that pass no max_instances.
         if len(new_instances) // 4 > _MAX_FILL_ATOMS:

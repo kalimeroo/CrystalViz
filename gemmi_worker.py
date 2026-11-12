@@ -1,13 +1,14 @@
-"""gemmi worker: read a CIF, expose its P1 cell, grow coordination shells.
+"""
+Gemmi Worker: Crystallographic data processing for CrystalViz.
 
-This is the gemmi port of ``worker.py``. It runs inside Blender's own Python
-(no subprocess, no external interpreter) and returns exactly the same
-dictionaries the JSON worker used to return, so the Blender side is unchanged.
+This module handles CIF parsing, symmetry expansion to P1 cells, and the
+calculation of coordination shells. It is designed to run within Blender's
+Python environment without requiring external subprocesses.
 
-Symmetry follows cctbx: sites closer than 0.5 A to a special position are
-projected onto it before expansion, which reproduces cctbx's atom counts and
-coordinates. Radius tables are copied from cctbx so atom sizes and the default
-connectivity windows stay identical.
+Symmetry implementation follows cctbx standards: sites within 0.5 Å of a
+special position are projected onto it before expansion to ensure parity
+in atom counts and coordinates. Radius tables are derived from cctbx to
+maintain consistency in atom sizing and default connectivity windows.
 """
 
 import math
@@ -22,44 +23,214 @@ import gemmi
 # --------------------------------------------------------------------------
 
 _VDW_RADII = {
-    "Ac": 2.12, "Ag": 1.72, "Al": 1.5, "Am": 1.66, "Ar": 1.88, "As": 0.83,
-    "At": 1.12, "Au": 1.66, "B": 1.75, "Ba": 2.41, "Be": 0.63, "Bi": 1.73,
-    "Bk": 1.64, "Br": 1.85, "C": 1.775, "Ca": 1.95, "Cd": 1.58, "Ce": 1.86,
-    "Cf": 1.63, "Cl": 1.75, "Cm": 1.65, "Co": 1.13, "Cr": 1.13, "Cs": 3.01,
-    "Cu": 1.4, "D": 1.2, "Dy": 1.63, "Er": 1.59, "Es": 1.62, "Eu": 1.96,
-    "F": 1.47, "Fe": 1.26, "Fm": 1.61, "Fr": 3.24, "Ga": 1.87, "Gd": 1.69,
-    "Ge": 1.48, "H": 1.2, "He": 1.4, "Hf": 1.4, "Hg": 1.55, "Ho": 1.61,
-    "I": 1.98, "In": 1.93, "Ir": 1.22, "K": 2.75, "Kr": 2.02, "La": 1.83,
-    "Li": 1.82, "Lr": 1.58, "Lu": 1.53, "Md": 1.6, "Mg": 1.73, "Mn": 1.19,
-    "Mo": 1.75, "N": 1.5, "Na": 2.27, "Nb": 1.33, "Nd": 1.79, "Ne": 1.54,
-    "Ni": 1.63, "No": 1.59, "Np": 1.71, "O": 1.45, "Os": 1.58, "P": 1.9,
-    "Pa": 1.6, "Pb": 2.02, "Pd": 1.63, "Pm": 1.76, "Po": 1.21, "Pr": 1.62,
-    "Pt": 1.72, "Pu": 1.67, "Ra": 2.57, "Rb": 2.65, "Re": 1.3, "Rh": 1.22,
-    "Rn": 2.3, "Ru": 1.2, "S": 1.8, "Sb": 1.12, "Sc": 1.32, "Se": 1.9,
-    "Si": 2.1, "Sm": 1.74, "Sn": 2.17, "Sr": 2.02, "Ta": 1.22, "Tb": 1.66,
-    "Tc": 2.0, "Te": 1.26, "Th": 1.84, "Ti": 1.95, "Tl": 1.96, "Tm": 1.57,
-    "U": 1.75, "V": 1.06, "W": 1.26, "Xe": 2.16, "Y": 1.61, "Yb": 1.54,
-    "Zn": 1.39, "Zr": 1.42,
+    "Ac": 2.12,
+    "Ag": 1.72,
+    "Al": 1.5,
+    "Am": 1.66,
+    "Ar": 1.88,
+    "As": 0.83,
+    "At": 1.12,
+    "Au": 1.66,
+    "B": 1.75,
+    "Ba": 2.41,
+    "Be": 0.63,
+    "Bi": 1.73,
+    "Bk": 1.64,
+    "Br": 1.85,
+    "C": 1.775,
+    "Ca": 1.95,
+    "Cd": 1.58,
+    "Ce": 1.86,
+    "Cf": 1.63,
+    "Cl": 1.75,
+    "Cm": 1.65,
+    "Co": 1.13,
+    "Cr": 1.13,
+    "Cs": 3.01,
+    "Cu": 1.4,
+    "D": 1.2,
+    "Dy": 1.63,
+    "Er": 1.59,
+    "Es": 1.62,
+    "Eu": 1.96,
+    "F": 1.47,
+    "Fe": 1.26,
+    "Fm": 1.61,
+    "Fr": 3.24,
+    "Ga": 1.87,
+    "Gd": 1.69,
+    "Ge": 1.48,
+    "H": 1.2,
+    "He": 1.4,
+    "Hf": 1.4,
+    "Hg": 1.55,
+    "Ho": 1.61,
+    "I": 1.98,
+    "In": 1.93,
+    "Ir": 1.22,
+    "K": 2.75,
+    "Kr": 2.02,
+    "La": 1.83,
+    "Li": 1.82,
+    "Lr": 1.58,
+    "Lu": 1.53,
+    "Md": 1.6,
+    "Mg": 1.73,
+    "Mn": 1.19,
+    "Mo": 1.75,
+    "N": 1.5,
+    "Na": 2.27,
+    "Nb": 1.33,
+    "Nd": 1.79,
+    "Ne": 1.54,
+    "Ni": 1.63,
+    "No": 1.59,
+    "Np": 1.71,
+    "O": 1.45,
+    "Os": 1.58,
+    "P": 1.9,
+    "Pa": 1.6,
+    "Pb": 2.02,
+    "Pd": 1.63,
+    "Pm": 1.76,
+    "Po": 1.21,
+    "Pr": 1.62,
+    "Pt": 1.72,
+    "Pu": 1.67,
+    "Ra": 2.57,
+    "Rb": 2.65,
+    "Re": 1.3,
+    "Rh": 1.22,
+    "Rn": 2.3,
+    "Ru": 1.2,
+    "S": 1.8,
+    "Sb": 1.12,
+    "Sc": 1.32,
+    "Se": 1.9,
+    "Si": 2.1,
+    "Sm": 1.74,
+    "Sn": 2.17,
+    "Sr": 2.02,
+    "Ta": 1.22,
+    "Tb": 1.66,
+    "Tc": 2.0,
+    "Te": 1.26,
+    "Th": 1.84,
+    "Ti": 1.95,
+    "Tl": 1.96,
+    "Tm": 1.57,
+    "U": 1.75,
+    "V": 1.06,
+    "W": 1.26,
+    "Xe": 2.16,
+    "Y": 1.61,
+    "Yb": 1.54,
+    "Zn": 1.39,
+    "Zr": 1.42,
 }
 
 _COVALENT_RADII = {
-    "Ac": 2.15, "Ag": 1.45, "Al": 1.21, "Am": 1.8, "Ar": 1.06, "As": 1.19,
-    "At": 1.5, "Au": 1.36, "B": 0.84, "Ba": 2.15, "Be": 0.96, "Bi": 1.48,
-    "Bk": 0.84, "Br": 1.2, "C": 0.76, "Ca": 1.76, "Cd": 1.44, "Ce": 2.04,
-    "Cf": 0.76, "Cl": 1.02, "Cm": 1.69, "Co": 1.26, "Cr": 1.39, "Cs": 2.44,
-    "Cu": 1.32, "D": 0.31, "Dy": 1.92, "Er": 1.89, "Eu": 1.98, "F": 0.57,
-    "Fe": 1.32, "Fm": 0.57, "Fr": 2.6, "Ga": 1.22, "Gd": 1.96, "Ge": 1.2,
-    "H": 0.31, "He": 0.28, "Hf": 1.75, "Hg": 1.32, "Ho": 1.92, "I": 1.39,
-    "In": 1.42, "Ir": 1.41, "K": 2.03, "Kr": 1.16, "La": 2.07, "Li": 1.28,
-    "Lu": 1.87, "Mg": 1.41, "Mn": 1.39, "Mo": 1.54, "N": 0.71, "Na": 1.66,
-    "Nb": 1.64, "Nd": 2.01, "Ne": 0.58, "Ni": 1.24, "No": 0.71, "Np": 1.9,
-    "O": 0.66, "Os": 1.44, "P": 1.07, "Pa": 2.0, "Pb": 1.46, "Pd": 1.39,
-    "Pm": 1.99, "Po": 1.4, "Pr": 2.03, "Pt": 1.36, "Pu": 1.87, "Ra": 2.21,
-    "Rb": 2.2, "Re": 1.51, "Rh": 1.42, "Rn": 1.5, "Ru": 1.46, "S": 1.05,
-    "Sb": 1.39, "Sc": 1.7, "Se": 1.2, "Si": 1.11, "Sm": 1.98, "Sn": 1.39,
-    "Sr": 1.95, "Ta": 1.7, "Tb": 1.94, "Tc": 1.47, "Te": 1.38, "Th": 2.06,
-    "Ti": 1.6, "Tl": 1.45, "Tm": 1.9, "U": 1.96, "V": 1.53, "W": 1.62,
-    "Xe": 1.4, "Y": 1.9, "Yb": 1.87, "Zn": 1.22, "Zr": 1.75,
+    "Ac": 2.15,
+    "Ag": 1.45,
+    "Al": 1.21,
+    "Am": 1.8,
+    "Ar": 1.06,
+    "As": 1.19,
+    "At": 1.5,
+    "Au": 1.36,
+    "B": 0.84,
+    "Ba": 2.15,
+    "Be": 0.96,
+    "Bi": 1.48,
+    "Bk": 0.84,
+    "Br": 1.2,
+    "C": 0.76,
+    "Ca": 1.76,
+    "Cd": 1.44,
+    "Ce": 2.04,
+    "Cf": 0.76,
+    "Cl": 1.02,
+    "Cm": 1.69,
+    "Co": 1.26,
+    "Cr": 1.39,
+    "Cs": 2.44,
+    "Cu": 1.32,
+    "D": 0.31,
+    "Dy": 1.92,
+    "Er": 1.89,
+    "Eu": 1.98,
+    "F": 0.57,
+    "Fe": 1.32,
+    "Fm": 0.57,
+    "Fr": 2.6,
+    "Ga": 1.22,
+    "Gd": 1.96,
+    "Ge": 1.2,
+    "H": 0.31,
+    "He": 0.28,
+    "Hf": 1.75,
+    "Hg": 1.32,
+    "Ho": 1.92,
+    "I": 1.39,
+    "In": 1.42,
+    "Ir": 1.41,
+    "K": 2.03,
+    "Kr": 1.16,
+    "La": 2.07,
+    "Li": 1.28,
+    "Lu": 1.87,
+    "Mg": 1.41,
+    "Mn": 1.39,
+    "Mo": 1.54,
+    "N": 0.71,
+    "Na": 1.66,
+    "Nb": 1.64,
+    "Nd": 2.01,
+    "Ne": 0.58,
+    "Ni": 1.24,
+    "No": 0.71,
+    "Np": 1.9,
+    "O": 0.66,
+    "Os": 1.44,
+    "P": 1.07,
+    "Pa": 2.0,
+    "Pb": 1.46,
+    "Pd": 1.39,
+    "Pm": 1.99,
+    "Po": 1.4,
+    "Pr": 2.03,
+    "Pt": 1.36,
+    "Pu": 1.87,
+    "Ra": 2.21,
+    "Rb": 2.2,
+    "Re": 1.51,
+    "Rh": 1.42,
+    "Rn": 1.5,
+    "Ru": 1.46,
+    "S": 1.05,
+    "Sb": 1.39,
+    "Sc": 1.7,
+    "Se": 1.2,
+    "Si": 1.11,
+    "Sm": 1.98,
+    "Sn": 1.39,
+    "Sr": 1.95,
+    "Ta": 1.7,
+    "Tb": 1.94,
+    "Tc": 1.47,
+    "Te": 1.38,
+    "Th": 2.06,
+    "Ti": 1.6,
+    "Tl": 1.45,
+    "Tm": 1.9,
+    "U": 1.96,
+    "V": 1.53,
+    "W": 1.62,
+    "Xe": 1.4,
+    "Y": 1.9,
+    "Yb": 1.87,
+    "Zn": 1.22,
+    "Zr": 1.75,
 }
 
 # --------------------------------------------------------------------------
@@ -74,34 +245,105 @@ _COVALENT_RADII = {
 # --------------------------------------------------------------------------
 
 _IONIC_RADII = {
-    ("O", -2): 1.40, ("S", -2): 1.84, ("Se", -2): 1.98, ("Te", -2): 2.21,
-    ("N", -3): 1.46, ("F", -1): 1.33, ("Cl", -1): 1.81, ("Br", -1): 1.96,
+    ("O", -2): 1.40,
+    ("S", -2): 1.84,
+    ("Se", -2): 1.98,
+    ("Te", -2): 2.21,
+    ("N", -3): 1.46,
+    ("F", -1): 1.33,
+    ("Cl", -1): 1.81,
+    ("Br", -1): 1.96,
     ("I", -1): 2.20,
-    ("Li", 1): 0.76, ("Na", 1): 1.02, ("K", 1): 1.38, ("Rb", 1): 1.52,
-    ("Cs", 1): 1.67, ("Ag", 1): 1.15, ("Cu", 1): 0.77, ("Tl", 1): 1.50,
+    ("Li", 1): 0.76,
+    ("Na", 1): 1.02,
+    ("K", 1): 1.38,
+    ("Rb", 1): 1.52,
+    ("Cs", 1): 1.67,
+    ("Ag", 1): 1.15,
+    ("Cu", 1): 0.77,
+    ("Tl", 1): 1.50,
     ("Au", 1): 1.37,
-    ("Be", 2): 0.45, ("Mg", 2): 0.72, ("Ca", 2): 1.00, ("Sr", 2): 1.18,
-    ("Ba", 2): 1.35, ("Cr", 2): 0.73, ("Mn", 2): 0.83, ("Fe", 2): 0.78,
-    ("Co", 2): 0.745, ("Ni", 2): 0.69, ("Cu", 2): 0.73, ("Zn", 2): 0.74,
-    ("Cd", 2): 0.95, ("Hg", 2): 1.02, ("Pd", 2): 0.64, ("Pt", 2): 0.80,
-    ("Sn", 2): 1.18, ("Pb", 2): 1.19,
-    ("B", 3): 0.27, ("Al", 3): 0.535, ("Ga", 3): 0.62, ("In", 3): 0.80,
-    ("Tl", 3): 0.885, ("Sc", 3): 0.745, ("Y", 3): 0.90, ("La", 3): 1.032,
-    ("Ce", 3): 1.01, ("Pr", 3): 0.99, ("Nd", 3): 0.983, ("Pm", 3): 0.97,
-    ("Sm", 3): 0.958, ("Eu", 3): 0.947, ("Gd", 3): 0.938, ("Tb", 3): 0.923,
-    ("Dy", 3): 0.912, ("Ho", 3): 0.901, ("Er", 3): 0.890, ("Tm", 3): 0.880,
-    ("Yb", 3): 0.868, ("Lu", 3): 0.861, ("Ti", 3): 0.670, ("V", 3): 0.640,
-    ("Cr", 3): 0.615, ("Mn", 3): 0.645, ("Fe", 3): 0.645, ("Co", 3): 0.545,
-    ("Ru", 3): 0.68, ("Rh", 3): 0.665, ("Ir", 3): 0.68, ("As", 3): 0.58,
-    ("Sb", 3): 0.76, ("Bi", 3): 1.03,
-    ("C", 4): 0.15, ("Si", 4): 0.40, ("Ge", 4): 0.53, ("Sn", 4): 0.69,
-    ("Pb", 4): 0.775, ("Ti", 4): 0.605, ("Zr", 4): 0.72, ("Hf", 4): 0.71,
-    ("V", 4): 0.58, ("Mn", 4): 0.53, ("Mo", 4): 0.65, ("Tc", 4): 0.645,
-    ("Re", 4): 0.63, ("Os", 4): 0.63, ("Se", 4): 0.50, ("Te", 4): 0.97,
-    ("Th", 4): 0.94, ("U", 4): 0.89, ("Pu", 4): 0.86,
-    ("P", 5): 0.38, ("V", 5): 0.54, ("Nb", 5): 0.64, ("Ta", 5): 0.64,
-    ("As", 5): 0.46, ("Sb", 5): 0.60,
-    ("Cr", 6): 0.44, ("Mo", 6): 0.59, ("W", 6): 0.60, ("U", 6): 0.73,
+    ("Be", 2): 0.45,
+    ("Mg", 2): 0.72,
+    ("Ca", 2): 1.00,
+    ("Sr", 2): 1.18,
+    ("Ba", 2): 1.35,
+    ("Cr", 2): 0.73,
+    ("Mn", 2): 0.83,
+    ("Fe", 2): 0.78,
+    ("Co", 2): 0.745,
+    ("Ni", 2): 0.69,
+    ("Cu", 2): 0.73,
+    ("Zn", 2): 0.74,
+    ("Cd", 2): 0.95,
+    ("Hg", 2): 1.02,
+    ("Pd", 2): 0.64,
+    ("Pt", 2): 0.80,
+    ("Sn", 2): 1.18,
+    ("Pb", 2): 1.19,
+    ("B", 3): 0.27,
+    ("Al", 3): 0.535,
+    ("Ga", 3): 0.62,
+    ("In", 3): 0.80,
+    ("Tl", 3): 0.885,
+    ("Sc", 3): 0.745,
+    ("Y", 3): 0.90,
+    ("La", 3): 1.032,
+    ("Ce", 3): 1.01,
+    ("Pr", 3): 0.99,
+    ("Nd", 3): 0.983,
+    ("Pm", 3): 0.97,
+    ("Sm", 3): 0.958,
+    ("Eu", 3): 0.947,
+    ("Gd", 3): 0.938,
+    ("Tb", 3): 0.923,
+    ("Dy", 3): 0.912,
+    ("Ho", 3): 0.901,
+    ("Er", 3): 0.890,
+    ("Tm", 3): 0.880,
+    ("Yb", 3): 0.868,
+    ("Lu", 3): 0.861,
+    ("Ti", 3): 0.670,
+    ("V", 3): 0.640,
+    ("Cr", 3): 0.615,
+    ("Mn", 3): 0.645,
+    ("Fe", 3): 0.645,
+    ("Co", 3): 0.545,
+    ("Ru", 3): 0.68,
+    ("Rh", 3): 0.665,
+    ("Ir", 3): 0.68,
+    ("As", 3): 0.58,
+    ("Sb", 3): 0.76,
+    ("Bi", 3): 1.03,
+    ("C", 4): 0.15,
+    ("Si", 4): 0.40,
+    ("Ge", 4): 0.53,
+    ("Sn", 4): 0.69,
+    ("Pb", 4): 0.775,
+    ("Ti", 4): 0.605,
+    ("Zr", 4): 0.72,
+    ("Hf", 4): 0.71,
+    ("V", 4): 0.58,
+    ("Mn", 4): 0.53,
+    ("Mo", 4): 0.65,
+    ("Tc", 4): 0.645,
+    ("Re", 4): 0.63,
+    ("Os", 4): 0.63,
+    ("Se", 4): 0.50,
+    ("Te", 4): 0.97,
+    ("Th", 4): 0.94,
+    ("U", 4): 0.89,
+    ("Pu", 4): 0.86,
+    ("P", 5): 0.38,
+    ("V", 5): 0.54,
+    ("Nb", 5): 0.64,
+    ("Ta", 5): 0.64,
+    ("As", 5): 0.46,
+    ("Sb", 5): 0.60,
+    ("Cr", 6): 0.44,
+    ("Mo", 6): 0.59,
+    ("W", 6): 0.60,
+    ("U", 6): 0.73,
 }
 
 _DEFAULT_VDW_RADIUS = 1.70
@@ -113,6 +355,7 @@ _LABEL_ELEMENT = re.compile(r"([A-Za-z]{1,2})")
 # --------------------------------------------------------------------------
 # Elements and radii
 # --------------------------------------------------------------------------
+
 
 def _is_element(symbol):
     try:
@@ -158,6 +401,7 @@ def _radius_tables(element):
 # Cell helpers
 # --------------------------------------------------------------------------
 
+
 def _cell_columns(unit_cell):
     """Orthogonalized basis vectors: cart = sum(frac[i] * columns[i])."""
     columns = []
@@ -173,17 +417,19 @@ def _inverse_3x3(columns):
     """Transpose of the inverse orthogonalization matrix (M^-T), row-major."""
     a, b, c, d, e, f, g, h, i = [float(value) for value in columns]
     # columns = [a d g; b e h; c f i] (basis vectors as columns)
-    det = (
-        a * (e * i - f * h)
-        - d * (b * i - c * h)
-        + g * (b * f - c * e)
-    )
+    det = a * (e * i - f * h) - d * (b * i - c * h) + g * (b * f - c * e)
     if abs(det) < 1e-12:
         raise ValueError("The unit cell is degenerate.")
     return [
-        (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det,
-        (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det,
-        (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det,
+        (e * i - f * h) / det,
+        (c * h - b * i) / det,
+        (b * f - c * e) / det,
+        (f * g - d * i) / det,
+        (a * i - c * g) / det,
+        (c * d - a * f) / det,
+        (d * h - e * g) / det,
+        (b * g - a * h) / det,
+        (a * e - b * d) / det,
     ]
 
 
@@ -259,12 +505,11 @@ def _image_distance(frac_a, frac_b, cell_matrix):
 # Symmetry
 # --------------------------------------------------------------------------
 
+
 def _space_group_ops(structure):
     space_group = structure.spacegroup
     if space_group is None:
-        raise ValueError(
-            "The CIF does not define a space group that gemmi recognises."
-        )
+        raise ValueError("The CIF does not define a space group that gemmi recognises.")
     return list(space_group.operations())
 
 
@@ -275,8 +520,7 @@ def _op_key(operation):
             rotation.extend(int(value) for value in row)
         else:
             rotation.append(int(row))
-    return (tuple(rotation),
-            tuple(int(value) for value in operation.tran))
+    return (tuple(rotation), tuple(int(value) for value in operation.tran))
 
 
 def _expand_site(ops, unit_cell, frac):
@@ -288,8 +532,7 @@ def _expand_site(ops, unit_cell, frac):
     images = []
     for operation in ops:
         if any(
-            _cart_distance(unit_cell, _symmetry_image(operation, frac), other[0])
-            <= _CART_TOLERANCE
+            _cart_distance(unit_cell, _symmetry_image(operation, frac), other[0]) <= _CART_TOLERANCE
             for other in images
         ):
             continue
@@ -328,6 +571,7 @@ def _wrapped_fractional(frac):
 # --------------------------------------------------------------------------
 # CIF reading
 # --------------------------------------------------------------------------
+
 
 def _read_structure(cif_path, block_name=None):
     """Return (structure, block name, CIF block) for one crystal structure."""
@@ -449,19 +693,13 @@ def _matrix3_from_columns(columns):
 
 def _matrix3_multiply(left, right):
     return [
-        [
-            sum(left[row][k] * right[k][column] for k in range(3))
-            for column in range(3)
-        ]
+        [sum(left[row][k] * right[k][column] for k in range(3)) for column in range(3)]
         for row in range(3)
     ]
 
 
 def _matrix3_transpose(matrix):
-    return [
-        [matrix[column][row] for column in range(3)]
-        for row in range(3)
-    ]
+    return [[matrix[column][row] for column in range(3)] for row in range(3)]
 
 
 def _symmetry_rotation(operation):
@@ -472,10 +710,7 @@ def _symmetry_rotation(operation):
             flattened.extend(row)
         else:
             flattened.append(row)
-    return [
-        [float(flattened[row * 3 + column]) / 24.0 for column in range(3)]
-        for row in range(3)
-    ]
+    return [[float(flattened[row * 3 + column]) / 24.0 for column in range(3)] for row in range(3)]
 
 
 def _site_u_cart(site, unit_cell, operation=None):
@@ -524,9 +759,7 @@ def _site_u_cart(site, unit_cell, operation=None):
         if operation is not None:
             fractional = _matrix3_from_columns(unit_cell._fractionalization)
             rotation = _matrix3_multiply(
-                _matrix3_multiply(
-                    cell, _symmetry_rotation(operation)
-                ),
+                _matrix3_multiply(cell, _symmetry_rotation(operation)),
                 fractional,
             )
             tensor = _matrix3_multiply(
@@ -534,8 +767,12 @@ def _site_u_cart(site, unit_cell, operation=None):
                 _matrix3_transpose(rotation),
             )
         return [
-            tensor[0][0], tensor[1][1], tensor[2][2],
-            tensor[0][1], tensor[0][2], tensor[1][2],
+            tensor[0][0],
+            tensor[1][1],
+            tensor[2][2],
+            tensor[0][1],
+            tensor[0][2],
+            tensor[1][2],
         ]
     u_iso = float(getattr(site, "u_iso", 0.0) or 0.0)
     if u_iso > 0.0:
@@ -579,12 +816,14 @@ def load_structure(cif_path, block_name=None):
     asu_atoms = []
     for site in structure.sites:
         frac = [float(value) for value in site.fract]
-        asu_atoms.append({
-            "label": site.label,
-            "element": _site_element(site).upper(),
-            "frac": frac,
-            "cart": unit_cell.orthogonalize(frac),
-        })
+        asu_atoms.append(
+            {
+                "label": site.label,
+                "element": _site_element(site).upper(),
+                "frac": frac,
+                "cart": unit_cell.orthogonalize(frac),
+            }
+        )
     instances = _instances_from_atoms(unit_cell, base_atoms, lookup, asu_atoms)
     if not instances:
         raise ValueError("The CIF atoms could not be placed in the unit cell.")
@@ -622,6 +861,7 @@ def load_structure(cif_path, block_name=None):
 # Growth (ported from the cctbx worker)
 # --------------------------------------------------------------------------
 
+
 def _enabled_windows(pair_settings):
     """Return {sorted element pair: (min_distance, max_distance)}."""
     windows = {}
@@ -649,9 +889,7 @@ def _fractional_tolerance(unit_cell, cart_tolerance):
     """
     matrix = list(unit_cell.fractionalization_matrix())
     return [
-        cart_tolerance * math.sqrt(
-            sum(matrix[row * 3 + axis] ** 2 for row in range(3))
-        )
+        cart_tolerance * math.sqrt(sum(matrix[row * 3 + axis] ** 2 for row in range(3)))
         for axis in range(3)
     ]
 
@@ -688,9 +926,7 @@ def _base_atom_lookup(unit_cell, base_atoms):
     grid = {}
     for index, atom in enumerate(base_atoms):
         wrapped = _wrapped_fractional(atom["frac"])
-        cell = tuple(
-            int(math.floor(value / width)) % buckets for value in wrapped
-        )
+        cell = tuple(int(math.floor(value / width)) % buckets for value in wrapped)
         grid.setdefault(cell, []).append((index, wrapped))
     return {
         "tolerance": tolerance,
@@ -700,8 +936,7 @@ def _base_atom_lookup(unit_cell, base_atoms):
     }
 
 
-def _match_base_atom(unit_cell, base_atoms, lookup, frac, cart, element=None,
-                     label=None):
+def _match_base_atom(unit_cell, base_atoms, lookup, frac, cart, element=None, label=None):
     """Return (base atom index, integer cell translation) or None.
 
     Disordered CIFs can list different elements at the same site, so a
@@ -712,9 +947,7 @@ def _match_base_atom(unit_cell, base_atoms, lookup, frac, cart, element=None,
     buckets = lookup["buckets"]
     width = lookup["width"]
     wrapped = _wrapped_fractional(frac)
-    cell = tuple(
-        int(math.floor(value / width)) % buckets for value in wrapped
-    )
+    cell = tuple(int(math.floor(value / width)) % buckets for value in wrapped)
     best = None
     best_other_element = None
     best_label = None
@@ -727,9 +960,7 @@ def _match_base_atom(unit_cell, base_atoms, lookup, frac, cart, element=None,
                     (cell[2] + dc) % buckets,
                 )
                 for candidate, base_wrapped in lookup["grid"].get(neighbour, ()):
-                    delta = [
-                        wrapped[axis] - base_wrapped[axis] for axis in range(3)
-                    ]
+                    delta = [wrapped[axis] - base_wrapped[axis] for axis in range(3)]
                     if any(
                         abs(value - round(value)) > tolerance[axis]
                         for axis, value in enumerate(delta)
@@ -737,35 +968,23 @@ def _match_base_atom(unit_cell, base_atoms, lookup, frac, cart, element=None,
                         continue
                     base_frac = base_atoms[candidate]["frac"]
                     offset = tuple(
-                        int(round(float(frac[axis]) - base_frac[axis]))
-                        for axis in range(3)
+                        int(round(float(frac[axis]) - base_frac[axis])) for axis in range(3)
                     )
                     if cart is None:
                         return candidate, offset
-                    expected = unit_cell.orthogonalize([
-                        base_frac[axis] + offset[axis] for axis in range(3)
-                    ])
-                    distance_squared = sum(
-                        (expected[axis] - cart[axis]) ** 2 for axis in range(3)
+                    expected = unit_cell.orthogonalize(
+                        [base_frac[axis] + offset[axis] for axis in range(3)]
                     )
-                    if distance_squared > _CART_TOLERANCE ** 2:
+                    distance_squared = sum((expected[axis] - cart[axis]) ** 2 for axis in range(3))
+                    if distance_squared > _CART_TOLERANCE**2:
                         continue
                     found = (distance_squared, candidate, offset)
-                    if (
-                        label is not None
-                        and base_atoms[candidate]["label"] == label
-                    ):
+                    if label is not None and base_atoms[candidate]["label"] == label:
                         if best_label is None or distance_squared < best_label[0]:
                             best_label = found
                         continue
-                    if (
-                        element is not None
-                        and base_atoms[candidate]["element"] != element
-                    ):
-                        if (
-                            best_other_element is None
-                            or distance_squared < best_other_element[0]
-                        ):
+                    if element is not None and base_atoms[candidate]["element"] != element:
+                        if best_other_element is None or distance_squared < best_other_element[0]:
                             best_other_element = found
                         continue
                     if best is None or distance_squared < best[0]:
@@ -784,12 +1003,14 @@ def _base_atoms(unit_cell, sites):
     atoms = []
     for site in sites:
         frac = [float(value) for value in site["frac"]]
-        atoms.append({
-            "label": site.get("label"),
-            "element": str(site.get("element", "X")).upper(),
-            "frac": frac,
-            "cart": unit_cell.orthogonalize(frac),
-        })
+        atoms.append(
+            {
+                "label": site.get("label"),
+                "element": str(site.get("element", "X")).upper(),
+                "frac": frac,
+                "cart": unit_cell.orthogonalize(frac),
+            }
+        )
     return atoms
 
 
@@ -804,14 +1025,24 @@ def _instances_from_atoms(unit_cell, base_atoms, lookup, atoms):
         if frac is None:
             continue
         match = _match_base_atom(
-            unit_cell, base_atoms, lookup, frac, cart,
-            str(atom.get("element", "X")).upper(), atom.get("label"),
+            unit_cell,
+            base_atoms,
+            lookup,
+            frac,
+            cart,
+            str(atom.get("element", "X")).upper(),
+            atom.get("label"),
         )
         if match is None:
             continue
-        instances.extend((
-            match[0], match[1][0], match[1][1], match[1][2],
-        ))
+        instances.extend(
+            (
+                match[0],
+                match[1][0],
+                match[1][1],
+                match[1][2],
+            )
+        )
     return instances
 
 
@@ -823,19 +1054,22 @@ def _instance_keys(instances, canonical):
         site = int(instances[offset])
         if not 0 <= site < len(canonical):
             continue
-        keys.add((
-            canonical[site],
+        keys.add(
             (
-                int(instances[offset + 1]),
-                int(instances[offset + 2]),
-                int(instances[offset + 3]),
-            ),
-        ))
+                canonical[site],
+                (
+                    int(instances[offset + 1]),
+                    int(instances[offset + 2]),
+                    int(instances[offset + 3]),
+                ),
+            )
+        )
     return keys
 
 
-def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
-                                     windows_by_element, canonical=None):
+def _periodic_neighbour_table_gemmi(
+    unit_cell, base_atoms, base_elements, windows_by_element, canonical=None
+):
     """For each cell atom, list its bonded (base atom, cell offset) pairs.
 
     Uses gemmi's UnitCell.find_nearest_pbc_images() (C++ search) to resolve the
@@ -884,9 +1118,12 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
         else:
             search, sites = index
             candidates = sorted(
-                {mark.atom_idx for mark in search.find_site_neighbors(
-                    sites[base_index], 0.0, global_max + 1e-4
-                )}
+                {
+                    mark.atom_idx
+                    for mark in search.find_site_neighbors(
+                        sites[base_index], 0.0, global_max + 1e-4
+                    )
+                }
             )
         neighbours = []
         seen = set()
@@ -905,9 +1142,7 @@ def _periodic_neighbour_table_gemmi(unit_cell, base_atoms, base_elements,
                 tx = int(round(f_img.x - frac_j.x))
                 ty = int(round(f_img.y - frac_j.y))
                 tz = int(round(f_img.z - frac_j.z))
-                dist = _image_distance(
-                    base_atom["frac"], [f_img.x, f_img.y, f_img.z], cell_matrix
-                )
+                dist = _image_distance(base_atom["frac"], [f_img.x, f_img.y, f_img.z], cell_matrix)
                 if dist <= 1e-12:
                     continue
                 if dist < bounds[0]:
@@ -942,8 +1177,9 @@ def _neighbor_search_index(unit_cell, base_atoms, radius):
     return search, sites
 
 
-def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
-                     windows, neighbour_table=None):
+def _grow_shell_keys(
+    unit_cell, base_atoms, canonical, visited, seed_keys, windows, neighbour_table=None
+):
     """Return the instance keys of the next coordination shell.
 
     A new atom must lie inside one enabled distance window of a seed atom, so
@@ -965,7 +1201,6 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
         raise ValueError("Enabled connectivity maximum distances must be positive.")
 
     if neighbour_table is None:
-
         windows_by_element = {}
         for (element_a, element_b), bounds in windows.items():
             windows_by_element.setdefault(element_a, {})[element_b] = bounds
@@ -973,7 +1208,11 @@ def _grow_shell_keys(unit_cell, base_atoms, canonical, visited, seed_keys,
 
         base_elements = [atom["element"] for atom in base_atoms]
         neighbour_table = _periodic_neighbour_table_gemmi(
-            unit_cell, base_atoms, base_elements, windows_by_element, canonical,
+            unit_cell,
+            base_atoms,
+            base_elements,
+            windows_by_element,
+            canonical,
         )
     elif len(neighbour_table) != len(base_atoms):
         raise ValueError("The cached periodic neighbour table is invalid.")
@@ -1026,10 +1265,7 @@ def grow_connectivity_shell(
     windows = _enabled_windows(pair_settings)
     cache_key = _growth_cache_key(unit_cell_parameters, sites, windows)
     current_signature = tuple(int(value) for value in current_instances)
-    cache_matches = (
-        _GROWTH_CACHE is not None
-        and _GROWTH_CACHE["key"] == cache_key
-    )
+    cache_matches = _GROWTH_CACHE is not None and _GROWTH_CACHE["key"] == cache_key
     if cache_matches:
         unit_cell = _GROWTH_CACHE["unit_cell"]
         base_atoms = _GROWTH_CACHE["base_atoms"]
@@ -1043,29 +1279,34 @@ def grow_connectivity_shell(
         canonical = _canonical_base_indices(base_atoms)
         neighbour_table = None
 
-    state_matches = (
-        cache_matches
-        and _GROWTH_CACHE["instances"] == current_signature
-    )
+    state_matches = cache_matches and _GROWTH_CACHE["instances"] == current_signature
     visited = (
-        _GROWTH_CACHE["visited"]
-        if state_matches
-        else _instance_keys(current_instances, canonical)
+        _GROWTH_CACHE["visited"] if state_matches else _instance_keys(current_instances, canonical)
     )
     seed_keys = _instance_keys(seed_instances, canonical)
     if not seed_keys:
         raise ValueError("The selected atoms are not part of the structure.")
 
     new_keys, neighbour_table = _grow_shell_keys(
-        unit_cell, base_atoms, canonical, visited, seed_keys,
-        windows, neighbour_table,
+        unit_cell,
+        base_atoms,
+        canonical,
+        visited,
+        seed_keys,
+        windows,
+        neighbour_table,
     )
 
     new_instances = []
     for site_index, translation in sorted(new_keys):
-        new_instances.extend((
-            site_index, translation[0], translation[1], translation[2],
-        ))
+        new_instances.extend(
+            (
+                site_index,
+                translation[0],
+                translation[1],
+                translation[2],
+            )
+        )
     _GROWTH_CACHE = {
         "key": cache_key,
         "unit_cell": unit_cell,

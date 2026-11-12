@@ -52,9 +52,9 @@ res = CrystalViz._unwrapped_cell_instances(sites, identity_cell, pairs)
 check("normal window still returns instances", bool(res), f"{len(res)//4} atoms")
 
 # ---- 2. boundary extension guard ------------------------------------
-corner_sites = [{"frac": (0.0, 0.0, 0.0), "element": "C"}]
-# 500 distinct corner images -> 4000 after extension
-flat = [v for t in range(500) for v in (0, t, 0, 0)]
+corner_sites = [{"frac": (0.0, 0.0, 0.0), "element": "C"} for _ in range(500)]
+# 500 distinct corner sites -> up to 4000 images after extension
+flat = [v for i in range(500) for v in (i, 0, 0, 0)]
 t0 = time.perf_counter()
 try:
     CrystalViz._extend_cell_boundary_instances(
@@ -69,8 +69,9 @@ except ValueError as exc:
 full = CrystalViz._extend_cell_boundary_instances(
     corner_sites, [0, 0, 0, 0, 0, 1, 0, 0]
 )
-# 8 images each, minus the 4 shared at tx=1 -> 12 unique
-check("extension without a limit still works", len(full) // 4 == 12, f"{len(full)//4}")
+# 8 images for the single base-cell corner atom (its periodic copy at
+# translation 1 is no longer extended, so it cannot spawn a second cell).
+check("extension without a limit still works", len(full) // 4 == 8, f"{len(full)//4}")
 
 # ---- 3. real fills ---------------------------------------------------
 scene = bpy.context.scene

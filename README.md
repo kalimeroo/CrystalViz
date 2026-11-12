@@ -187,8 +187,10 @@ Turning **Show Unit Cell** off hides the grid. Import and every fill display
 atoms only and create no bonds: the previous bond set is dropped because it
 described the old atom set. Bonds return when you grow the structure, create
 polyhedra, delete an atom, or switch the rendering model. Growing right after an
-import or fill builds the complete bond set, the initial atoms included; later
-grows only append. Packing is limited to 200,000 atoms.
+import or fill builds the complete bond set, the initial atoms included — even
+for finite molecules that add no new shell (they may not pack again within the
+connectivity window); later grows only append. Packing is limited to 200,000
+atoms.
 
 Use **Grow Structure** to add one shell around all atoms. Use **Grow Selected
 Atoms** to enter viewport selection mode; click or box-select atoms, use

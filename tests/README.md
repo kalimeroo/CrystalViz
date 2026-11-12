@@ -71,7 +71,14 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 48/48 pass.
+`pwsh tests/run_all.ps1` → 49/49 pass.
+
+- `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
+  atoms even when grow adds no shell — small finite molecules (metal.cif,
+  test.cif) do not pack again within the connectivity window, and grow used to
+  return early at "no additional atoms matched" without calling the bond
+  builder. It now builds the full set when starting bond-less after a fill; a
+  second atom-less grow preserves those bonds.
 
 - `test_reset_default_pairs.py` pins that **Reset Default** restores the exact
   import-time connectivity windows. The reset recomputed defaults from covalent

@@ -6767,6 +6767,19 @@ class CGN_OT_grow_further(Operator):
             # Nothing matched, so the growth is finished; drop the lingering
             # selection sphere that was shown while choosing the seed atoms.
             _update_growth_selection(root, [], [])
+            # A grow right after a fill displays atoms only and must still bond
+            # the atoms already on screen even when no shell could be added
+            # (small finite molecules like metal.cif / test.cif that do not
+            # pack again within the connectivity window). With nothing to
+            # preserve, build the full set; otherwise leave existing bonds
+            # untouched.
+            if _current_model(context.scene) != "SPACE_FILLING":
+                if not any(obj.get("cgn_role") == "bonds" for obj in root.all_objects):
+                    atoms = _materialize_atoms(
+                        sites, cell_matrix, instances, initial_count
+                    )
+                    _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+                    bpy.context.view_layer.update()
             self.report(
                 {"INFO"},
                 "No additional atoms match the current connectivity settings.",

@@ -35,7 +35,7 @@ Two-module split — respect it:
 Data flow and storage contract:
 
 - Import → `worker.load_structure()` returns a dict: P1 `sites`, flat `instances` list of **quadruples** `(site_index, tx, ty, tz)`, `cell_matrix` (9 floats, column-major orthogonalized cell vectors, read from gemmi's _private_ `unit_cell._columns` — re-check this attribute if the bundled gemmi version changes), space-group XHM + operator triplets, cell-params display strings (with standard uncertainties).
-- All structure state is persisted as **JSON strings in collection custom properties** `cgn_*` on the structure collection (`cgn_role == "structure"`); the active one is looked up via `scene.cgn_active_structure`. Fill/Grow/Delete (`cgn.fill_*`, `cgn.grow_*`, `cgn.delete_atoms`) re-derive atoms from sites+instances (`_materialize_atoms`) — they never rebuild from the CIF. Fills build **no bonds** (`_clear_bonds` drops the previous set) and import builds none either (`_import_result` only stores the default connectivity pairs, like Fill → Asymmetric Unit); grow appends to existing bonds, but falls back to a full build when the structure has no bond objects (i.e. right after a fill or import), so the initial atoms get bonded too.
+- All structure state is persisted as **JSON strings in collection custom properties** `cgn_*` on the structure collection (`cgn_role == "structure"`); the active one is looked up via `scene.cgn_active_structure`. Fill/Grow/Delete (`cgn.fill_*`, `cgn.grow_*`, `cgn.delete_atoms`) re-derive atoms from sites+instances (`_materialize_atoms`) — they never rebuild from the CIF. Fills build **no bonds** (`_clear_bonds` drops the previous set) and import builds none either (`_import_result` only stores the default connectivity pairs, like Fill → Asymmetric Unit); grow appends to existing bonds, but falls back to a full build when the structure has no bond objects (i.e. right after a fill or import), so the initial atoms get bonded — even when a growth adds no shell (finite molecules like metal.cif / test.cif).
 - Structures imported before the site table existed raise `_LEGACY_STRUCTURE_ERROR`; they must be re-imported, they cannot be grown/bonded.
 
 ## cctbx parity (don't break)
@@ -53,9 +53,9 @@ Worker speaks **Ångström**; Blender converts with `_DISPLAY_SCALE = 0.1` (1 Bl
 
 ## Verification (manual)
 
-- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 48/48, see `tests/README.md` for the archived groups.
+- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 49/49, see `tests/README.md` for the archived groups.
 
 - Syntax: `python -m py_compile __init__.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
 - Worker standalone: `pip install gemmi` and run/ad-hoc-test `gemmi_worker.load_structure(...)` in a normal Python — no Blender needed.
-- Example CIFs live in **`example CIF  files\`** (directory name has TWO spaces — agents always miss this): `test.cif` (basics), `Brookite.cif`, `aromatic.cif` (aromatic ring logic), `Ca_autored.cif` (~1.8 MB — use for performance/atom-count limits like `_MAX_FILL_ATOMS = 200000`).
+- Example CIFs live in **`CIF\`** (directory name has TWO spaces — agents always miss this): `test.cif` (basics), `Brookite.cif`, `aromatic.cif` (aromatic ring logic), `Ca_autored.cif` (~1.8 MB — use for performance/atom-count limits like `_MAX_FILL_ATOMS = 200000`).
 - In Blender: install the built zip from `dist/`, check Add-on Preferences shows the bundled gemmi version, import, Fill/Grow, toggle all four models (`BALL_STICK` / `ELLIPSOID` / `SPACE_FILLING` / `WIRE_STICKS` — note the ORTEP mode's `cgn_model` enum value is `ELLIPSOID`, not "ORTEP").

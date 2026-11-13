@@ -81,13 +81,13 @@ def segment_length(segment):
 
 
 C = atom("C", (0.0, 0.0, 0.0))
-oxygen = atom("O", (1.2, 0.0, 0.0), vdw=1.52, covalent=0.66)
+O = atom("O", (1.2, 0.0, 0.0), vdw=1.52, covalent=0.66)  # noqa: E741 - element symbol
 
 # ---- 1. exact duplicate -------------------------------------------------
 print("=== exact duplicate site (min_distance = 0) ===")
 root = make_root("CGN_Test_Dup_Exact")
 pairs = set_pairs([("C", "C", 0.0, 2.0), ("C", "O", 0.0, 2.0)])
-CrystalViz._bond_objects(root, [C, atom("C", (0.0, 0.0, 0.0)), oxygen], pairs)
+CrystalViz._bond_objects(root, [C, atom("C", (0.0, 0.0, 0.0)), O], pairs)
 segments = bond_segments(root)
 check("one bond for the disordered site", len(segments) == 1, f"n={len(segments)}")
 check(
@@ -101,7 +101,7 @@ check("no zero-length bond", all(segment_length(s) > 1e-3 for s in segments))
 print("\n=== near duplicate, 2e-6 A apart (min_distance = 0) ===")
 root = make_root("CGN_Test_Dup_Near")
 pairs = set_pairs([("C", "C", 0.0, 2.0), ("C", "O", 0.0, 2.0)])
-CrystalViz._bond_objects(root, [C, atom("C", (2e-6, 0.0, 0.0)), oxygen], pairs)
+CrystalViz._bond_objects(root, [C, atom("C", (2e-6, 0.0, 0.0)), O], pairs)
 segments = bond_segments(root)
 check("one bond for the near duplicate", len(segments) == 1, f"n={len(segments)}")
 check("no zero-length bond", all(segment_length(s) > 1e-3 for s in segments))
@@ -125,7 +125,7 @@ check(
 print("\n=== a normal two-bond chain is untouched ===")
 root = make_root("CGN_Test_Dup_Chain")
 pairs = set_pairs([("C", "O", 0.0, 2.0)])
-chain = [C, oxygen, atom("C", (2.2, 0.0, 0.0))]
+chain = [C, O, atom("C", (2.2, 0.0, 0.0))]
 CrystalViz._bond_objects(root, chain, pairs)
 segments = bond_segments(root)
 check("both C-O contacts are drawn", len(segments) == 2, f"n={len(segments)}")
@@ -139,11 +139,11 @@ check(
 print("\n=== append (grow) path ===")
 root = make_root("CGN_Test_Dup_Append")
 pairs = set_pairs([("C", "C", 0.0, 2.0), ("C", "O", 0.0, 2.0)])
-CrystalViz._bond_objects(root, [C, oxygen], pairs)
+CrystalViz._bond_objects(root, [C, O], pairs)
 check("initial build: one bond", len(bond_segments(root)) == 1, str(len(bond_segments(root))))
 CrystalViz._bond_objects(
     root,
-    [C, oxygen, atom("C", (0.0, 0.0, 0.0))],
+    [C, O, atom("C", (0.0, 0.0, 0.0))],
     pairs,
     start_index=2,
     append_only=True,
@@ -155,7 +155,7 @@ check(
 )
 CrystalViz._bond_objects(
     root,
-    [C, oxygen, atom("C", (0.0, 0.0, 0.0)), atom("C", (-1.4, 0.0, 0.0))],
+    [C, O, atom("C", (0.0, 0.0, 0.0)), atom("C", (-1.4, 0.0, 0.0))],
     pairs,
     start_index=2,
     append_only=True,

@@ -61,9 +61,11 @@ for a first run.
 - New tests belong in `tests/` and should start with:
   ```python
   import sys
+
   sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
   import _env  # noqa: F401
   import CrystalViz
+
   CrystalViz.register()
   ```
 - Import CIFs from `_env.CIF_DIR` (the repo `CIF/` folder) rather than
@@ -89,7 +91,7 @@ for a first run.
   predate it.
 
 - `test_bond_clear_on_rebuild.py` pins that a full `_bond_objects` rebuild
-  (``append_only=False``) drops the previous bond set when nothing can be
+  (`append_only=False`) drops the previous bond set when nothing can be
   bonded — the reported sequence Fill → Grow → Delete (box-select every atom but
   one) leaves no bond object behind, and the same early-return cleanup applies
   to an empty/single-atom structure, every connectivity pair disabled, a zero
@@ -110,7 +112,7 @@ for a first run.
   counts/vertices stay consistent. It then proves bonds come back through the
   existing actions — the `_bond_objects` call used by polyhedra/delete and a
   rendering-model switch — and that a second fill clears them again. Finally it
-  pins that a grow right after a fill builds the bonds among the *initial*
+  pins that a grow right after a fill builds the bonds among the _initial_
   atoms as well as those to the new atoms (the grow path falls back from
   append-only to a full build when the structure has no bonds to preserve).
 
@@ -121,7 +123,7 @@ for a first run.
   own spokes, clearing polyhedra restores every bond, polyhedra created while
   the option is already on are masked immediately, grown Ti images without a
   polyhedron keep their bonds, and deleting a ligand re-derives the mask from
-  the rebuilt polyhedra (the delete path now remaps polyhedra *before* the bond
+  the rebuilt polyhedra (the delete path now remaps polyhedra _before_ the bond
   rebuild so stale centre indices can never hide the wrong bonds).
 
 - `test_polyhedra_ligand_delete.py` pins that deleting a ligand atom sitting on a
@@ -129,7 +131,7 @@ for a first run.
   deleting the central atom — while unaffected polyhedra survive. It drives the
   delete data path (`_remap_polyhedra` with `removed_quads`) against Brookite
   Ti-centred polyhedra, covers the centre-deletion parity case, and exercises a
-  grown structure so a ligand of a *translated* image is matched per periodic
+  grown structure so a ligand of a _translated_ image is matched per periodic
   copy (the pre-fix check only inspected the home-cell representative).
 
 - `test_selection_highlight.py` pins the growth-selection highlight fix: the
@@ -148,7 +150,7 @@ for a first run.
   builder (`_bond_objects`): a centre now rejects far candidates against its
   own element's widest enabled window (`reach[element]`) instead of the largest
   window in the whole table, so one permissive pair no longer inflates every
-  centre's distance tests.  On several arrangements (disparate reaches, a
+  centre's distance tests. On several arrangements (disparate reaches, a
   permissive pair for one element, an element with no enabled pair, asymmetric
   reach, the grow/append path, and a non-zero `min_distance`) the built bond set
   must be byte-identical to an exhaustive O(N^2) reference that tests each pair

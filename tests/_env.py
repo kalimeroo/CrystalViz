@@ -13,6 +13,7 @@ gemmi resolution order:
   4. the newest ``<repo>/wheels/gemmi-*.whl``, unpacked once into
      ``<repo>/tests/_gemmi`` (gitignored).
 """
+
 import glob
 import os
 import sys
@@ -35,9 +36,7 @@ def _gemmi_dir():
         return override
     if _has_gemmi(GEMMI_LOCAL):
         return GEMMI_LOCAL
-    legacy = os.path.join(
-        os.environ.get("TEMP", os.path.expanduser("~")), "crystalviz_gemmi"
-    )
+    legacy = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "crystalviz_gemmi")
     if _has_gemmi(legacy):
         return legacy
     wheels = sorted(glob.glob(os.path.join(REPO_DIR, "wheels", "gemmi-*.whl")))

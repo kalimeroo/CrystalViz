@@ -6,11 +6,17 @@ Run headless:
 Asserts that after an injected mid-rebuild failure, BOTH the stored cgn_*
 props AND the displayed atoms/bonds are restored to the pre-operation state.
 """
-import sys, os, json, bpy
+
+import json
+import os
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.CIF_DIR
@@ -34,11 +40,13 @@ bpy.context.view_layer.update()
 
 FAILURES = []
 
+
 def check(name, cond, detail=""):
     status = "PASS" if cond else "FAIL"
     print(f"[{status}] {name}" + (f"  ({detail})" if detail else ""))
     if not cond:
         FAILURES.append(name)
+
 
 def baseline():
     return {
@@ -48,57 +56,64 @@ def baseline():
         "shells": root.get("cgn_growth_shells"),
         "bond_sig": root.get("cgn_bond_settings_signature"),
         "atom_verts": sum(
-            len(o.data.vertices)
-            for o in root.objects if o.get("cgn_role") == "atoms"
+            len(o.data.vertices) for o in root.objects if o.get("cgn_role") == "atoms"
         ),
         # Polyhedra are GN points scaffolds (role "polyhedron") plus a hidden
         # prototype; there is no baked "polyhedron_face" object any more.
-        "poly_objects": sum(
-            1 for o in root.objects if o.get("cgn_role") == "polyhedron"
-        ),
+        "poly_objects": sum(1 for o in root.objects if o.get("cgn_role") == "polyhedron"),
     }
+
 
 def one_shot_fail(attr):
     """Patch ``CrystalViz.<attr>`` so the FIRST call succeeds then raises, and
     all later calls (including the rollback rebuild) run normally."""
     original = getattr(CrystalViz, attr)
     state = {"fired": False}
+
     def wrapper(*args, **kwargs):
         if not state["fired"]:
             state["fired"] = True
             original(*args, **kwargs)
             raise RuntimeError("INJECTED mid-rebuild failure")
         return original(*args, **kwargs)
+
     setattr(CrystalViz, attr, wrapper)
     return lambda: setattr(CrystalViz, attr, original)
+
 
 def one_shot_bond_fail():
     """Failure injection for the grow/polyhedra paths (they rebuild bonds)."""
     return one_shot_fail("_bond_objects")
+
 
 def one_shot_unit_cell_fail():
     """Failure injection for the fill path: fills build no bonds, so the first
     bond-free rebuild step (``_apply_unit_cell_settings``) is the hook."""
     return one_shot_fail("_apply_unit_cell_settings")
 
+
 # ---------------- GROW test ----------------
 print("\n=== GROW rollback test (Brookite, seed-grow) ===")
+
+
 def _brookite():
     scene.cgn_connectivity_pairs.clear()
     bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Brookite.cif"))
     r = bpy.data.collections.get(scene.cgn_active_structure)
     if not any(p.enabled for p in scene.cgn_connectivity_pairs):
         pair = scene.cgn_connectivity_pairs.add()
-        pair.element_a = "Ti"; pair.element_b = "O"; pair.enabled = True
-        pair.min_distance = 0.1; pair.max_distance = 3.0
+        pair.element_a = "Ti"
+        pair.element_b = "O"
+        pair.enabled = True
+        pair.min_distance = 0.1
+        pair.max_distance = 3.0
     # Import builds no bonds; build the baseline set explicitly so the grow
     # rollback compares against a state that already has bonds (and a bond
     # settings signature).
-    CrystalViz._bond_objects(
-        r, CrystalViz._structure_atoms(r), scene.cgn_connectivity_pairs
-    )
+    CrystalViz._bond_objects(r, CrystalViz._structure_atoms(r), scene.cgn_connectivity_pairs)
     bpy.context.view_layer.update()
     return r
+
 
 # Control: confirm a seed-grow on fresh Brookite WOULD add atoms (non-vacuous).
 root = _brookite()
@@ -106,7 +121,7 @@ cnt0 = len(json.loads(root.get("cgn_instances", "[]"))) // 4
 root["cgn_selected_indices"] = json.dumps(list(range(5)))
 res = bpy.ops.cgn.grow_further("INVOKE_DEFAULT", all_atoms=False)
 cnt1 = len(json.loads(root.get("cgn_instances", "[]"))) // 4
-check("grow control: unpatched grow adds atoms", cnt1 > cnt0, f"grew {cnt1-cnt0}")
+check("grow control: unpatched grow adds atoms", cnt1 > cnt0, f"grew {cnt1 - cnt0}")
 
 # Failure-injected grow on a FRESH Brookite import.
 root = _brookite()
@@ -169,9 +184,7 @@ except Exception as exc:
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 atoms = CrystalViz._structure_atoms(root)
-ti_centers = [
-    i for i, a in enumerate(atoms) if str(a.get("element", "X")).upper() == "TI"
-]
+ti_centers = [i for i, a in enumerate(atoms) if str(a.get("element", "X")).upper() == "TI"]
 built, skipped = CrystalViz._build_polyhedra_objects(root, atoms, ti_centers, scene)
 check("polyhedra control: some polyhedra built", built > 0, f"built={built}")
 bpy.context.view_layer.update()

@@ -8,12 +8,16 @@ bonds to every vertex, like the full Create Polyhedra path.
 Run:
   blender --background --factory-startup --python test_polyhedra_selected_bonds.py
 """
-import sys, bpy
+
+import sys
+
+import bpy
 from mathutils import Vector
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -56,17 +60,16 @@ CrystalViz._default_connectivity_pairs(scene, atoms0)
 ag_index = next(i for i, a in enumerate(atoms0) if str(a.get("element", "")).upper() == "AG")
 
 # Build once so every ligand image of that centre is present in the structure.
-built, _ = CrystalViz._build_polyhedra_objects(
-    root, atoms0, [ag_index], scene, clear_existing=True
-)
+built, _ = CrystalViz._build_polyhedra_objects(root, atoms0, [ag_index], scene, clear_existing=True)
 atoms_full = CrystalViz._structure_atoms(root)
 center = Vector(CrystalViz._display_point(atoms_full[ag_index]["cart"]))
 expected_neighbours = len(neighbours(center, bond_segments(root)))
-print(f"  initial build: built={built} atoms={len(atoms_full)} "
-      f"neighbours={expected_neighbours}")
-check("initial build added atoms and bonds",
-      len(atoms_full) > len(atoms0) and expected_neighbours >= 4,
-      f"{len(atoms0)} -> {len(atoms_full)} atoms, {expected_neighbours} neighbours")
+print(f"  initial build: built={built} atoms={len(atoms_full)} neighbours={expected_neighbours}")
+check(
+    "initial build added atoms and bonds",
+    len(atoms_full) > len(atoms0) and expected_neighbours >= 4,
+    f"{len(atoms0)} -> {len(atoms_full)} atoms, {expected_neighbours} neighbours",
+)
 
 # Remove the polyhedra but keep the (already complete) atom table, then drop
 # every bond: this is the "vertices already displayed, no bonds" situation.
@@ -83,15 +86,22 @@ built, skipped = CrystalViz._build_polyhedra_objects(
 )
 atoms_after = CrystalViz._structure_atoms(root)
 after_neighbours = len(neighbours(center, bond_segments(root)))
-print(f"  selected build: built={built} skipped={skipped} "
-      f"atoms={len(atoms_after)} neighbours={after_neighbours}")
+print(
+    f"  selected build: built={built} skipped={skipped} "
+    f"atoms={len(atoms_after)} neighbours={after_neighbours}"
+)
 check("polyhedron rebuilt", built == 1, f"built={built}")
-check("no extra atoms needed", len(atoms_after) == len(atoms_full),
-      f"{len(atoms_full)} -> {len(atoms_after)}")
-check("centre-ligand bonds are drawn", after_neighbours == expected_neighbours,
-      f"{after_neighbours} vs expected {expected_neighbours}")
-check("at least four centre-ligand bonds", after_neighbours >= 4,
-      f"{after_neighbours}")
+check(
+    "no extra atoms needed",
+    len(atoms_after) == len(atoms_full),
+    f"{len(atoms_full)} -> {len(atoms_after)}",
+)
+check(
+    "centre-ligand bonds are drawn",
+    after_neighbours == expected_neighbours,
+    f"{after_neighbours} vs expected {expected_neighbours}",
+)
+check("at least four centre-ligand bonds", after_neighbours >= 4, f"{after_neighbours}")
 
 CrystalViz.unregister()
 check("unregister OK", True)

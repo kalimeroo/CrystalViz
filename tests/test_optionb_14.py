@@ -13,11 +13,17 @@ Fills build no bonds, so the test builds the full bond set explicitly with
 append-only grow behaviour.  "Reset Default" only restores the connectivity
 windows; it never tears down bonds either.
 """
-import sys, os, json, bpy
+
+import json
+import os
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.CIF_DIR
@@ -26,27 +32,35 @@ scene.cgn_chemdraw = False
 
 FAILURES = []
 
+
 def check(name, cond, detail=""):
     status = "PASS" if cond else "FAIL"
     print(f"[{status}] {name}" + (f"  ({detail})" if detail else ""))
     if not cond:
         FAILURES.append(name)
 
+
 def bond_pairs(root):
-    return sorted({
-        str(o.get("cgn_pair", ""))
-        for o in root.objects
-        if o.get("cgn_role") == "bonds" and not o.get("cgn_aromatic_torus")
-    })
+    return sorted(
+        {
+            str(o.get("cgn_pair", ""))
+            for o in root.objects
+            if o.get("cgn_role") == "bonds" and not o.get("cgn_aromatic_torus")
+        }
+    )
+
 
 def bond_object_count(root):
     return sum(1 for o in root.objects if o.get("cgn_role") == "bonds")
 
+
 def atom_count(root):
     return len(json.loads(root.get("cgn_instances", "[]"))) // 4
 
+
 def atom_object_count(root):
     return sum(1 for o in root.objects if o.get("cgn_role") == "atoms")
+
 
 # --- fresh import; fill to a fuller cell; build the full bond set ---
 scene.cgn_connectivity_pairs.clear()
@@ -57,9 +71,7 @@ root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.rebuild_connectivity("INVOKE_DEFAULT")
 # A fill displays atoms only; build the bond set explicitly so the test can
 # prove grow appends to bonds that already existed.
-CrystalViz._bond_objects(
-    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
-)
+CrystalViz._bond_objects(root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs)
 bpy.context.view_layer.update()
 
 full_pairs = bond_pairs(root)

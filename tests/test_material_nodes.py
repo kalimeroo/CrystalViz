@@ -12,6 +12,7 @@ no Principled BSDF node.  This suite covers:
   * the call sites when the material does not exist at all,
   * a real import, which must still colour its atoms.
 """
+
 import os
 import sys
 
@@ -59,6 +60,7 @@ check("helper returns None for a node-less material", result is None)
 check("helper re-enables nodes on a node-less material", headless.use_nodes is True)
 check("helper tolerates None", CrystalViz._principled_shader(None) is None)
 
+
 # ---- 2. a tree without a Principled BSDF node ----------------------------
 def de_principled(name):
     material = bpy.data.materials.get(name) or bpy.data.materials.new(name)
@@ -70,8 +72,10 @@ def de_principled(name):
 
 
 de_principled("CGN_Mat_C")
-check("fixture: no Principled node left",
-      bpy.data.materials["CGN_Mat_C"].node_tree.nodes.get("Principled BSDF") is None)
+check(
+    "fixture: no Principled node left",
+    bpy.data.materials["CGN_Mat_C"].node_tree.nodes.get("Principled BSDF") is None,
+)
 try:
     material = CrystalViz._make_material("CGN_Mat_C", (0.9, 0.1, 0.05, 1.0))
     ok = material is bpy.data.materials["CGN_Mat_C"]
@@ -79,9 +83,11 @@ except Exception as exc:  # noqa: BLE001 - any crash is a failure here
     ok = False
     print("   ", repr(exc))
 check("_make_material survives a tree without Principled BSDF", ok)
-check("_make_material still sets diffuse_color",
-      tuple(round(c, 4) for c in bpy.data.materials["CGN_Mat_C"].diffuse_color)
-      == (0.9, 0.1, 0.05, 1.0))
+check(
+    "_make_material still sets diffuse_color",
+    tuple(round(c, 4) for c in bpy.data.materials["CGN_Mat_C"].diffuse_color)
+    == (0.9, 0.1, 0.05, 1.0),
+)
 
 style = bpy.context.scene.cgn_atom_styles.add()
 style.element = "C"
@@ -128,12 +134,14 @@ for material in list(bpy.data.materials):
 bpy.ops.cgn.import_cif(filepath=_env.cif("diamond.cif"))
 carbon = bpy.data.materials.get("CGN_Mat_C")
 check("import created the carbon material", carbon is not None)
-check("imported material has a node tree",
-      carbon is not None and carbon.node_tree is not None)
+check("imported material has a node tree", carbon is not None and carbon.node_tree is not None)
 if carbon is not None and carbon.node_tree is not None:
     expected = tuple(round(c, 4) for c in CrystalViz._ELEMENT_COLORS["C"])
-    check("imported material carries the element colour",
-          base_color(carbon) == expected, f"{base_color(carbon)} vs {expected}")
+    check(
+        "imported material carries the element colour",
+        base_color(carbon) == expected,
+        f"{base_color(carbon)} vs {expected}",
+    )
 
 print("TOTAL FAILURES:", len(FAILURES))
 print("RESULT:", "FAIL" if FAILURES else "ALL PASS")

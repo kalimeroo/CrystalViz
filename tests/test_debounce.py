@@ -12,11 +12,15 @@ Covers:
   * bond style / spacing rebuild is deferred until the flush
   * render handler flushes pending callbacks; unregister cancels the timer
 """
-import sys, os, bpy
+
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("aromatic.cif")
@@ -100,11 +104,7 @@ atom_objects = [o for o in root.objects if o.get("cgn_role") == "atoms"]
 check("ellipsoid mode built atom objects", len(atom_objects) > 0, f"n={len(atom_objects)}")
 pointers_before = {o.as_pointer() for o in atom_objects}
 
-h_objects = [
-    o
-    for o in atom_objects
-    if str(o.get("cgn_element", "")).upper() == "H"
-]
+h_objects = [o for o in atom_objects if str(o.get("cgn_element", "")).upper() == "H"]
 check("H atom object exists in ellipsoid mode", len(h_objects) == 1, f"n={len(h_objects)}")
 
 
@@ -130,20 +130,19 @@ if h_objects:
     check("H radius untouched before flush", radius_input(h_obj) == r_before)
     CrystalViz._flush_debounce()
     expected = (
-        h_obj["cgn_vdw_radius"]
-        * CrystalViz._BALL_ATOM_VDW_FACTOR
-        * 2.0
-        * CrystalViz._DISPLAY_SCALE
+        h_obj["cgn_vdw_radius"] * CrystalViz._BALL_ATOM_VDW_FACTOR * 2.0 * CrystalViz._DISPLAY_SCALE
     )
     r_after = radius_input(h_obj)
-    check("H radius updated after flush", abs(r_after - expected) < 1e-5,
-          f"{r_before} -> {r_after}, expected {expected}")
+    check(
+        "H radius updated after flush",
+        abs(r_after - expected) < 1e-5,
+        f"{r_before} -> {r_after}, expected {expected}",
+    )
     check("H object reused (no rebuild)", h_obj.as_pointer() == h_pointer)
     check("H mesh reused (no rebuild)", h_obj.data.as_pointer() == h_mesh_pointer)
     check(
         "no atom object was recreated",
-        {o.as_pointer() for o in root.objects if o.get("cgn_role") == "atoms"}
-        == pointers_before,
+        {o.as_pointer() for o in root.objects if o.get("cgn_role") == "atoms"} == pointers_before,
     )
 
 # ------------------------------------------------------------------ template
@@ -157,28 +156,27 @@ if template is not None:
     surface_before = [d.value for d in mesh.attributes["cgn_ortep_surface"].data]
     polygon_count = len(mesh.polygons)
     scene.cgn_ortep_ellipse_thickness = 0.05
-    check("thickness change is deferred",
-          "ortep_ellipse_thickness" in CrystalViz._DEBOUNCE_TIMERS)
-    check("template mesh untouched before flush",
-          template.data.as_pointer() == mesh_pointer
-          and [tuple(v.co) for v in template.data.vertices] == coords_before)
+    check("thickness change is deferred", "ortep_ellipse_thickness" in CrystalViz._DEBOUNCE_TIMERS)
+    check(
+        "template mesh untouched before flush",
+        template.data.as_pointer() == mesh_pointer
+        and [tuple(v.co) for v in template.data.vertices] == coords_before,
+    )
     CrystalViz._flush_debounce()
-    check("template mesh reused (no rebuild)",
-          template.data.as_pointer() == mesh_pointer)
+    check("template mesh reused (no rebuild)", template.data.as_pointer() == mesh_pointer)
     coords_after = [tuple(v.co) for v in template.data.vertices]
     check(
         "template vertices moved",
         any(
             abs(a - b) > 1e-6
-            for va, vb in zip(coords_before, coords_after)
-            for a, b in zip(va, vb)
+            for va, vb in zip(coords_before, coords_after, strict=True)
+            for a, b in zip(va, vb, strict=True)
         ),
     )
     check("topology unchanged", len(template.data.polygons) == polygon_count)
     check(
         "face attributes unchanged",
-        [d.value for d in template.data.attributes["cgn_ortep_surface"].data]
-        == surface_before,
+        [d.value for d in template.data.attributes["cgn_ortep_surface"].data] == surface_before,
     )
     check(
         "stored thickness updated",
@@ -191,14 +189,15 @@ if template is not None:
         for i in range(len(reference.vertices))
         for axis in range(3)
     )
-    check("in-place geometry matches a fresh build", max_diff < 1e-5,
-          f"max_diff={max_diff:.2e}")
+    check("in-place geometry matches a fresh build", max_diff < 1e-5, f"max_diff={max_diff:.2e}")
     bpy.data.meshes.remove(reference)
 
 stale = CrystalViz._build_ortep_template_mesh(0.02)
 stale["cgn_ortep_template_version"] = 2
-check("stale template refuses in-place update",
-      CrystalViz._update_ortep_template_mesh(stale, 0.03) is False)
+check(
+    "stale template refuses in-place update",
+    CrystalViz._update_ortep_template_mesh(stale, 0.03) is False,
+)
 bpy.data.meshes.remove(stale)
 
 # ------------------------------------------------------------------ bonds
@@ -213,8 +212,11 @@ original_rebuild = CrystalViz._rebuild_bonds
 CrystalViz._rebuild_bonds = lambda sc: calls.__setitem__("n", calls["n"] + 1)
 for _ in range(4):
     CrystalViz._update_bond_style(scene, None)
-check("4 bond style changes coalesce", list(CrystalViz._DEBOUNCE_TIMERS) == ["bond_style"],
-      str(list(CrystalViz._DEBOUNCE_TIMERS)))
+check(
+    "4 bond style changes coalesce",
+    list(CrystalViz._DEBOUNCE_TIMERS) == ["bond_style"],
+    str(list(CrystalViz._DEBOUNCE_TIMERS)),
+)
 CrystalViz._flush_debounce()
 check("bond rebuild ran once on flush", calls["n"] == 1, f"calls={calls['n']}")
 CrystalViz._rebuild_bonds = original_rebuild
@@ -223,13 +225,15 @@ scene.cgn_bond_spacing = 0.4
 check("bond spacing change is deferred", "bond_style" in CrystalViz._DEBOUNCE_TIMERS)
 check(
     "bond objects untouched before flush",
-    {o.as_pointer() for o in root.objects if o.get("cgn_role") == "bonds"}
-    == bonds_before,
+    {o.as_pointer() for o in root.objects if o.get("cgn_role") == "bonds"} == bonds_before,
 )
 CrystalViz._flush_debounce()
 bonds_after = {o.as_pointer() for o in root.objects if o.get("cgn_role") == "bonds"}
-check("bonds rebuilt after flush", bonds_after and bonds_after != bonds_before,
-      f"{len(bonds_before)} -> {len(bonds_after)}")
+check(
+    "bonds rebuilt after flush",
+    bonds_after and bonds_after != bonds_before,
+    f"{len(bonds_before)} -> {len(bonds_after)}",
+)
 
 # ------------------------------------------------------------------ render/unregister
 print("\n=== render flush / unregister ===")

@@ -9,15 +9,16 @@ a ligand), repeats it on a small cell where several images of an atom fall
 inside the window, checks the pool-scan fallback, and checks the cache/memo
 contract the panel draw relies on.
 """
+
+import math
 import os
 import sys
-import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + the add-on parent on sys.path)
 import bpy
-import gemmi
 import CrystalViz
+import gemmi
 
 CrystalViz.register()
 
@@ -42,13 +43,11 @@ def reference_cell(cell_matrix):
         return math.sqrt(sum(value * value for value in v))
 
     def angle(u, v):
-        cosine = sum(a * b for a, b in zip(u, v)) / (norm(u) * norm(v))
+        cosine = sum(a * b for a, b in zip(u, v, strict=True)) / (norm(u) * norm(v))
         return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
     a, b, c = vectors
-    return gemmi.UnitCell(
-        norm(a), norm(b), norm(c), angle(b, c), angle(a, c), angle(a, b)
-    )
+    return gemmi.UnitCell(norm(a), norm(b), norm(c), angle(b, c), angle(a, c), angle(a, b))
 
 
 def reference_ligands(center_cart, element, pool, cell_matrix, windows):
@@ -109,30 +108,38 @@ for cif in CIFS:
     mismatches = 0
     reference_eligible = set()
     for site in pool:
-        expected = reference_ligands(
-            site["cart"], site["element"], pool, cell_matrix, windows
-        )
+        expected = reference_ligands(site["cart"], site["element"], pool, cell_matrix, windows)
         actual = search.ligands(site["cart"], site["element"])
         if tuple(actual) != expected:
             mismatches += 1
             if mismatches == 1:
-                print(f"    first mismatch at site {site['index']} "
-                      f"({len(actual)} vs {len(expected)} ligands)")
+                print(
+                    f"    first mismatch at site {site['index']} "
+                    f"({len(actual)} vs {len(expected)} ligands)"
+                )
         if len(expected) >= CrystalViz._POLY_MIN_LIGANDS:
             reference_eligible.add(site["element"])
-    check(f"{cif}: every centre's ligand list is identical", mismatches == 0,
-          f"mismatches={mismatches}/{len(pool)}")
-    check(f"{cif}: eligible elements match the reference",
-          search.eligible_elements() == sorted(reference_eligible),
-          f"{search.eligible_elements()} vs {sorted(reference_eligible)}")
+    check(
+        f"{cif}: every centre's ligand list is identical",
+        mismatches == 0,
+        f"mismatches={mismatches}/{len(pool)}",
+    )
+    check(
+        f"{cif}: eligible elements match the reference",
+        search.eligible_elements() == sorted(reference_eligible),
+        f"{search.eligible_elements()} vs {sorted(reference_eligible)}",
+    )
 
     print(f"--- {cif}: cache contract ---")
     memo_size = len(search._ligands)
     same = CrystalViz._polyhedron_search(root, scene) is search
     check(f"{cif}: one search object per revision", same)
     CrystalViz._cached_polyhedron_elements(root, scene)
-    check(f"{cif}: a redraw reuses the memo", len(search._ligands) == memo_size,
-          f"{memo_size} -> {len(search._ligands)}")
+    check(
+        f"{cif}: a redraw reuses the memo",
+        len(search._ligands) == memo_size,
+        f"{memo_size} -> {len(search._ligands)}",
+    )
     check(f"{cif}: eligible elements are cached", search._eligible is not None)
 
     # A capped query must not poison the memo with a truncated list.
@@ -142,23 +149,29 @@ for cif in CIFS:
         (site["element"],) + tuple(round(float(v), 6) for v in site["cart"]),
         None,
     )
-    capped = search.ligands(
-        site["cart"], site["element"], limit=CrystalViz._POLY_MIN_LIGANDS
+    capped = search.ligands(site["cart"], site["element"], limit=CrystalViz._POLY_MIN_LIGANDS)
+    check(
+        f"{cif}: capped query stops at the minimum",
+        len(capped) == CrystalViz._POLY_MIN_LIGANDS,
+        f"n={len(capped)}",
     )
-    check(f"{cif}: capped query stops at the minimum",
-          len(capped) == CrystalViz._POLY_MIN_LIGANDS, f"n={len(capped)}")
     key = (site["element"],) + tuple(round(float(v), 6) for v in site["cart"])
     check(f"{cif}: capped query is not memoised", key not in search._ligands)
-    check(f"{cif}: the full query still returns everything",
-          search.ligands(site["cart"], site["element"]) == full)
+    check(
+        f"{cif}: the full query still returns everything",
+        search.ligands(site["cart"], site["element"]) == full,
+    )
 
     # Changing a window invalidates the memo but keeps the same pool.
     cheap = scene.cgn_connectivity_pairs[0]
     cheap.max_distance = max(0.0, float(cheap.max_distance) - 0.2)
     rekeyed = CrystalViz._polyhedron_search(root, scene)
     check(f"{cif}: same object after a window change", rekeyed is search)
-    check(f"{cif}: window change clears the memo", len(search._ligands) == 0,
-          str(len(search._ligands)))
+    check(
+        f"{cif}: window change clears the memo",
+        len(search._ligands) == 0,
+        str(len(search._ligands)),
+    )
     CrystalViz._default_connectivity_pairs(scene, atoms)
     CrystalViz._polyhedron_search(root, scene)
 
@@ -182,43 +195,43 @@ for index, (element, frac) in enumerate(raw):
         + frac[2] * cell_matrix[6 + axis]
         for axis in range(3)
     ]
-    pool.append(
-        {"element": element, "frac": list(frac), "cart": cart, "index": index}
-    )
-windows = {CrystalViz._pair_key("C", "C"): (0.0, 3.5),
-           CrystalViz._pair_key("C", "NA"): (0.0, 3.5)}
+    pool.append({"element": element, "frac": list(frac), "cart": cart, "index": index})
+windows = {CrystalViz._pair_key("C", "C"): (0.0, 3.5), CrystalViz._pair_key("C", "NA"): (0.0, 3.5)}
 
 indexed = CrystalViz._PolyhedronSearch(pool, cell_matrix)
 indexed.update_windows(windows)
 check("small cell: index built", indexed._neighbor_index() is not None)
 small_mismatch = 0
 for atom in pool:
-    expected = reference_ligands(
-        atom["cart"], atom["element"], pool, cell_matrix, windows
-    )
+    expected = reference_ligands(atom["cart"], atom["element"], pool, cell_matrix, windows)
     actual = indexed.ligands(atom["cart"], atom["element"])
     if tuple(actual) != expected:
         small_mismatch += 1
-check("small cell: indexed ligands match the reference", small_mismatch == 0,
-      f"mismatches={small_mismatch}/{len(pool)}")
-check("small cell: multiple images are enumerated",
-      any(len(indexed.ligands(a["cart"], a["element"])) > len(raw) for a in pool),
-      str([len(indexed.ligands(a["cart"], a["element"])) for a in pool]))
+check(
+    "small cell: indexed ligands match the reference",
+    small_mismatch == 0,
+    f"mismatches={small_mismatch}/{len(pool)}",
+)
+check(
+    "small cell: multiple images are enumerated",
+    any(len(indexed.ligands(a["cart"], a["element"])) > len(raw) for a in pool),
+    str([len(indexed.ligands(a["cart"], a["element"])) for a in pool]),
+)
 
 fallback = CrystalViz._PolyhedronSearch(pool, cell_matrix)
 fallback.update_windows(windows)
 fallback._index = ()  # force the pool scan
-check("small cell: the fallback scan is used",
-      fallback._neighbor_index() is None)
+check("small cell: the fallback scan is used", fallback._neighbor_index() is None)
 fallback_mismatch = 0
 for atom in pool:
-    expected = reference_ligands(
-        atom["cart"], atom["element"], pool, cell_matrix, windows
-    )
+    expected = reference_ligands(atom["cart"], atom["element"], pool, cell_matrix, windows)
     if fallback.ligands(atom["cart"], atom["element"]) != tuple(expected):
         fallback_mismatch += 1
-check("small cell: fallback agrees with the reference", fallback_mismatch == 0,
-      f"mismatches={fallback_mismatch}/{len(pool)}")
+check(
+    "small cell: fallback agrees with the reference",
+    fallback_mismatch == 0,
+    f"mismatches={fallback_mismatch}/{len(pool)}",
+)
 
 print()
 print("TOTAL FAILURES:", len(FAILURES))

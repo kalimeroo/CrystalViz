@@ -9,9 +9,10 @@ use different ligand instances) keep theirs.
 Run headless:
   blender --background --factory-startup --python test_polyhedra_ligand_delete.py
 """
-import sys
-import os
+
 import json
+import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
@@ -85,9 +86,7 @@ def setup_grow_polyhedra(shells=2):
 
 def poly_p1(root):
     return {
-        int(obj.get("cgn_p1_index"))
-        for obj in root.objects
-        if obj.get("cgn_role") == "polyhedron"
+        int(obj.get("cgn_p1_index")) for obj in root.objects if obj.get("cgn_role") == "polyhedron"
     }
 
 
@@ -134,14 +133,10 @@ def simulate_delete(root, scene, atom_index, removed_quad):
     """Mirror the delete operator's data path and call _remap_polyhedra."""
     instances = json.loads(root.get("cgn_instances", "[]"))
     new_instances = [
-        value
-        for offset, value in enumerate(instances)
-        if (offset - offset % 4) != atom_index * 4
+        value for offset, value in enumerate(instances) if (offset - offset % 4) != atom_index * 4
     ]
     sites, _inst, cell_matrix, initial_count = CrystalViz._structure_tables(root)
-    new_atoms = CrystalViz._materialize_atoms(
-        sites, cell_matrix, new_instances, initial_count
-    )
+    new_atoms = CrystalViz._materialize_atoms(sites, cell_matrix, new_instances, initial_count)
     root["cgn_instances"] = json.dumps(new_instances)
     root["cgn_initial_count"] = initial_count
     CrystalViz._remap_polyhedra(root, [atom_index], new_atoms, scene, {removed_quad})
@@ -153,8 +148,11 @@ def simulate_delete(root, scene, atom_index, removed_quad):
 print("\n=== A: delete a ligand atom sitting on a polyhedron vertex ===")
 scene, root, atoms, ti, built = setup_fill_polyhedra()
 before = poly_p1(root)
-check("A control: Ti polyhedra were built", built > 0 and len(before) == len(ti),
-      f"built={built} sites={len(before)} centres={len(ti)}")
+check(
+    "A control: Ti polyhedra were built",
+    built > 0 and len(before) == len(ti),
+    f"built={built} sites={len(before)} centres={len(ti)}",
+)
 
 shells = centre_shells(root, scene, atoms, ti)
 ligand_use = {}
@@ -173,14 +171,23 @@ check("A control: found a displayed ligand atom", ligand_atom is not None)
 if ligand_atom is not None:
     removed_quad = quad_of_atom(root, ligand_atom)
     affected = {int(atoms[c].get("p1_index")) for c in ligand_use[removed_quad]}
-    check("A control: deleted ligand is a vertex of at least one polyhedron",
-          bool(affected), f"affected p1 sites={sorted(affected)}")
+    check(
+        "A control: deleted ligand is a vertex of at least one polyhedron",
+        bool(affected),
+        f"affected p1 sites={sorted(affected)}",
+    )
     simulate_delete(root, scene, ligand_atom, removed_quad)
     after = poly_p1(root)
-    check("A: polyhedra that used the deleted ligand are removed",
-          not (affected & after), f"affected={sorted(affected)} remaining={sorted(after)}")
-    check("A: unaffected polyhedra are retained",
-          after == before - affected, f"before={sorted(before)} after={sorted(after)}")
+    check(
+        "A: polyhedra that used the deleted ligand are removed",
+        not (affected & after),
+        f"affected={sorted(affected)} remaining={sorted(after)}",
+    )
+    check(
+        "A: unaffected polyhedra are retained",
+        after == before - affected,
+        f"before={sorted(before)} after={sorted(after)}",
+    )
 
 # ---- Scenario B: deleting a CENTRE still drops that polyhedron (parity) -----
 print("\n=== B: deleting a central atom (parity) ===")
@@ -190,10 +197,16 @@ centre_atom = ti[0]
 centre_site = int(atoms[centre_atom].get("p1_index"))
 simulate_delete(root, scene, centre_atom, quad_of_atom(root, centre_atom))
 after = poly_p1(root)
-check("B: the deleted centre's polyhedron is gone",
-      centre_site not in after, f"deleted site={centre_site} remaining={sorted(after)}")
-check("B: other polyhedra are retained",
-      after == before - {centre_site}, f"before={sorted(before)} after={sorted(after)}")
+check(
+    "B: the deleted centre's polyhedron is gone",
+    centre_site not in after,
+    f"deleted site={centre_site} remaining={sorted(after)}",
+)
+check(
+    "B: other polyhedra are retained",
+    after == before - {centre_site},
+    f"before={sorted(before)} after={sorted(after)}",
+)
 
 # ---- Scenario C: delete a ligand vertex AFTER a grow structure --------------
 # Regression: the old check only inspected the home-cell representative, so a
@@ -203,9 +216,11 @@ print("\n=== C: delete a ligand vertex after a grow structure (per image) ===")
 scene, root, atoms, ti, built = setup_grow_polyhedra(shells=2)
 before_positions = scaffold_positions(root)
 before_sites = poly_p1(root)
-check("C control: multi-image polyhedra were built",
-      built > 0 and len(before_positions) > len(before_sites),
-      f"images={len(before_positions)} sites={len(before_sites)}")
+check(
+    "C control: multi-image polyhedra were built",
+    built > 0 and len(before_positions) > len(before_sites),
+    f"images={len(before_positions)} sites={len(before_sites)}",
+)
 
 shells = centre_shells(root, scene, atoms, ti)
 ligand_use = {}
@@ -213,24 +228,23 @@ for centre, quads in shells.items():
     for quad in quads:
         ligand_use.setdefault(quad, []).append(centre)
 
-translated = {
-    tuple(int(v) for v in atoms[c].get("growth_translation", (0, 0, 0)))
-    for c in ti
-}
+translated = {tuple(int(v) for v in atoms[c].get("growth_translation", (0, 0, 0))) for c in ti}
 ligand_atom = None
 for index, atom in enumerate(atoms):
     if str(atom.get("element", "X")).upper() != "O":
         continue
     users = ligand_use.get(quad_of_atom(root, index), [])
     if any(
-        tuple(int(v) for v in atoms[c].get("growth_translation", (0, 0, 0)))
-        != (0, 0, 0)
+        tuple(int(v) for v in atoms[c].get("growth_translation", (0, 0, 0))) != (0, 0, 0)
         for c in users
     ):
         ligand_atom = index
         break
-check("C control: found a ligand of a translated (grown) image",
-      ligand_atom is not None, f"translations={sorted(translated)}")
+check(
+    "C control: found a ligand of a translated (grown) image",
+    ligand_atom is not None,
+    f"translations={sorted(translated)}",
+)
 
 if ligand_atom is not None:
     removed_quad = quad_of_atom(root, ligand_atom)
@@ -238,15 +252,16 @@ if ligand_atom is not None:
     affected_positions = [CrystalViz._display_point(atoms[c]["cart"]) for c in affected]
     simulate_delete(root, scene, ligand_atom, removed_quad)
     after_positions = scaffold_positions(root)
-    check("C: affected images' polyhedra are removed",
-          all(
-              not any(near(pos, kept) for kept in after_positions)
-              for pos in affected_positions
-          ),
-          f"affected images={len(affected)}")
-    check("C: unaffected images' polyhedra are retained",
-          len(after_positions) == len(before_positions) - len(affected),
-          f"{len(before_positions)}->{len(after_positions)} affected={len(affected)}")
+    check(
+        "C: affected images' polyhedra are removed",
+        all(not any(near(pos, kept) for kept in after_positions) for pos in affected_positions),
+        f"affected images={len(affected)}",
+    )
+    check(
+        "C: unaffected images' polyhedra are retained",
+        len(after_positions) == len(before_positions) - len(affected),
+        f"{len(before_positions)}->{len(after_positions)} affected={len(affected)}",
+    )
 
 CrystalViz.unregister()
 print()

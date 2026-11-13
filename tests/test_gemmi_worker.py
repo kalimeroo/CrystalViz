@@ -3,14 +3,14 @@
 Run with a Python that has gemmi installed:
     python test_gemmi_worker.py
 """
-import json
-import math
+
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (puts a gemmi build on sys.path)
+
 sys.path.insert(0, _env.REPO_DIR)
 import gemmi_worker as gw
 
@@ -79,15 +79,18 @@ class TestGrowConnectivityShell(unittest.TestCase):
         r1 = gw.grow_connectivity_shell(result["unit_cell"], sites, instances, instances, pairs)
         combined = instances + r1["new_instances"]
         r2 = gw.grow_connectivity_shell(result["unit_cell"], sites, combined, combined, pairs)
+
         # second shell should not re-add atoms already present
         def to_quads(flat):
-            return {tuple(flat[i:i+4]) for i in range(0, len(flat), 4)}
+            return {tuple(flat[i : i + 4]) for i in range(0, len(flat), 4)}
+
         first_set = to_quads(r1["new_instances"])
         second_set = to_quads(r2.get("new_instances", []))
         self.assertTrue(first_set.isdisjoint(second_set))
 
     def test_ca_autored_performance(self):
         import time
+
         result, sites, instances, pairs = self._setup("Ca_autored.cif")
         t0 = time.perf_counter()
         gw.grow_connectivity_shell(result["unit_cell"], sites, instances, instances, pairs)
@@ -101,6 +104,7 @@ class TestADPConversion(unittest.TestCase):
         result = gw.load_structure(os.path.join(EXAMPLES, "test.cif"))
         unit_cell = gw._UnitCell(result["unit_cell"])
         import gemmi
+
         doc = gemmi.cif.read(os.path.join(EXAMPLES, "test.cif"))
         st = gemmi.make_small_structure_from_block(doc.sole_block())
         site = next(s for s in st.sites if s.aniso.u11 != 0.0)

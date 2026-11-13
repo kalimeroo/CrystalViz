@@ -5,6 +5,7 @@ Reads the file written by `test_gn_persist_build.py`.  The name is chosen so
 `test_gn_export_formats.py` it ran *before* the build and silently exported a
 stale scene left over from a previous run.
 """
+
 import os
 import sys
 import tempfile
@@ -31,14 +32,13 @@ bpy.ops.wm.open_mainfile(filepath=BLEND)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 scene = bpy.context.scene
 root = bpy.data.collections.get(scene.cgn_active_structure)
 check("structure collection restored", root is not None)
-obj = next(
-    (o for o in root.objects if o.get("cgn_role") == "polyhedron"), None
-) if root else None
+obj = next((o for o in root.objects if o.get("cgn_role") == "polyhedron"), None) if root else None
 check("a polyhedron scaffold is present", obj is not None)
 bpy.ops.object.select_all(action="DESELECT")
 obj.select_set(True)

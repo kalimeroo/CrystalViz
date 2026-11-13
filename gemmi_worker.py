@@ -633,7 +633,7 @@ def _atom_type_charges(block, structure):
         numbers = list(block.find_values("_atom_type_oxidation_number"))
     except Exception:
         symbols, numbers = [], []
-    for symbol, number in zip(symbols, numbers):
+    for symbol, number in zip(symbols, numbers, strict=False):
         text = str(number).strip().strip("'\"")
         if text in ("", "?", "."):
             continue

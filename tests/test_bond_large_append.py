@@ -7,13 +7,16 @@ mesh: geometry is added, material slots survive, and duplicate folding works.
 Run:
   blender --background --factory-startup --python test_bond_large_append.py
 """
+
 import sys
 import time
+
 import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 FAILURES = []
@@ -47,41 +50,36 @@ def make_bond_object():
 
 obj = make_bond_object()
 mesh = obj.data
-check("initial mesh built", len(mesh.edges) == N_EXISTING,
-      f"{len(mesh.edges)} edges")
+check("initial mesh built", len(mesh.edges) == N_EXISTING, f"{len(mesh.edges)} edges")
 
 start = time.perf_counter()
 added = CrystalViz._append_bond_segments(
     obj,
-    [((1e6 + i * 2.0, 5.0, 0.0), (1e6 + i * 2.0 + 1.0, 5.0, 0.0))
-     for i in range(1000)],
+    [((1e6 + i * 2.0, 5.0, 0.0), (1e6 + i * 2.0 + 1.0, 5.0, 0.0)) for i in range(1000)],
 )
 elapsed = time.perf_counter() - start
 check("append reports 1000 new segments", added == 1000, f"added={added}")
-check("mesh grew to 101000 edges", len(mesh.edges) == N_EXISTING + 1000,
-      f"{len(mesh.edges)}")
-check("mesh has two vertices per segment", len(mesh.vertices) == (N_EXISTING + 1000) * 2,
-      f"{len(mesh.vertices)}")
-check("material slot survived the append", len(mesh.materials) == 1,
-      f"{len(mesh.materials)}")
-print(f"  append of 1000 segments into {N_EXISTING} existing edges: "
-      f"{elapsed * 1000:.1f} ms")
+check("mesh grew to 101000 edges", len(mesh.edges) == N_EXISTING + 1000, f"{len(mesh.edges)}")
+check(
+    "mesh has two vertices per segment",
+    len(mesh.vertices) == (N_EXISTING + 1000) * 2,
+    f"{len(mesh.vertices)}",
+)
+check("material slot survived the append", len(mesh.materials) == 1, f"{len(mesh.materials)}")
+print(f"  append of 1000 segments into {N_EXISTING} existing edges: {elapsed * 1000:.1f} ms")
 
 # Dedupe path: re-appending the same 50 segments must add nothing.
-repeated = [((1e6 + i * 2.0, 5.0, 0.0), (1e6 + i * 2.0 + 1.0, 5.0, 0.0))
-            for i in range(50)]
+repeated = [((1e6 + i * 2.0, 5.0, 0.0), (1e6 + i * 2.0 + 1.0, 5.0, 0.0)) for i in range(50)]
 before = len(mesh.edges)
 added = CrystalViz._append_bond_segments(obj, repeated, dedupe=True)
 check("dedupe skips segments already in the mesh", added == 0, f"added={added}")
-check("dedupe left the mesh unchanged", len(mesh.edges) == before,
-      f"{before} -> {len(mesh.edges)}")
+check("dedupe left the mesh unchanged", len(mesh.edges) == before, f"{before} -> {len(mesh.edges)}")
 
 # A second fast append with brand-new segments still works.
 start = time.perf_counter()
 added = CrystalViz._append_bond_segments(
     obj,
-    [((9e6 + i * 2.0, 7.0, 0.0), (9e6 + i * 2.0 + 1.0, 7.0, 0.0))
-     for i in range(500)],
+    [((9e6 + i * 2.0, 7.0, 0.0), (9e6 + i * 2.0 + 1.0, 7.0, 0.0)) for i in range(500)],
 )
 elapsed = time.perf_counter() - start
 check("second append added 500 segments", added == 500, f"added={added}")

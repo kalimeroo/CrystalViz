@@ -5,10 +5,17 @@ verified in test_S1_parity.py at the worker level).
 Run:
   blender --background --factory-startup --python test_S1_blender.py
 """
-import sys, os, json, bpy
+
+import json
+import os
+import sys
+
+import bpy
+
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.CIF_DIR
@@ -18,15 +25,21 @@ bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Brookite.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 if not any(p.enabled for p in scene.cgn_connectivity_pairs):
     p = scene.cgn_connectivity_pairs.add()
-    p.element_a = "Ti"; p.element_b = "O"; p.enabled = True
-    p.min_distance = 0.1; p.max_distance = 3.0
+    p.element_a = "Ti"
+    p.element_b = "O"
+    p.enabled = True
+    p.min_distance = 0.1
+    p.max_distance = 3.0
 bpy.context.view_layer.update()
 
 FAILURES = []
+
+
 def check(name, cond, detail=""):
     print(f"[{'PASS' if cond else 'FAIL'}] {name}" + (f"  ({detail})" if detail else ""))
     if not cond:
         FAILURES.append(name)
+
 
 cnt0 = len(json.loads(root.get("cgn_instances", "[]"))) // 4
 root["cgn_selected_indices"] = json.dumps(list(range(5)))

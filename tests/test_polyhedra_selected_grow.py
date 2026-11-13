@@ -7,11 +7,16 @@ the existing site object instead of reporting "Skipped every selected atom".
 Run:
   blender --background --factory-startup --python test_polyhedra_selected_grow.py
 """
-import sys, json, bpy
+
+import json
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -49,9 +54,7 @@ print(f"  site P1={site_p1} initially has {len(previous)} images")
 bpy.ops.cgn.grow_further()
 atoms3 = CrystalViz._structure_atoms(root)
 site_images = {
-    index: atom
-    for index, atom in enumerate(atoms3)
-    if int(atom.get("p1_index", -1)) == site_p1
+    index: atom for index, atom in enumerate(atoms3) if int(atom.get("p1_index", -1)) == site_p1
 }
 new_images = [index for index in site_images if index not in previous]
 print(f"  after grow: {len(site_images)} images for site, {len(new_images)} new")
@@ -67,33 +70,39 @@ built, skipped = CrystalViz._build_polyhedra_objects(
     root, atoms3, [target], scene, clear_existing=False
 )
 print(f"  create-from-selected on new image: built={built} skipped={skipped}")
-check("adding a new image of an existing site succeeds", built == 1,
-      f"built={built}")
+check("adding a new image of an existing site succeeds", built == 1, f"built={built}")
 check("no bogus skip", skipped == 0, f"skipped={skipped}")
 
 site_objects = [
-    o for o in root.objects
-    if o.get("cgn_role") == "polyhedron"
-    and int(o.get("cgn_p1_index", -1)) == site_p1
+    o
+    for o in root.objects
+    if o.get("cgn_role") == "polyhedron" and int(o.get("cgn_p1_index", -1)) == site_p1
 ]
-check("one object per site after merge", len(site_objects) == 1,
-      f"{len(site_objects)} objects")
+check("one object per site after merge", len(site_objects) == 1, f"{len(site_objects)} objects")
 merged = {int(i) for i in json.loads(site_objects[0].get("cgn_poly_centers", "[]"))}
-check("old images retained", previous <= merged,
-      f"previous={len(previous)} merged={len(merged)}")
+check("old images retained", previous <= merged, f"previous={len(previous)} merged={len(merged)}")
 check("new image merged in", target in merged)
 
 # Clicking an already-covered image must be a harmless no-op.
 built2, skipped2 = CrystalViz._build_polyhedra_objects(
     root, atoms3, [target], scene, clear_existing=False
 )
-check("already-covered image is not rebuilt", built2 == 0 and skipped2 == 1,
-      f"built={built2} skipped={skipped2}")
-check("still one object per site", len([
-    o for o in root.objects
-    if o.get("cgn_role") == "polyhedron"
-    and int(o.get("cgn_p1_index", -1)) == site_p1
-]) == 1)
+check(
+    "already-covered image is not rebuilt",
+    built2 == 0 and skipped2 == 1,
+    f"built={built2} skipped={skipped2}",
+)
+check(
+    "still one object per site",
+    len(
+        [
+            o
+            for o in root.objects
+            if o.get("cgn_role") == "polyhedron" and int(o.get("cgn_p1_index", -1)) == site_p1
+        ]
+    )
+    == 1,
+)
 
 CrystalViz.unregister()
 check("unregister OK", True)

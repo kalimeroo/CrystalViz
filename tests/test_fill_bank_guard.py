@@ -7,6 +7,7 @@
    up to 8x the images.
 3. Normal fills are unaffected.
 """
+
 import os
 import sys
 import time
@@ -44,12 +45,12 @@ try:
 except ValueError as exc:
     dt = time.perf_counter() - t0
     check("bank guard raises", True, str(exc)[:70])
-    check("bank guard is fast (<0.1 s, no allocation)", dt < 0.1, f"{dt*1000:.1f} ms")
+    check("bank guard is fast (<0.1 s, no allocation)", dt < 0.1, f"{dt * 1000:.1f} ms")
 
 # same sites, sane window: must still succeed
 pairs = [Pair("C", "C", 0.1, 3.0)]
 res = CrystalViz._unwrapped_cell_instances(sites, identity_cell, pairs)
-check("normal window still returns instances", bool(res), f"{len(res)//4} atoms")
+check("normal window still returns instances", bool(res), f"{len(res) // 4} atoms")
 
 # ---- 2. boundary extension guard ------------------------------------
 corner_sites = [{"frac": (0.0, 0.0, 0.0), "element": "C"} for _ in range(500)]
@@ -57,25 +58,21 @@ corner_sites = [{"frac": (0.0, 0.0, 0.0), "element": "C"} for _ in range(500)]
 flat = [v for i in range(500) for v in (i, 0, 0, 0)]
 t0 = time.perf_counter()
 try:
-    CrystalViz._extend_cell_boundary_instances(
-        corner_sites, flat, max_instances=1000
-    )
+    CrystalViz._extend_cell_boundary_instances(corner_sites, flat, max_instances=1000)
     check("extension guard raises", False, "no exception")
 except ValueError as exc:
     dt = time.perf_counter() - t0
     check("extension guard raises", True, str(exc)[:60])
-    check("extension guard is fast (<0.1 s)", dt < 0.1, f"{dt*1000:.1f} ms")
+    check("extension guard is fast (<0.1 s)", dt < 0.1, f"{dt * 1000:.1f} ms")
 
-full = CrystalViz._extend_cell_boundary_instances(
-    corner_sites, [0, 0, 0, 0, 0, 1, 0, 0]
-)
+full = CrystalViz._extend_cell_boundary_instances(corner_sites, [0, 0, 0, 0, 0, 1, 0, 0])
 # 8 images for the single base-cell corner atom (its periodic copy at
 # translation 1 is no longer extended, so it cannot spawn a second cell).
-check("extension without a limit still works", len(full) // 4 == 8, f"{len(full)//4}")
+check("extension without a limit still works", len(full) // 4 == 8, f"{len(full) // 4}")
 
 # ---- 3. real fills ---------------------------------------------------
 scene = bpy.context.scene
-for cif, repeats, expect_cell in (
+for cif, _repeats, expect_cell in (
     ("diamond.cif", (1, 1, 1), 18),
     ("test.cif", (1, 1, 1), None),
     ("aromatic.cif", (2, 2, 2), None),

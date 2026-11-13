@@ -13,13 +13,19 @@ Covers:
   * the ORTEP view timer runs only while the model is ELLIPSOID
   * vectorized paths are materially faster on large inputs
 """
-import sys, math, time, bpy
+
+import math
+import sys
+import time
+
+import bpy
 import numpy as np
 from mathutils import Euler, Matrix, Vector
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.CIF_DIR
@@ -38,22 +44,13 @@ def old_base_components(atom, size_scale=1.0):
     values = atom.get("u_cart")
     if values and len(values) == 6:
         u11, u22, u33, u12, u13, u23 = (float(v) for v in values)
-        if (
-            all(math.isfinite(v) for v in values)
-            and u11 > 0.0
-            and u22 > 0.0
-            and u33 > 0.0
-        ):
-            tensor = np.array(
-                ((u11, u12, u13), (u12, u22, u23), (u13, u23, u33)), dtype=float
-            )
+        if all(math.isfinite(v) for v in values) and u11 > 0.0 and u22 > 0.0 and u33 > 0.0:
+            tensor = np.array(((u11, u12, u13), (u12, u22, u23), (u13, u23, u33)), dtype=float)
             try:
                 eigenvalues, eigenvectors = np.linalg.eigh(tensor)
                 eigenvalues = np.clip(eigenvalues, 0.0, None)
                 axes = np.sqrt(eigenvalues * CrystalViz._ELLIPSOID_CHI2_50)
-                axes = np.maximum(
-                    axes * CrystalViz._DISPLAY_SCALE * size_scale, 1e-4
-                )
+                axes = np.maximum(axes * CrystalViz._DISPLAY_SCALE * size_scale, 1e-4)
                 if np.linalg.det(eigenvectors) < 0.0:
                     eigenvectors[:, 2] *= -1.0
                 rotation = Matrix(eigenvectors.tolist()).to_euler("XYZ")
@@ -74,13 +71,9 @@ def old_add_ellipsoid_attributes(mesh, atoms):
     scene = bpy.context.scene
     hydrogen_scale = scene.cgn_hydrogen_scale
     scale_attribute = mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
-    rotation_attribute = mesh.attributes.new(
-        "cgn_rotation", "FLOAT_VECTOR", "POINT"
-    )
+    rotation_attribute = mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
     for index, atom in enumerate(atoms):
-        size_scale = (
-            hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
-        )
+        size_scale = hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
         axes, rotation = old_base_components(atom, size_scale)
         scale_attribute.data[index].vector = axes
         rotation_attribute.data[index].vector = rotation
@@ -105,7 +98,7 @@ def old_orient(obj, view_direction=None, camera_position=None):
         result.append(
             tuple(
                 magnitude if component >= 0.0 else -magnitude
-                for magnitude, component in zip(magnitudes, local_direction)
+                for magnitude, component in zip(magnitudes, local_direction, strict=True)
             )
         )
     return np.array(result, dtype=np.float64)
@@ -160,7 +153,7 @@ angles = np.array(
 matrices = CrystalViz._euler_xyz_rotation_matrices(angles)
 error = max(
     float(np.max(np.abs(matrix - np.array(Euler(tuple(angle), "XYZ").to_matrix()))))
-    for angle, matrix in zip(angles, matrices)
+    for angle, matrix in zip(angles, matrices, strict=True)
 )
 check("Euler matrices match mathutils", error < 1e-6, f"max_err={error:.2e}")
 
@@ -213,21 +206,19 @@ CrystalViz._add_ellipsoid_attributes(mesh_new, parity_atoms)
 
 old_scales = read_vector_attribute(mesh_old.attributes["cgn_scale"], len(parity_atoms))
 new_scales = read_vector_attribute(mesh_new.attributes["cgn_scale"], len(parity_atoms))
-old_rotations = read_vector_attribute(
-    mesh_old.attributes["cgn_rotation"], len(parity_atoms)
-)
-new_rotations = read_vector_attribute(
-    mesh_new.attributes["cgn_rotation"], len(parity_atoms)
-)
+old_rotations = read_vector_attribute(mesh_old.attributes["cgn_rotation"], len(parity_atoms))
+new_rotations = read_vector_attribute(mesh_new.attributes["cgn_rotation"], len(parity_atoms))
 scale_error = float(np.max(np.abs(old_scales - new_scales)))
-check("semi-axes match old implementation", scale_error < 1e-6,
-      f"max_err={scale_error:.2e}")
+check("semi-axes match old implementation", scale_error < 1e-6, f"max_err={scale_error:.2e}")
 orientation_error = max(
     axis_set_distance(old_scales[i], old_rotations[i], new_scales[i], new_rotations[i])
     for i in range(len(parity_atoms))
 )
-check("ellipsoid orientations match (up to axis sign)",
-      orientation_error < 1e-5, f"max_err={orientation_error:.2e}")
+check(
+    "ellipsoid orientations match (up to axis sign)",
+    orientation_error < 1e-5,
+    f"max_err={orientation_error:.2e}",
+)
 for mesh in (mesh_old, mesh_new):
     bpy.data.meshes.remove(mesh)
 
@@ -238,9 +229,7 @@ bpy.context.view_layer.update()
 
 test_mesh = make_point_mesh("TestOrientPoints", 8)
 scale_attribute = test_mesh.attributes.new("cgn_scale", "FLOAT_VECTOR", "POINT")
-rotation_attribute = test_mesh.attributes.new(
-    "cgn_rotation", "FLOAT_VECTOR", "POINT"
-)
+rotation_attribute = test_mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POINT")
 base_scales = rng.uniform(0.01, 0.08, size=(8, 3))
 base_rotations = rng.uniform(-math.pi, math.pi, size=(8, 3))
 test_mesh.vertices.foreach_set(
@@ -260,9 +249,7 @@ test_mesh.vertices.foreach_set(
 )
 test_mesh.update()
 scale_attribute.data.foreach_set("vector", base_scales.astype(np.float32).ravel())
-rotation_attribute.data.foreach_set(
-    "vector", base_rotations.astype(np.float32).ravel()
-)
+rotation_attribute.data.foreach_set("vector", base_rotations.astype(np.float32).ravel())
 
 test_obj = bpy.data.objects.new("CGN_TestOrient", test_mesh)
 test_obj["cgn_role"] = "atoms"
@@ -284,8 +271,7 @@ write_scale(test_obj, stored_scales)
 CrystalViz._orient_ortep_openings(scene, view_direction=direction)
 actual = read_vector_attribute(test_mesh.attributes["cgn_scale"], 8)
 error = float(np.max(np.abs(expected - actual)))
-check("view-direction orientation matches old loop", error < 1e-5,
-      f"max_err={error:.2e}")
+check("view-direction orientation matches old loop", error < 1e-5, f"max_err={error:.2e}")
 
 again = actual.copy()
 CrystalViz._orient_ortep_openings(scene, view_direction=direction)
@@ -300,8 +286,7 @@ write_scale(test_obj, stored_scales)
 CrystalViz._orient_ortep_openings(scene, camera_position=camera_position)
 actual = read_vector_attribute(test_mesh.attributes["cgn_scale"], 8)
 error = float(np.max(np.abs(expected - actual)))
-check("camera-position orientation matches old loop", error < 1e-5,
-      f"max_err={error:.2e}")
+check("camera-position orientation matches old loop", error < 1e-5, f"max_err={error:.2e}")
 
 # A few real structure objects must also match at identity transforms.
 real_objects = [
@@ -321,8 +306,11 @@ for obj in real_objects:
     CrystalViz._orient_ortep_openings(scene, view_direction=direction)
     after = read_vector_attribute(obj.data.attributes["cgn_scale"], count)
     real_error = max(real_error, float(np.max(np.abs(expected - after))))
-check("real structure ellipsoids match old loop", real_error < 1e-5,
-      f"objects={len(real_objects)} max_err={real_error:.2e}")
+check(
+    "real structure ellipsoids match old loop",
+    real_error < 1e-5,
+    f"objects={len(real_objects)} max_err={real_error:.2e}",
+)
 
 # ---------------------------------------------------------------- timer gating
 print("\n=== ORTEP view timer gating ===")
@@ -331,8 +319,11 @@ check(
     bpy.app.timers.is_registered(CrystalViz._update_ortep_view_orientation),
 )
 result = CrystalViz._update_ortep_view_orientation()
-check("callback returns the 0.25 s interval in ELLIPSOID",
-      result == CrystalViz._ORTEP_VIEW_TIMER_INTERVAL, f"result={result}")
+check(
+    "callback returns the 0.25 s interval in ELLIPSOID",
+    result == CrystalViz._ORTEP_VIEW_TIMER_INTERVAL,
+    f"result={result}",
+)
 
 scene.cgn_model = "BALL_STICK"
 bpy.context.view_layer.update()
@@ -380,10 +371,15 @@ new_mesh = make_point_mesh("NewSpeedPoints", count)
 t0 = time.perf_counter()
 CrystalViz._add_ellipsoid_attributes(new_mesh, speed_atoms)
 new_add_time = time.perf_counter() - t0
-print(f"  attributes n={count}: old={old_add_time*1000:.1f} ms  "
-      f"new={new_add_time*1000:.1f} ms  speedup={old_add_time/max(new_add_time,1e-9):.1f}x")
-check("batched attribute generation is faster", new_add_time < old_add_time / 2,
-      f"{old_add_time*1000:.1f} -> {new_add_time*1000:.1f} ms")
+print(
+    f"  attributes n={count}: old={old_add_time * 1000:.1f} ms  "
+    f"new={new_add_time * 1000:.1f} ms  speedup={old_add_time / max(new_add_time, 1e-9):.1f}x"
+)
+check(
+    "batched attribute generation is faster",
+    new_add_time < old_add_time / 2,
+    f"{old_add_time * 1000:.1f} -> {new_add_time * 1000:.1f} ms",
+)
 for mesh in (old_mesh, new_mesh):
     bpy.data.meshes.remove(mesh)
 
@@ -398,9 +394,7 @@ speed_rotation = speed_mesh.attributes.new("cgn_rotation", "FLOAT_VECTOR", "POIN
 speed_scales = rng.uniform(0.01, 0.1, size=(vertex_count, 3))
 speed_rotations = rng.uniform(-math.pi, math.pi, size=(vertex_count, 3))
 speed_scale.data.foreach_set("vector", speed_scales.astype(np.float32).ravel())
-speed_rotation.data.foreach_set(
-    "vector", speed_rotations.astype(np.float32).ravel()
-)
+speed_rotation.data.foreach_set("vector", speed_rotations.astype(np.float32).ravel())
 speed_obj = bpy.data.objects.new("CGN_SpeedOrient", speed_mesh)
 speed_obj["cgn_role"] = "atoms"
 speed_obj["cgn_element"] = "C"
@@ -416,11 +410,17 @@ CrystalViz._orient_ortep_openings(scene, view_direction=direction)
 new_orient_time = time.perf_counter() - t0
 speed_actual = read_vector_attribute(speed_mesh.attributes["cgn_scale"], vertex_count)
 error = float(np.max(np.abs(speed_expected - speed_actual)))
-print(f"  orient n={vertex_count}: old={old_orient_time*1000:.1f} ms  "
-      f"new={new_orient_time*1000:.1f} ms  speedup={old_orient_time/max(new_orient_time,1e-9):.1f}x")
+print(
+    f"  orient n={vertex_count}: old={old_orient_time * 1000:.1f} ms  "
+    f"new={new_orient_time * 1000:.1f} ms  "
+    f"speedup={old_orient_time / max(new_orient_time, 1e-9):.1f}x"
+)
 check("vectorized orientation matches at scale", error < 1e-5, f"max_err={error:.2e}")
-check("vectorized orientation is faster", new_orient_time < old_orient_time / 3,
-      f"{old_orient_time*1000:.1f} -> {new_orient_time*1000:.1f} ms")
+check(
+    "vectorized orientation is faster",
+    new_orient_time < old_orient_time / 3,
+    f"{old_orient_time * 1000:.1f} -> {new_orient_time * 1000:.1f} ms",
+)
 
 CrystalViz.unregister()
 check(

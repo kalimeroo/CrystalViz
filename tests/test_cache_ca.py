@@ -3,11 +3,16 @@
 Run:
   blender --background --factory-startup --python test_cache_ca.py
 """
-import sys, os, time, bpy
+
+import sys
+import time
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ca_autored.cif")
@@ -32,9 +37,11 @@ for _ in range(50):
     CrystalViz._structure_atoms(root)
 cached = (time.perf_counter() - t0) / 50
 
-print(f"import={import_s*1000:.0f} ms  atoms={n}")
-print(f"_structure_atoms: uncached={uncached*1000:.1f} ms  cached={cached*1000:.2f} ms  "
-      f"speedup={uncached/max(cached,1e-9):.0f}x")
+print(f"import={import_s * 1000:.0f} ms  atoms={n}")
+print(
+    f"_structure_atoms: uncached={uncached * 1000:.1f} ms  cached={cached * 1000:.2f} ms  "
+    f"speedup={uncached / max(cached, 1e-9):.0f}x"
+)
 
 ok = n > 0 and cached < uncached / 5
 CrystalViz.unregister()

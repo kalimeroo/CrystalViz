@@ -9,11 +9,15 @@ After grow, check that:
 Run:
   blender --background --factory-startup --python test_polyhedra_instances.py
 """
-import sys, bpy
+
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -44,7 +48,8 @@ bpy.ops.cgn.create_polyhedra()
 
 # Instance empties in root (one per qualifying-site image)
 ag_instances = [
-    o for o in root.objects
+    o
+    for o in root.objects
     if o.get("cgn_role") == "polyhedron_instance"
     and str(o.get("cgn_poly_element", "")).upper() == "AG"
 ]
@@ -55,10 +60,7 @@ print(f"  Instance empties: {len(ag_instances)}")
 # For each built site, check ALL its images have a polyhedron at their position
 all_ok = True
 for p1_index in sorted(built_sites):
-    site_images = [
-        a for a in ag_images
-        if int(a.get("p1_index", -1)) == p1_index
-    ]
+    site_images = [a for a in ag_images if int(a.get("p1_index", -1)) == p1_index]
     site_positions = {
         tuple(round(v * 0.1, 4) for v in a["cart"])  # DISPLAY_SCALE applied
         for a in site_images
@@ -70,27 +72,27 @@ for p1_index in sorted(built_sites):
     }
     missing = site_positions - site_instance_positions
     extra = site_instance_positions - site_positions
-    print(f"  Site P1={p1_index}: {len(site_images)} images, "
-          f"{len(site_instance_positions)} instances, "
-          f"{len(missing)} missing, {len(extra)} extra")
+    print(
+        f"  Site P1={p1_index}: {len(site_images)} images, "
+        f"{len(site_instance_positions)} instances, "
+        f"{len(missing)} missing, {len(extra)} extra"
+    )
     if missing or extra:
         all_ok = False
 
 check("every qualifying-site image has a polyhedron at its position (correct scale)", all_ok)
 
 # One instance per qualifying-site image
-qualifying_images = sum(
-    1 for a in ag_images
-    if int(a.get("p1_index", -1)) in built_sites
+qualifying_images = sum(1 for a in ag_images if int(a.get("p1_index", -1)) in built_sites)
+check(
+    "instance empties == qualifying-site images",
+    len(ag_instances) == qualifying_images,
+    f"{len(ag_instances)} instances vs {qualifying_images} qualifying images",
 )
-check("instance empties == qualifying-site images",
-      len(ag_instances) == qualifying_images,
-      f"{len(ag_instances)} instances vs {qualifying_images} qualifying images")
 
 # Every instance is an empty with COLLECTION instancing
 all_empties = all(
-    inst.type == "EMPTY" and inst.instance_type == "COLLECTION"
-    for inst in ag_instances
+    inst.type == "EMPTY" and inst.instance_type == "COLLECTION" for inst in ag_instances
 )
 check("every object is an empty with COLLECTION instancing", all_empties)
 
@@ -100,9 +102,11 @@ proto_coll_names = {
     for inst in ag_instances
     if inst.get("cgn_poly_proto_collection")
 }
-check("one prototype collection per site",
-      len(proto_coll_names) == len(built_sites),
-      f"{len(proto_coll_names)} proto collections vs {len(built_sites)} sites")
+check(
+    "one prototype collection per site",
+    len(proto_coll_names) == len(built_sites),
+    f"{len(proto_coll_names)} proto collections vs {len(built_sites)} sites",
+)
 
 for coll_name in proto_coll_names:
     coll = bpy.data.collections.get(coll_name)
@@ -111,12 +115,13 @@ for coll_name in proto_coll_names:
         objs = list(coll.objects)
         faces = [o for o in objs if o.get("cgn_role") == "polyhedron_face"]
         edges = [o for o in objs if o.get("cgn_role") == "polyhedron_edge"]
-        check(f"proto {coll_name}: 1 face + 1 edge",
-              len(faces) == 1 and len(edges) == 1,
-              f"{len(faces)} faces, {len(edges)} edges")
+        check(
+            f"proto {coll_name}: 1 face + 1 edge",
+            len(faces) == 1 and len(edges) == 1,
+            f"{len(faces)} faces, {len(edges)} edges",
+        )
         if faces and edges:
-            check(f"proto {coll_name}: edge parented to face",
-                  edges[0].parent is faces[0])
+            check(f"proto {coll_name}: edge parented to face", edges[0].parent is faces[0])
 
 # Shared mesh data: one block per site
 mesh_blocks = set()
@@ -126,14 +131,18 @@ for coll_name in proto_coll_names:
         for o in coll.objects:
             if o.get("cgn_role") == "polyhedron_face" and o.data:
                 mesh_blocks.add(o.data)
-check("one mesh data block per site (shared data)",
-      len(mesh_blocks) == len(built_sites),
-      f"{len(mesh_blocks)} mesh blocks vs {len(built_sites)} sites")
+check(
+    "one mesh data block per site (shared data)",
+    len(mesh_blocks) == len(built_sites),
+    f"{len(mesh_blocks)} mesh blocks vs {len(built_sites)} sites",
+)
 
 # Object count far below 2 per atom
-check("fewer objects than 2 per Ag image (9 images)",
-      len(ag_instances) < 18,
-      f"{len(ag_instances)} instances")
+check(
+    "fewer objects than 2 per Ag image (9 images)",
+    len(ag_instances) < 18,
+    f"{len(ag_instances)} instances",
+)
 
 CrystalViz.unregister()
 check("unregister OK", True)

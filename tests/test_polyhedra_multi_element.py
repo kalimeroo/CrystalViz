@@ -5,11 +5,15 @@ Reproduces: build Ag polyhedra, then build Cr polyhedra -> Ag must survive.
 Run:
   blender --background --factory-startup --python test_polyhedra_multi_element.py
 """
-import sys, bpy
+
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -24,7 +28,8 @@ def check(name, cond, detail=""):
 
 def poly_objects(element):
     return [
-        o for o in root.objects
+        o
+        for o in root.objects
         if o.get("cgn_role") == "polyhedron"
         and str(o.get("cgn_poly_element", "")).upper() == element
     ]
@@ -42,9 +47,7 @@ scene.cgn_polyhedron_settings.element = "AG"
 bpy.ops.cgn.create_polyhedra()
 ag_before = poly_objects("AG")
 ag_names = {o.name for o in ag_before}
-ag_centers = {
-    o.name: o.get("cgn_poly_centers") for o in ag_before
-}
+ag_centers = {o.name: o.get("cgn_poly_centers") for o in ag_before}
 print(f"  Ag objects after Ag build: {len(ag_before)}")
 check("Ag polyhedra built", len(ag_before) > 0, f"{len(ag_before)} objects")
 
@@ -55,18 +58,21 @@ ag_after = poly_objects("AG")
 cr_after = poly_objects("CR")
 print(f"  Ag objects after Cr build: {len(ag_after)}  Cr objects: {len(cr_after)}")
 check("Cr polyhedra built", len(cr_after) > 0, f"{len(cr_after)} objects")
-check("Ag polyhedra survive a Cr build",
-      {o.name for o in ag_after} == ag_names,
-      f"Ag {len(ag_before)} -> {len(ag_after)}")
-check("Ag polyhedra geometry unchanged",
-      all(o.get("cgn_poly_centers") == ag_centers.get(o.name) for o in ag_after))
+check(
+    "Ag polyhedra survive a Cr build",
+    {o.name for o in ag_after} == ag_names,
+    f"Ag {len(ag_before)} -> {len(ag_after)}",
+)
+check(
+    "Ag polyhedra geometry unchanged",
+    all(o.get("cgn_poly_centers") == ag_centers.get(o.name) for o in ag_after),
+)
 
 # Building Ag again replaces only Ag, keeps Cr.
 cr_names = {o.name for o in cr_after}
 scene.cgn_polyhedron_settings.element = "AG"
 bpy.ops.cgn.create_polyhedra()
-check("Cr polyhedra survive an Ag rebuild",
-      {o.name for o in poly_objects("CR")} == cr_names)
+check("Cr polyhedra survive an Ag rebuild", {o.name for o in poly_objects("CR")} == cr_names)
 check("still one Ag object per site", len(poly_objects("AG")) == len(ag_before))
 
 CrystalViz.unregister()

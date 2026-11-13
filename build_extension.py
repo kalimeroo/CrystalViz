@@ -208,7 +208,7 @@ def write_manifest(chosen):
 
 def _read_manifest_text(platform):
     """Return the manifest text filtered to the wheels that run on *platform*."""
-    with open(_MANIFEST, "r", encoding="utf-8") as handle:
+    with open(_MANIFEST, encoding="utf-8") as handle:
         text = handle.read()
 
     keep = []
@@ -221,9 +221,7 @@ def _read_manifest_text(platform):
             keep.append(filename)
 
     if not keep:
-        raise SystemExit(
-            f"error: the manifest references no wheel that runs on {platform}."
-        )
+        raise SystemExit(f"error: the manifest references no wheel that runs on {platform}.")
 
     # Replace every path in the wheels array with the matching subset.
     lines = text.splitlines()
@@ -255,8 +253,7 @@ def build(args):
     os.makedirs(_DIST_DIR, exist_ok=True)
     if not os.path.isdir(_WHEELS_DIR):
         raise SystemExit(
-            "error: no wheels/ directory. Run "
-            "'python build_extension.py download' first."
+            "error: no wheels/ directory. Run 'python build_extension.py download' first."
         )
 
     # Cache the wheel filenames per platform.

@@ -165,9 +165,7 @@ _JMOL_CPK_HEX = {
     "HS": "E6002E",
     "MT": "EB0026",
 }
-_ELEMENT_COLORS = {
-    element: _cpk_color(value) for element, value in _JMOL_CPK_HEX.items()
-}
+_ELEMENT_COLORS = {element: _cpk_color(value) for element, value in _JMOL_CPK_HEX.items()}
 _DEFAULT_COLOR = _cpk_color("FF1493")
 _DISPLAY_SCALE = 0.1
 _BOND_VDW_FACTOR = 0.1
@@ -250,9 +248,7 @@ _MODEL_ITEMS = (
     ),
     ("WIRE_STICKS", "Wire-sticks", "Thin atoms and thin bonds"),
 )
-_CIF_CELL_VALUE_RE = re.compile(
-    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$"
-)
+_CIF_CELL_VALUE_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$")
 _DOCS_URL = "https://github.com/kalimeroo/CrystalViz"
 
 
@@ -672,9 +668,7 @@ def _update_polyhedron_style(self, context):
     centers = []
     for obj in legacy:
         try:
-            centers.extend(
-                int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]"))
-            )
+            centers.extend(int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]")))
         except (TypeError, ValueError):
             continue
     for obj in legacy:
@@ -773,9 +767,7 @@ def _active_root(scene):
 def _collection_in_scene(scene, collection):
     """True when *collection* is linked somewhere under *scene* (any depth)."""
     target = collection.name
-    return any(
-        child.name == target for child in scene.collection.children_recursive
-    )
+    return any(child.name == target for child in scene.collection.children_recursive)
 
 
 def _unlinked_active_structure(scene):
@@ -815,11 +807,7 @@ def _ensure_shade_smooth(node_group):
         if node.bl_idname == "GeometryNodeSetShadeSmooth":
             return
     instance = next(
-        (
-            node
-            for node in node_group.nodes
-            if node.bl_idname == "GeometryNodeInstanceOnPoints"
-        ),
+        (node for node in node_group.nodes if node.bl_idname == "GeometryNodeInstanceOnPoints"),
         None,
     )
     if instance is None:
@@ -864,9 +852,7 @@ def _make_node_group(name, is_bond_group):
     radius_in = node_group.interface.new_socket(
         name="Radius", in_out="INPUT", socket_type="NodeSocketFloat"
     )
-    radius_in.default_value = (
-        _DEFAULT_BOND_RADIUS if is_bond_group else 0.5 * _DISPLAY_SCALE
-    )
+    radius_in.default_value = _DEFAULT_BOND_RADIUS if is_bond_group else 0.5 * _DISPLAY_SCALE
     material_in = node_group.interface.new_socket(
         name="Material", in_out="INPUT", socket_type="NodeSocketMaterial"
     )
@@ -890,19 +876,13 @@ def _make_node_group(name, is_bond_group):
         curve_to_mesh.location = (-100, 100)
         set_material.location = (150, 100)
         profile.inputs["Resolution"].default_value = 12
-        links.new(
-            group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"]
-        )
+        links.new(group_in.outputs[geometry_in.identifier], mesh_to_curve.inputs["Mesh"])
         links.new(mesh_to_curve.outputs["Curve"], curve_to_mesh.inputs["Curve"])
         links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
         links.new(group_in.outputs[radius_in.identifier], profile.inputs["Radius"])
         links.new(curve_to_mesh.outputs["Mesh"], set_material.inputs["Geometry"])
-        links.new(
-            group_in.outputs[material_in.identifier], set_material.inputs["Material"]
-        )
-        links.new(
-            set_material.outputs["Geometry"], group_out.inputs[geometry_out.identifier]
-        )
+        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
+        links.new(set_material.outputs["Geometry"], group_out.inputs[geometry_out.identifier])
     else:
         ico = nodes.new("GeometryNodeMeshIcoSphere")
         set_material = nodes.new("GeometryNodeSetMaterial")
@@ -916,14 +896,10 @@ def _make_node_group(name, is_bond_group):
         links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
         links.new(group_in.outputs[radius_in.identifier], ico.inputs["Radius"])
         links.new(ico.outputs["Mesh"], set_material.inputs["Geometry"])
-        links.new(
-            group_in.outputs[material_in.identifier], set_material.inputs["Material"]
-        )
+        links.new(group_in.outputs[material_in.identifier], set_material.inputs["Material"])
         links.new(set_material.outputs["Geometry"], smooth.inputs["Geometry"])
         links.new(smooth.outputs["Geometry"], instance.inputs["Instance"])
-        links.new(
-            instance.outputs["Instances"], group_out.inputs[geometry_out.identifier]
-        )
+        links.new(instance.outputs["Instances"], group_out.inputs[geometry_out.identifier])
     _apply_quality_settings(getattr(bpy.context, "scene", None))
     return node_group
 
@@ -965,9 +941,7 @@ def _make_unit_cell_node_group():
     set_face_mat = nodes.new("GeometryNodeSetMaterial")
     set_face_mat.location = (-300, 200)
     links.new(group_in.outputs[geometry_in.identifier], set_face_mat.inputs["Geometry"])
-    links.new(
-        group_in.outputs[face_material_in.identifier], set_face_mat.inputs["Material"]
-    )
+    links.new(group_in.outputs[face_material_in.identifier], set_face_mat.inputs["Material"])
 
     # Branch 2: beveled edges
     mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
@@ -984,9 +958,7 @@ def _make_unit_cell_node_group():
     links.new(profile.outputs["Curve"], curve_to_mesh.inputs["Profile Curve"])
     links.new(group_in.outputs[edge_thickness_in.identifier], profile.inputs["Radius"])
     links.new(curve_to_mesh.outputs["Mesh"], set_edge_mat.inputs["Geometry"])
-    links.new(
-        group_in.outputs[edge_material_in.identifier], set_edge_mat.inputs["Material"]
-    )
+    links.new(group_in.outputs[edge_material_in.identifier], set_edge_mat.inputs["Material"])
 
     # Branch 3: corner markers (icospheres on vertices)
     ico = nodes.new("GeometryNodeMeshIcoSphere")
@@ -1062,7 +1034,7 @@ def _make_polyhedra_node_group():
     group_out.location = (550, 0)
 
     info.transform_space = "ORIGINAL"
-    links.new(group_in.outputs["Geometry"], instance.inputs["Points"])
+    links.new(group_in.outputs[geometry_in.identifier], instance.inputs["Points"])
     links.new(group_in.outputs["Prototype"], info.inputs["Object"])
     links.new(info.outputs["Geometry"], instance.inputs["Instance"])
     links.new(instance.outputs["Instances"], realize.inputs["Geometry"])
@@ -1117,9 +1089,7 @@ def _ellipsoid_probability_factor(probability):
 
     def chi_square_3_cdf(value):
         root = math.sqrt(value / 2.0)
-        return math.erf(root) - math.sqrt(2.0 * value / math.pi) * math.exp(
-            -value / 2.0
-        )
+        return math.erf(root) - math.sqrt(2.0 * value / math.pi) * math.exp(-value / 2.0)
 
     lower = 0.0
     upper = 1.0
@@ -1168,8 +1138,7 @@ def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
 
     def add_sphere_face(face):
         centroid = tuple(
-            sum(vertices[index][axis] for index in face) / len(face)
-            for axis in range(3)
+            sum(vertices[index][axis] for index in face) / len(face) for axis in range(3)
         )
         if all(component > 1e-8 for component in centroid):
             return
@@ -1208,11 +1177,7 @@ def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     def add_inner_fan(boundary, reverse=False):
         for index in range(len(boundary) - 1):
             first, second = boundary[index : index + 2]
-            face = (
-                (inner_center, second, first)
-                if reverse
-                else (inner_center, first, second)
-            )
+            face = (inner_center, second, first) if reverse else (inner_center, first, second)
             faces.append(face)
             face_types.append((False, True, False))
             smooth_faces.append(False)
@@ -1220,14 +1185,10 @@ def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
     half_latitude = latitude_steps // 2
     quarter_longitude = longitude_steps // 4
     x_cut = [0] + [
-        ring_index(latitude, quarter_longitude)
-        for latitude in range(1, half_latitude + 1)
+        ring_index(latitude, quarter_longitude) for latitude in range(1, half_latitude + 1)
     ]
     y_cut = [0] + [ring_index(latitude, 0) for latitude in range(1, half_latitude + 1)]
-    z_cut = [
-        ring_index(half_latitude, longitude)
-        for longitude in range(quarter_longitude + 1)
-    ]
+    z_cut = [ring_index(half_latitude, longitude) for longitude in range(quarter_longitude + 1)]
     add_inner_fan(x_cut, reverse=True)
     add_inner_fan(y_cut)
     add_inner_fan(z_cut)
@@ -1274,13 +1235,9 @@ def _ortep_template_geometry(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
             for side in range(tube_sides):
                 current = start + segment * tube_sides + side
                 next_side = start + segment * tube_sides + (side + 1) % tube_sides
-                next_segment = (
-                    start + ((segment + 1) % tube_segments) * tube_sides + side
-                )
+                next_segment = start + ((segment + 1) % tube_segments) * tube_sides + side
                 next_both = (
-                    start
-                    + ((segment + 1) % tube_segments) * tube_sides
-                    + (side + 1) % tube_sides
+                    start + ((segment + 1) % tube_segments) * tube_sides + (side + 1) % tube_sides
                 )
                 if plane_index == 1:
                     faces.extend(
@@ -1318,7 +1275,7 @@ def _build_ortep_template_mesh(ellipse_thickness=_ORTEP_ELLIPSE_THICKNESS):
         attribute = mesh.attributes.new(name, "BOOLEAN", "FACE")
         for polygon_index, face_type in enumerate(face_types):
             attribute.data[polygon_index].value = face_type[flag_index]
-    for polygon, smooth in zip(mesh.polygons, smooth_faces):
+    for polygon, smooth in zip(mesh.polygons, smooth_faces, strict=True):
         polygon.use_smooth = smooth
     mesh["cgn_ortep_template_version"] = 3
     mesh["cgn_ortep_ellipse_thickness"] = tube_radius
@@ -1368,17 +1325,13 @@ def _ensure_ortep_template():
         )
     ):
         old_mesh = obj.data
-        obj.data = _build_ortep_template_mesh(
-            bpy.context.scene.cgn_ortep_ellipse_thickness
-        )
+        obj.data = _build_ortep_template_mesh(bpy.context.scene.cgn_ortep_ellipse_thickness)
         if old_mesh.users == 0:
             bpy.data.meshes.remove(old_mesh)
     collection = bpy.data.collections.get("CGN_ORTEP_Assets")
     if collection is None:
         collection = bpy.data.collections.new("CGN_ORTEP_Assets")
-    if collection.name not in {
-        child.name for child in bpy.context.scene.collection.children
-    }:
+    if collection.name not in {child.name for child in bpy.context.scene.collection.children}:
         bpy.context.scene.collection.children.link(collection)
     if obj.name not in {item.name for item in collection.objects}:
         collection.objects.link(obj)
@@ -1493,9 +1446,7 @@ def _make_ellipsoid_node_group():
         material_nodes[2].inputs["Geometry"],
     )
     links.new(material_nodes[2].outputs["Geometry"], instance.inputs["Instance"])
-    links.new(
-        group_in.outputs[sockets["Geometry"].identifier], instance.inputs["Points"]
-    )
+    links.new(group_in.outputs[sockets["Geometry"].identifier], instance.inputs["Points"])
     links.new(scale_attribute.outputs["Attribute"], vector_scale.inputs[0])
     links.new(
         group_in.outputs[sockets["Probability Scale"].identifier],
@@ -1579,9 +1530,7 @@ def _add_ellipsoid_attributes(mesh, atoms):
     tensor_indices = []
     tensor_size_scales = []
     for index, atom in enumerate(atoms):
-        size_scale = (
-            hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
-        )
+        size_scale = hydrogen_scale if str(atom.get("element", "")).upper() == "H" else 1.0
         values = atom.get("u_cart")
         if values and len(values) == 6:
             numbers = [float(value) for value in values]
@@ -1602,15 +1551,11 @@ def _add_ellipsoid_attributes(mesh, atoms):
         scales[index] = radius * size_scale
 
     if tensors:
-        eigenvalues, eigenvectors = np.linalg.eigh(
-            np.asarray(tensors, dtype=np.float64)
-        )
+        eigenvalues, eigenvectors = np.linalg.eigh(np.asarray(tensors, dtype=np.float64))
         eigenvalues = np.clip(eigenvalues, 0.0, None)
         axes = np.sqrt(eigenvalues * _ELLIPSOID_CHI2_50)
         axes = np.maximum(
-            axes
-            * _DISPLAY_SCALE
-            * np.asarray(tensor_size_scales, dtype=np.float64)[:, np.newaxis],
+            axes * _DISPLAY_SCALE * np.asarray(tensor_size_scales, dtype=np.float64)[:, np.newaxis],
             1e-4,
         )
         flip = np.linalg.det(eigenvectors) < 0.0
@@ -1645,10 +1590,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
         return
 
     for obj in root.objects:
-        if (
-            obj.get("cgn_role") != "atoms"
-            or str(obj.get("cgn_element", "")).upper() == "H"
-        ):
+        if obj.get("cgn_role") != "atoms" or str(obj.get("cgn_element", "")).upper() == "H":
             continue
         data = obj.data
         scale_attribute = data.attributes.get("cgn_scale")
@@ -1679,10 +1621,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
             coordinates = coordinates.reshape(-1, 3).astype(np.float64)
             world_matrix = obj.matrix_world
             to_world = np.array(
-                [
-                    [world_matrix[row][column] for column in range(3)]
-                    for row in range(3)
-                ],
+                [[world_matrix[row][column] for column in range(3)] for row in range(3)],
                 dtype=np.float64,
             )
             translation = np.array(tuple(world_matrix.translation), dtype=np.float64)
@@ -1693,9 +1632,7 @@ def _orient_ortep_openings(scene, view_direction=None, camera_position=None):
         local_directions = np.einsum("nji,nj->ni", matrices, directions)
         oriented = np.abs(scales) * np.where(local_directions >= 0.0, 1.0, -1.0)
         if np.any(oriented != scales):
-            scale_attribute.data.foreach_set(
-                "vector", oriented.astype(np.float32).ravel()
-            )
+            scale_attribute.data.foreach_set("vector", oriented.astype(np.float32).ravel())
             data.update()
             obj.update_tag(refresh={"OBJECT", "DATA"})
 
@@ -1715,9 +1652,7 @@ def _orient_ortep_to_camera(scene, camera):
         camera_direction = camera.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))
         _orient_ortep_openings(scene, view_direction=camera_direction)
     else:
-        _orient_ortep_openings(
-            scene, camera_position=camera.matrix_world.translation.copy()
-        )
+        _orient_ortep_openings(scene, camera_position=camera.matrix_world.translation.copy())
 
 
 def _ortep_view_signature(view_direction=None, camera=None):
@@ -1826,9 +1761,7 @@ def _set_modifier_input(modifier, node_group, socket_name, value):
         modifier[identifier] = value
     except TypeError:
         if input_value is None:
-            raise RuntimeError(
-                f"Geometry Nodes modifier input '{socket_name}' is unavailable."
-            )
+            raise RuntimeError(f"Geometry Nodes modifier input '{socket_name}' is unavailable.")
         input_value.value = value
 
 
@@ -2326,10 +2259,7 @@ def _apply_hydrogen_scale(scene):
         return
     scale = float(scene.cgn_hydrogen_scale)
     for obj in root.objects:
-        if (
-            obj.get("cgn_role") != "atoms"
-            or str(obj.get("cgn_element", "")).upper() != "H"
-        ):
+        if obj.get("cgn_role") != "atoms" or str(obj.get("cgn_element", "")).upper() != "H":
             continue
         radius = (
             float(obj.get("cgn_vdw_radius", _DEFAULT_VDW_RADIUS))
@@ -2442,9 +2372,7 @@ def _make_atom_objects(root, atoms):
     for element, element_atoms in sorted(by_element.items()):
         scene = bpy.context.scene
         style = _atom_style(scene, element)
-        size_scale = (
-            scene.cgn_hydrogen_scale if element == "H" and model == "ELLIPSOID" else 1.0
-        )
+        size_scale = scene.cgn_hydrogen_scale if element == "H" and model == "ELLIPSOID" else 1.0
         is_ortep_ellipsoid = ellipsoids and element != "H"
         mesh = bpy.data.meshes.new(f"CGN_Atoms_{element}_Points")
         mesh.from_pydata(
@@ -2458,9 +2386,7 @@ def _make_atom_objects(root, atoms):
         obj = bpy.data.objects.new(f"CGN_Atoms_{element}", mesh)
         obj["cgn_role"] = "atoms"
         obj["cgn_element"] = element
-        obj["cgn_vdw_radius"] = float(
-            element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS)
-        )
+        obj["cgn_vdw_radius"] = float(element_atoms[0].get("vdw_radius", _DEFAULT_VDW_RADIUS))
         root.objects.link(obj)
         if element == "H" and not _show_hydrogens():
             obj.hide_viewport = True
@@ -2478,12 +2404,7 @@ def _make_atom_objects(root, atoms):
         else:
             if ellipsoids:
                 node_group_for_atom = hydrogen_node_group
-                radius = (
-                    obj["cgn_vdw_radius"]
-                    * _BALL_ATOM_VDW_FACTOR
-                    * size_scale
-                    * _DISPLAY_SCALE
-                )
+                radius = obj["cgn_vdw_radius"] * _BALL_ATOM_VDW_FACTOR * size_scale * _DISPLAY_SCALE
             elif model == "BALL_STICK":
                 node_group_for_atom = node_group
                 radius = obj["cgn_vdw_radius"] * style.size * _DISPLAY_SCALE
@@ -2531,9 +2452,7 @@ def _set_growth_selection_mesh(root, atoms, indices):
     Geometry-Nodes modifier) when present, only rewriting the mesh vertices;
     it is created once and removed when nothing is selected.
     """
-    selected_atoms = [
-        atoms[index] for index in sorted(set(indices)) if 0 <= index < len(atoms)
-    ]
+    selected_atoms = [atoms[index] for index in sorted(set(indices)) if 0 <= index < len(atoms)]
     obj = next(
         (o for o in root.objects if o.get("cgn_role") == "growth_selection"),
         None,
@@ -2559,9 +2478,7 @@ def _set_growth_selection_mesh(root, atoms, indices):
     # rewrite in place.  The object, material and Geometry-Nodes modifier are
     # still reused --- only the mesh data is rewritten, not the object graph.
     obj.data.clear_geometry()
-    obj.data.from_pydata(
-        [_display_point(atom["cart"]) for atom in selected_atoms], [], []
-    )
+    obj.data.from_pydata([_display_point(atom["cart"]) for atom in selected_atoms], [], [])
     obj.data.update()
 
 
@@ -2731,12 +2648,8 @@ def _show_unit_cell(root, cell_matrix, settings=None, repeats=(1, 1, 1)):
     edge_material = _make_unit_cell_edge_material(settings)
     _set_modifier_input(modifier, node_group, "Face Material", face_material)
     _set_modifier_input(modifier, node_group, "Edge Material", edge_material)
-    _set_modifier_input(
-        modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE
-    )
-    _set_modifier_input(
-        modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE
-    )
+    _set_modifier_input(modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE)
+    _set_modifier_input(modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE)
     obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
@@ -2753,12 +2666,8 @@ def _update_unit_cell_objects(obj, cell_matrix, repeats, settings):
     edge_material = _make_unit_cell_edge_material(settings)
     _set_modifier_input(modifier, node_group, "Face Material", face_material)
     _set_modifier_input(modifier, node_group, "Edge Material", edge_material)
-    _set_modifier_input(
-        modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE
-    )
-    _set_modifier_input(
-        modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE
-    )
+    _set_modifier_input(modifier, node_group, "Edge Thickness", thickness * _DISPLAY_SCALE)
+    _set_modifier_input(modifier, node_group, "Marker Radius", thickness * _DISPLAY_SCALE)
     obj.update_tag(refresh={"OBJECT", "DATA"})
 
 
@@ -3080,9 +2989,7 @@ class _PolyhedronSearch:
                 element = site["element"]
                 if element in eligible:
                     continue
-                ligands = self.ligands(
-                    site["cart"], element, limit=_POLY_MIN_LIGANDS
-                )
+                ligands = self.ligands(site["cart"], element, limit=_POLY_MIN_LIGANDS)
                 if len(ligands) >= _POLY_MIN_LIGANDS:
                     eligible.add(element)
                     if len(eligible) == len(elements):
@@ -3127,18 +3034,13 @@ class _PolyhedronSearch:
             search, _structure, query = index
             query.fract = center_frac
             candidates = sorted(
-                {
-                    mark.atom_idx
-                    for mark in search.find_site_neighbors(query, 0.0, reach)
-                }
+                {mark.atom_idx for mark in search.find_site_neighbors(query, 0.0, reach)}
             )
         ligands = []
         seen = set()
         for position in candidates:
             atom = self.pool[position]
-            bounds = self.windows.get(
-                _pair_key(center_element, atom["element"])
-            )
+            bounds = self.windows.get(_pair_key(center_element, atom["element"]))
             if bounds is None:
                 continue
             minimum, maximum = bounds
@@ -3147,9 +3049,7 @@ class _PolyhedronSearch:
             pj = atom["frac"]
             site_index = atom["index"]
             pj_gemmi = worker.gemmi.Fractional(pj[0], pj[1], pj[2])
-            for im in cell.find_nearest_pbc_images(
-                center_frac, maximum, pj_gemmi, 0
-            ):
+            for im in cell.find_nearest_pbc_images(center_frac, maximum, pj_gemmi, 0):
                 f_img = cell.fract_image(im, pj_gemmi)
                 tx = int(round(f_img.x - pj[0]))
                 ty = int(round(f_img.y - pj[1]))
@@ -3277,9 +3177,7 @@ def _make_polyhedron_face_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(
-            f"CGN_Polyhedron_Face_Material_{element}{suffix}"
-        )
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
     material.use_nodes = True
     face_rgba, _edge, _thickness = _polyhedron_style_values(style)
     color, alpha = face_rgba[:3], face_rgba[3]
@@ -3304,9 +3202,7 @@ def _make_polyhedron_edge_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
     if material is None:
-        material = bpy.data.materials.new(
-            f"CGN_Polyhedron_Edge_Material_{element}{suffix}"
-        )
+        material = bpy.data.materials.new(f"CGN_Polyhedron_Edge_Material_{element}{suffix}")
     material.use_nodes = True
     _face, edge_rgba, _thickness = _polyhedron_style_values(style)
     color, alpha = edge_rgba[:3], edge_rgba[3]
@@ -3391,8 +3287,7 @@ def _polyhedron_geometry(atoms, centers, search, removed_quads=None):
             str(atoms[center].get("element", "X")).upper(),
         )
         if removed_quads and any(
-            (site_index, tx, ty, tz) in removed_quads
-            for _pos, site_index, (tx, ty, tz) in ligands
+            (site_index, tx, ty, tz) in removed_quads for _pos, site_index, (tx, ty, tz) in ligands
         ):
             # A ligand was erased: remove this polyhedron entirely rather
             # than re-enclosing the surviving neighbours.
@@ -3450,11 +3345,7 @@ def _remap_polyhedra(root, removed_indices, atoms=None, scene=None, removed_quad
 
     search = _polyhedron_search(root, scene) if removed_quads else None
     for element in elements_with_poly:
-        centers = [
-            i
-            for i, a in enumerate(atoms)
-            if str(a.get("element", "X")).upper() == element
-        ]
+        centers = [i for i, a in enumerate(atoms) if str(a.get("element", "X")).upper() == element]
         if removed_quads and search is not None:
             # Drop only the centre images that lost a ligand vertex.  Their
             # periodic copies use different ligand instances, so they keep a
@@ -3545,9 +3436,7 @@ def _convex_hull_faces(vertices):
     if n < 4:
         return []
     index0 = 0
-    index1 = max(
-        range(n), key=lambda i: _vec_distance_squared(vertices[i], vertices[index0])
-    )
+    index1 = max(range(n), key=lambda i: _vec_distance_squared(vertices[i], vertices[index0]))
     if _vec_distance_squared(vertices[index1], vertices[index0]) <= 1e-12:
         return []
     axis = _vec_sub(vertices[index1], vertices[index0])
@@ -3570,14 +3459,9 @@ def _convex_hull_faces(vertices):
         return []
     index3 = max(
         range(n),
-        key=lambda i: abs(
-            _vec_dot(_vec_sub(vertices[i], vertices[index0]), plane_normal)
-        ),
+        key=lambda i: abs(_vec_dot(_vec_sub(vertices[i], vertices[index0]), plane_normal)),
     )
-    if (
-        abs(_vec_dot(_vec_sub(vertices[index3], vertices[index0]), plane_normal))
-        <= 1e-9
-    ):
+    if abs(_vec_dot(_vec_sub(vertices[index3], vertices[index0]), plane_normal)) <= 1e-9:
         return []  # all positions coplanar; no volume to enclose
 
     seeds = (index0, index1, index2, index3)
@@ -3706,11 +3590,7 @@ def _merge_coplanar_faces(faces, vertices):
             for position in range(3):
                 directed.append((face[position], face[(position + 1) % 3]))
         directed_set = set(directed)
-        boundary = [
-            (start, end)
-            for (start, end) in directed
-            if (end, start) not in directed_set
-        ]
+        boundary = [(start, end) for (start, end) in directed if (end, start) not in directed_set]
         next_vertex = {}
         for start, end in boundary:
             existing = next_vertex.get(start)
@@ -3763,9 +3643,7 @@ def _polyhedron_topology(points):
     deduplicated = []
     kept = []
     for index, point in enumerate(points):
-        if any(
-            _vec_distance_squared(point, previous) <= 1e-9 for previous in deduplicated
-        ):
+        if any(_vec_distance_squared(point, previous) <= 1e-9 for previous in deduplicated):
             continue
         deduplicated.append(point)
         kept.append(index)
@@ -3933,7 +3811,7 @@ def _make_polyhedron_prototype_mesh(
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
-    for polygon, material_index in zip(mesh.polygons, material_indices):
+    for polygon, material_index in zip(mesh.polygons, material_indices, strict=True):
         polygon.use_smooth = False
         polygon.material_index = material_index
     mesh.materials.append(face_material)
@@ -3979,7 +3857,7 @@ def _rebuild_polyhedron_prototype(prototype, thickness):
     mesh.clear_geometry()
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
-    for polygon, material_index in zip(mesh.polygons, material_indices):
+    for polygon, material_index in zip(mesh.polygons, material_indices, strict=True):
         polygon.use_smooth = False
         polygon.material_index = material_index
     prototype["cgn_poly_edge_width"] = float(thickness)
@@ -4036,9 +3914,7 @@ def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=Non
         and element_b in ionic
     ):
         reference = ionic[element_a] + ionic[element_b]
-        return _BOND_MIN_SCALE * reference, min(
-            _MAX_BOND_WINDOW, _BOND_MAX_SCALE * reference
-        )
+        return _BOND_MIN_SCALE * reference, min(_MAX_BOND_WINDOW, _BOND_MAX_SCALE * reference)
     reference = radii[element_a] + radii[element_b]
     maximum = min(_BOND_MAX_SCALE * reference, reference + _BOND_MAX_SLACK)
     if element_a in metals and element_b in metals:
@@ -4091,13 +3967,9 @@ def _chemdraw_bond_orders(segments, covalent_radii):
             sum((float(first[axis]) - float(second[axis])) ** 2 for axis in range(3))
         )
         normalized_length = distance / (radius_a + radius_b)
-        order = (
-            3 if normalized_length <= 0.83 else 2 if normalized_length <= 0.90 else 1
-        )
+        order = 3 if normalized_length <= 0.83 else 2 if normalized_length <= 0.90 else 1
         if order > 1:
-            confidence = (
-                0.83 - normalized_length if order == 3 else 0.90 - normalized_length
-            )
+            confidence = 0.83 - normalized_length if order == 3 else 0.90 - normalized_length
             candidates.append((confidence, edge_key, order, element_a, element_b))
 
     remaining = {
@@ -4108,9 +3980,7 @@ def _chemdraw_bond_orders(segments, covalent_radii):
         for node, element in elements.items()
     }
     orders = {}
-    for _confidence, edge_key, order, _element_a, _element_b in sorted(
-        candidates, reverse=True
-    ):
+    for _confidence, edge_key, order, _element_a, _element_b in sorted(candidates, reverse=True):
         extra_valence = min(
             order - 1,
             remaining.get(edge_key[0], 0),
@@ -4155,9 +4025,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
         )
         radius_a = float(covalent_radii.get(first_key, 0.0))
         radius_b = float(covalent_radii.get(second_key, 0.0))
-        normalized_length = (
-            distance / (radius_a + radius_b) if radius_a + radius_b > 0.0 else 0.0
-        )
+        normalized_length = distance / (radius_a + radius_b) if radius_a + radius_b > 0.0 else 0.0
         if (
             element_a not in ring_elements
             or element_b not in ring_elements
@@ -4192,16 +4060,12 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                         continue
                     seen_rings.add(ring_edges)
                     ring_distances = [edges[index][2] for index in ring_edges]
-                    ring_nodes = {
-                        node for index in ring_edges for node in edges[index][:2]
-                    }
+                    ring_nodes = {node for index in ring_edges for node in edges[index][:2]}
                     ring_edge_keys = {
-                        _bond_edge_key(edges[index][0], edges[index][1])
-                        for index in ring_edges
+                        _bond_edge_key(edges[index][0], edges[index][1]) for index in ring_edges
                     }
                     if (
-                        max(ring_distances) - min(ring_distances)
-                        > _AROMATIC_BOND_LENGTH_SPREAD_MAX
+                        max(ring_distances) - min(ring_distances) > _AROMATIC_BOND_LENGTH_SPREAD_MAX
                         or not 0.90 <= sum(ring_distances) / len(ring_distances) <= 0.96
                         or any(
                             degrees[node] > 3 or elements[node] not in ring_elements
@@ -4217,10 +4081,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                         element = elements[node]
                         for other, _other_element in all_neighbors.get(node, ()):
                             edge_key = tuple(sorted((node, other)))
-                            if (
-                                edge_key not in ring_edge_keys
-                                and bond_orders.get(edge_key, 1) > 1
-                            ):
+                            if edge_key not in ring_edge_keys and bond_orders.get(edge_key, 1) > 1:
                                 ring_has_exocyclic_multiple = True
                                 break
                         if ring_has_exocyclic_multiple:
@@ -4230,10 +4091,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                         elif element == "N":
                             has_substituent = any(
                                 other not in ring_nodes
-                                and (
-                                    other_element in _CHEMDRAW_MAX_VALENCE
-                                    or other_element == "H"
-                                )
+                                and (other_element in _CHEMDRAW_MAX_VALENCE or other_element == "H")
                                 for other, other_element in all_neighbors.get(node, ())
                             )
                             pi_electrons += 2 if has_substituent else 1
@@ -4289,9 +4147,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                         for node in ring_nodes
                     ):
                         continue
-                    coordinates = np.asarray(
-                        [nodes[node] for node in ring_nodes], dtype=float
-                    )
+                    coordinates = np.asarray([nodes[node] for node in ring_nodes], dtype=float)
                     centroid_array = coordinates.mean(axis=0)
                     _left, singular_values, plane_axes = np.linalg.svd(
                         coordinates - centroid_array, full_matrices=False
@@ -4406,13 +4262,9 @@ def _multiple_bond_plane_directions(segments, bond_orders):
             for neighbor in neighbors.get(node, ()):
                 if neighbor == opposite:
                     continue
-                vector = tuple(
-                    points[neighbor][index] - midpoint[index] for index in range(3)
-                )
+                vector = tuple(points[neighbor][index] - midpoint[index] for index in range(3))
                 projection = sum(vector[index] * axis[index] for index in range(3))
-                vector = tuple(
-                    vector[index] - projection * axis[index] for index in range(3)
-                )
+                vector = tuple(vector[index] - projection * axis[index] for index in range(3))
                 if sum(value * value for value in vector) > 1e-12:
                     neighbor_vectors.append(vector)
         if neighbor_vectors:
@@ -4423,9 +4275,7 @@ def _multiple_bond_plane_directions(segments, bond_orders):
             perpendicular = tuple(float(value) for value in right[0])
         else:
             reference_axis = min(range(3), key=lambda index: abs(axis[index]))
-            reference = tuple(
-                1.0 if index == reference_axis else 0.0 for index in range(3)
-            )
+            reference = tuple(1.0 if index == reference_axis else 0.0 for index in range(3))
             perpendicular = (
                 axis[1] * reference[2] - axis[2] * reference[1],
                 axis[2] * reference[0] - axis[0] * reference[2],
@@ -4433,9 +4283,7 @@ def _multiple_bond_plane_directions(segments, bond_orders):
             )
         perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
         if perpendicular_length > 1e-8:
-            directions[edge_key] = tuple(
-                value / perpendicular_length for value in perpendicular
-            )
+            directions[edge_key] = tuple(value / perpendicular_length for value in perpendicular)
     return directions
 
 
@@ -4467,35 +4315,21 @@ def _chemdraw_segments(
         perpendicular = multiple_bond_directions.get(edge_key)
         if perpendicular is None:
             reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
-            reference = tuple(
-                1.0 if axis == reference_axis else 0.0 for axis in range(3)
-            )
+            reference = tuple(1.0 if axis == reference_axis else 0.0 for axis in range(3))
             perpendicular = (
                 direction[1] * reference[2] - direction[2] * reference[1],
                 direction[2] * reference[0] - direction[0] * reference[2],
                 direction[0] * reference[1] - direction[1] * reference[0],
             )
-            perpendicular_length = math.sqrt(
-                sum(value * value for value in perpendicular)
-            )
-            perpendicular = tuple(
-                value / perpendicular_length for value in perpendicular
-            )
+            perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
+            perpendicular = tuple(value / perpendicular_length for value in perpendicular)
         spacing = float(bond_spacing)
-        offsets = (
-            (-spacing / 2.0, spacing / 2.0) if order == 2 else (-spacing, 0.0, spacing)
-        )
+        offsets = (-spacing / 2.0, spacing / 2.0) if order == 2 else (-spacing, 0.0, spacing)
         for offset in offsets:
             rendered.append(
                 (
-                    tuple(
-                        float(first[axis]) + perpendicular[axis] * offset
-                        for axis in range(3)
-                    ),
-                    tuple(
-                        float(second[axis]) + perpendicular[axis] * offset
-                        for axis in range(3)
-                    ),
+                    tuple(float(first[axis]) + perpendicular[axis] * offset for axis in range(3)),
+                    tuple(float(second[axis]) + perpendicular[axis] * offset for axis in range(3)),
                     element_a,
                     element_b,
                     order,
@@ -4523,8 +4357,7 @@ def _cached_atoms_for_growth(root, pair_settings, atom_count, new_atoms):
     if (
         cached is None
         or cached["root_id"] != root.get("cgn_instance_id", root.name)
-        or cached["settings_signature"]
-        != _connectivity_settings_signature(pair_settings)
+        or cached["settings_signature"] != _connectivity_settings_signature(pair_settings)
         or cached["atom_count"] != atom_count
     ):
         return None
@@ -4561,10 +4394,7 @@ def _bond_object_segments(obj):
     """Read an existing bond mesh back as display-space ``(start, end)`` pairs."""
     mesh = obj.data
     coordinates = [vertex.co for vertex in mesh.vertices]
-    return [
-        (coordinates[edge.vertices[0]], coordinates[edge.vertices[1]])
-        for edge in mesh.edges
-    ]
+    return [(coordinates[edge.vertices[0]], coordinates[edge.vertices[1]]) for edge in mesh.edges]
 
 
 def _bond_mesh_edge_keys(obj):
@@ -4712,12 +4542,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     else:
         # Full rebuild: re-derive all bonds from the current windows.  Any of
         # these invalidation conditions drops the existing bonds.
-        if (
-            model == "SPACE_FILLING"
-            or not enabled
-            or len(atoms) < 2
-            or max_distance <= 0
-        ):
+        if model == "SPACE_FILLING" or not enabled or len(atoms) < 2 or max_distance <= 0:
             root["cgn_bond_settings_signature"] = settings_signature
             # Nothing can be bonded, so a full rebuild must also *remove* the
             # previous set: deleting down to a single atom, disabling every
@@ -4780,9 +4605,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             atom = atoms[index]
             element = str(atom.get("element", "X")).upper()
             elements[index] = element
-            vdw_by_element.setdefault(
-                element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
-            )
+            vdw_by_element.setdefault(element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS)))
             x, y, z = atom["cart"]
             cell = (
                 math.floor(x / cell_width),
@@ -4810,9 +4633,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                 [],
             ).append(index)
             continue
-        vdw_by_element.setdefault(
-            element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS))
-        )
+        vdw_by_element.setdefault(element, float(atom.get("vdw_radius", _DEFAULT_VDW_RADIUS)))
         x, y, z = atom_cart
         cell = (
             math.floor(x / cell_width),
@@ -4839,9 +4660,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         delta_x = x - other_cart[0]
                         delta_y = y - other_cart[1]
                         delta_z = z - other_cart[2]
-                        distance_squared = (
-                            delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
-                        )
+                        distance_squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z
                         if distance_squared > reach_squared:
                             continue
                         if distance_squared <= 1e-12:
@@ -4876,8 +4695,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     bond_count = 0
     all_segments = [segment for segments in by_pair.values() for segment in segments]
     covalent_radii = {
-        _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0))
-        for atom in atoms
+        _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0)) for atom in atoms
     }
     # Centre→ligand bonds ("spokes") can be suppressed so the polyhedron faces
     # read as the coordination instead of being crossed by their own bonds.
@@ -4886,14 +4704,8 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     # polyhedra restores every bond.  Filtering happens at emission (below),
     # after the chemdraw classification, so multiple-bond orders and aromatic
     # rings are still inferred from the complete bond set.
-    centre_keys = (
-        _polyhedron_centre_keys(root, atoms)
-        if _hide_polyhedron_bonds(scene)
-        else set()
-    )
-    bond_orders = (
-        _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
-    )
+    centre_keys = _polyhedron_centre_keys(root, atoms) if _hide_polyhedron_bonds(scene) else set()
+    bond_orders = _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
     aromatic_edges, aromatic_rings = (
         _classify_aromatic_rings(all_segments, covalent_radii, bond_orders)
         if chemdraw
@@ -4962,15 +4774,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             if two_color:
                 segments_by_element = {}
                 for first, second, first_element, second_element in order_segments:
-                    midpoint = tuple(
-                        0.5 * (first[axis] + second[axis]) for axis in range(3)
-                    )
-                    segments_by_element.setdefault(first_element, []).append(
-                        (first, midpoint)
-                    )
-                    segments_by_element.setdefault(second_element, []).append(
-                        (midpoint, second)
-                    )
+                    midpoint = tuple(0.5 * (first[axis] + second[axis]) for axis in range(3))
+                    segments_by_element.setdefault(first_element, []).append((first, midpoint))
+                    segments_by_element.setdefault(second_element, []).append((midpoint, second))
                 for element, element_segments in sorted(segments_by_element.items()):
                     if append_only and _merge_into_existing_bond_object(
                         root,
@@ -4995,9 +4801,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     mesh.update()
                     obj = bpy.data.objects.new(obj_name, mesh)
                     style = _atom_style(scene, element)
-                    material = _make_material(
-                        f"CGN_Mat_{element}", style.color, style.roughness
-                    )
+                    material = _make_material(f"CGN_Mat_{element}", style.color, style.roughness)
                     mesh.materials.append(material)
                     obj["cgn_role"] = "bonds"
                     obj["cgn_pair"] = "|".join(key)
@@ -5008,9 +4812,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     if "H" in key and not _show_hydrogens():
                         obj.hide_viewport = True
                         obj.hide_render = True
-                    _add_geometry_nodes_modifier(
-                        obj, node_group, order_bond_radius, material
-                    )
+                    _add_geometry_nodes_modifier(obj, node_group, order_bond_radius, material)
             else:
                 if append_only and _merge_into_existing_bond_object(
                     root,
@@ -5046,13 +4848,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     f"CGN_Bond_Mat_{pair_name}",
                     getattr(scene, "cgn_bond_color", _BOND_COLOR_DEFAULT),
                 )
-                _add_geometry_nodes_modifier(
-                    obj, node_group, order_bond_radius, material
-                )
+                _add_geometry_nodes_modifier(obj, node_group, order_bond_radius, material)
         bond_count += len(segments)
-    torus_width = getattr(
-        scene, "cgn_aromatic_torus_width", _AROMATIC_TORUS_WIDTH_DEFAULT
-    )
+    torus_width = getattr(scene, "cgn_aromatic_torus_width", _AROMATIC_TORUS_WIDTH_DEFAULT)
     torus_rings = _aromatic_torus_segments(
         aromatic_rings,
         getattr(
@@ -5077,9 +4875,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             for first, _second, _first_element, _second_element in ring_segments:
                 vertices.append(_display_point(first))
             count = len(vertices) - base
-            edges.extend(
-                (base + index, base + (index + 1) % count) for index in range(count)
-            )
+            edges.extend((base + index, base + (index + 1) % count) for index in range(count))
         # One shared bevel radius: use the largest so no ring is under-drawn.
         torus_base_bond_radius = max(base_radii)
         torus_bond_radius = torus_base_bond_radius * torus_width
@@ -5096,23 +4892,18 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             # object: creating a new one per grow would add
             # CGN_Bonds_Aromatic.001, .002, ... to the outliner forever.
             try:
-                entries = list(
-                    json.loads(existing_torus.get("cgn_aromatic_rings", "[]"))
-                )
+                entries = list(json.loads(existing_torus.get("cgn_aromatic_rings", "[]")))
             except (TypeError, ValueError):
                 entries = []
             known = {
-                (tuple(_bond_point_key(entry[0])), round(float(entry[3]), 4))
-                for entry in entries
+                (tuple(_bond_point_key(entry[0])), round(float(entry[3]), 4)) for entry in entries
             }
             for center, axis_u, axis_v, radius, element in aromatic_rings:
                 key = (tuple(_bond_point_key(center)), round(float(radius), 4))
                 if key in known:
                     continue
                 known.add(key)
-                entries.append(
-                    list(map(list, (center, axis_u, axis_v))) + [radius, element]
-                )
+                entries.append(list(map(list, (center, axis_u, axis_v))) + [radius, element])
             existing_torus["cgn_aromatic_rings"] = json.dumps(entries)
             existing_torus["cgn_aromatic_base_bond_radius"] = max(
                 float(existing_torus.get("cgn_aromatic_base_bond_radius", 0.0)),
@@ -5216,24 +5007,20 @@ def _update_aromatic_torus_style(scene, context):
                 vertices.append(_display_point(first))
             count = len(ring_segments)
             base = len(vertices) - count
-            edges.extend(
-                (base + index, base + (index + 1) % count) for index in range(count)
-            )
+            edges.extend((base + index, base + (index + 1) % count) for index in range(count))
         mesh = obj.data
         if len(mesh.vertices) != len(vertices):
             mesh.clear_geometry()
             mesh.from_pydata(vertices, edges, [])
         else:
-            for vertex, position in zip(mesh.vertices, vertices):
+            for vertex, position in zip(mesh.vertices, vertices, strict=True):
                 vertex.co = position
             if len(mesh.edges) != len(edges):
                 mesh.edges.clear()
                 for first, second in edges:
                     mesh.edges.new((first, second))
         mesh.update()
-        base_radius = (
-            float(obj["cgn_aromatic_base_bond_radius"]) * scene.cgn_aromatic_torus_width
-        )
+        base_radius = float(obj["cgn_aromatic_base_bond_radius"]) * scene.cgn_aromatic_torus_width
         obj["cgn_base_radius"] = base_radius
         radius = base_radius
         for modifier in obj.modifiers:
@@ -5375,12 +5162,8 @@ def _import_result(scene, result, cif_path):
     # recompute the exact import-time connectivity windows.  Without these,
     # reset falls back to covalent radii and disagrees with import for ionic
     # cation-anion pairs (e.g. Ti-O, Ag-O) whose Shannon radii enlarge the window.
-    root["cgn_atom_charges"] = json.dumps(
-        result.get("atom_type_charges") or {}, sort_keys=True
-    )
-    root["cgn_ionic_radii"] = json.dumps(
-        result.get("ionic_radii") or {}, sort_keys=True
-    )
+    root["cgn_atom_charges"] = json.dumps(result.get("atom_type_charges") or {}, sort_keys=True)
+    root["cgn_ionic_radii"] = json.dumps(result.get("ionic_radii") or {}, sort_keys=True)
     root["cgn_metal_elements"] = json.dumps(
         sorted(str(e).upper() for e in (result.get("metal_elements") or []))
     )
@@ -5454,9 +5237,7 @@ def _import_result(scene, result, cif_path):
     return root
 
 
-def _unwrapped_cell_instances(
-    sites, cell_matrix, pair_settings, max_instances=_MAX_FILL_ATOMS
-):
+def _unwrapped_cell_instances(sites, cell_matrix, pair_settings, max_instances=_MAX_FILL_ATOMS):
     """Return one whole image of each finite molecule plus periodic contents.
 
     A finite molecule is unwrapped once and shifted so its center is near the
@@ -5467,9 +5248,7 @@ def _unwrapped_cell_instances(
     if not windows:
         return None
     if len(sites) > max_instances:
-        raise ValueError(
-            f"Molecule completion exceeds the {max_instances}-atom fill limit."
-        )
+        raise ValueError(f"Molecule completion exceeds the {max_instances}-atom fill limit.")
     max_distance = max(bound[1] for bound in windows.values())
     if max_distance <= 0.0:
         return None
@@ -5543,9 +5322,7 @@ def _unwrapped_cell_instances(
                 for dz in (-1, 0, 1):
                     neighbour = (key[0] + dx, key[1] + dy, key[2] + dz)
                     for other_index, translation, image_cart in bank.get(neighbour, ()):
-                        bounds = windows.get(
-                            _pair_key(elements[index], elements[other_index])
-                        )
+                        bounds = windows.get(_pair_key(elements[index], elements[other_index]))
                         if bounds is None:
                             continue
                         distance = (image_cart - cart).length
@@ -5575,9 +5352,30 @@ def _unwrapped_cell_instances(
     # Molecular structures get their molecules unwrapped (atoms may extend
     # outside [0,1]); frameworks (diamond, Cu, Cu2O, graphite, Brookite, ...)
     # keep their plain cell contents inside [0,1].
-    _NONMETAL = {"C", "H", "N", "O", "F", "P", "S", "CL", "B", "SI", "BR", "I", "HE", "NE", "AR", "KR", "XE", "RN"}
+    _NONMETAL = {
+        "C",
+        "H",
+        "N",
+        "O",
+        "F",
+        "P",
+        "S",
+        "CL",
+        "B",
+        "SI",
+        "BR",
+        "I",
+        "HE",
+        "NE",
+        "AR",
+        "KR",
+        "XE",
+        "RN",
+    }
     _elements = {str(site.get("element", "X")).upper() for site in sites}
-    is_molecular = ("C" in _elements) and (("H" in _elements) or any(e not in _NONMETAL for e in _elements))
+    is_molecular = ("C" in _elements) and (
+        ("H" in _elements) or any(e not in _NONMETAL for e in _elements)
+    )
     for start in range(len(sites)):
         if translations[start] is not None:
             continue
@@ -5650,7 +5448,9 @@ def _unwrapped_cell_instances(
     # translation), drop its in-cell (0,0,0) counterpart so the molecule is not
     # duplicated - the inside atom is replaced by the outside (complete) one.
     moved_sites = {inst[0] for inst in instances if inst[1:] != (0, 0, 0)}
-    instances = {inst for inst in instances if not (inst[0] in moved_sites and inst[1:] == (0, 0, 0))}
+    instances = {
+        inst for inst in instances if not (inst[0] in moved_sites and inst[1:] == (0, 0, 0))
+    }
 
     return [value for instance in sorted(instances) for value in instance]
 
@@ -5700,8 +5500,7 @@ def _extend_cell_boundary_instances(
         seen.add(key)
     if max_instances is not None and len(seen) > max_instances:
         raise ValueError(
-            f"This fill would create more than {max_instances} atoms; "
-            "reduce the repeats."
+            f"This fill would create more than {max_instances} atoms; reduce the repeats."
         )
 
     # Add boundary images where local frac is near 0 on any axis.  Every cell
@@ -5776,9 +5575,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         try:
             new_instances = json.loads(baseline)
         except (ValueError, TypeError) as exc:
-            operator.report(
-                {"ERROR"}, f"Stored asymmetric-unit table is invalid: {exc}"
-            )
+            operator.report({"ERROR"}, f"Stored asymmetric-unit table is invalid: {exc}")
             return {"CANCELLED"}
         if not new_instances:
             operator.report(
@@ -5790,9 +5587,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         description = "asymmetric unit"
     else:
         if mode == "PACK":
-            repeats = tuple(
-                max(1, min(_MAX_FILL_REPEATS, int(value))) for value in repeats
-            )
+            repeats = tuple(max(1, min(_MAX_FILL_REPEATS, int(value))) for value in repeats)
             description = f"{repeats[0]}×{repeats[1]}×{repeats[2]} unit cells"
         else:
             repeats = (1, 1, 1)
@@ -5809,9 +5604,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
             return {"CANCELLED"}
         if cell_instances is None:
             cell_instances = [
-                value
-                for site_index in range(len(sites))
-                for value in (site_index, 0, 0, 0)
+                value for site_index in range(len(sites)) for value in (site_index, 0, 0, 0)
             ]
         cell_atom_count = len(cell_instances) // 4
 
@@ -5846,9 +5639,30 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         # For molecular structures the unwrapper already completes molecules by
         # moving fragments, so boundary extension would only create duplicate
         # (extra) molecules - skip it.
-        _NONMETAL_EXT = {"C", "H", "N", "O", "F", "P", "S", "CL", "B", "SI", "BR", "I", "HE", "NE", "AR", "KR", "XE", "RN"}
+        _NONMETAL_EXT = {
+            "C",
+            "H",
+            "N",
+            "O",
+            "F",
+            "P",
+            "S",
+            "CL",
+            "B",
+            "SI",
+            "BR",
+            "I",
+            "HE",
+            "NE",
+            "AR",
+            "KR",
+            "XE",
+            "RN",
+        }
         _elems_ext = {str(s.get("element", "X")).upper() for s in sites}
-        _is_molecular_ext = ("C" in _elems_ext) and (("H" in _elems_ext) or any(e not in _NONMETAL_EXT for e in _elems_ext))
+        _is_molecular_ext = ("C" in _elems_ext) and (
+            ("H" in _elems_ext) or any(e not in _NONMETAL_EXT for e in _elems_ext)
+        )
         pack_repeats = repeats if mode == "PACK" else None
         if not _is_molecular_ext:
             try:
@@ -5866,8 +5680,7 @@ def _fill_structure(operator, context, mode, repeats=(1, 1, 1)):
         if len(new_instances) // 4 > _MAX_FILL_ATOMS:
             operator.report(
                 {"ERROR"},
-                f"This fill would create more than "
-                f"{_MAX_FILL_ATOMS} atoms; reduce the repeats.",
+                f"This fill would create more than {_MAX_FILL_ATOMS} atoms; reduce the repeats.",
             )
             return {"CANCELLED"}
         cell_atom_count = len(new_instances) // 4
@@ -5940,9 +5753,7 @@ class CGN_OT_import_cif(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         try:
-            result = worker.load_structure(
-                bpy.path.abspath(self.filepath), self.block_name or None
-            )
+            result = worker.load_structure(bpy.path.abspath(self.filepath), self.block_name or None)
             root = _import_result(context.scene, result, self.filepath)
         except Exception as exc:
             traceback.print_exc()
@@ -5981,8 +5792,7 @@ def _default_connectivity_pairs(scene, atoms, root=None):
                 for key, value in json.loads(root.get("cgn_ionic_radii", "{}")).items()
             }
             metals = {
-                str(element).upper()
-                for element in json.loads(root.get("cgn_metal_elements", "[]"))
+                str(element).upper() for element in json.loads(root.get("cgn_metal_elements", "[]"))
             }
         except (TypeError, ValueError):
             charges, ionic, metals = {}, {}, set()
@@ -6050,9 +5860,7 @@ class CGN_OT_fill_asu(Operator):
 class CGN_OT_fill_cell(Operator):
     bl_idname = "cgn.fill_cell"
     bl_label = "Fill Unit-Cell"
-    bl_description = (
-        "Show one unit cell and complete finite molecules across its boundaries"
-    )
+    bl_description = "Show one unit cell and complete finite molecules across its boundaries"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -6062,9 +5870,7 @@ class CGN_OT_fill_cell(Operator):
 class CGN_OT_fill_pack(Operator):
     bl_idname = "cgn.fill_pack"
     bl_label = "Pack Unit-cells"
-    bl_description = (
-        "Show repeated unit cells with finite molecules completed at the edges"
-    )
+    bl_description = "Show repeated unit cells with finite molecules completed at the edges"
     bl_options = {"REGISTER", "UNDO"}
 
     repeat_a: IntProperty(
@@ -6093,10 +5899,7 @@ class CGN_OT_fill_pack(Operator):
         root = _active_root(context.scene)
         if root is not None:
             try:
-                repeats = [
-                    int(value)
-                    for value in json.loads(root.get("cgn_fill_repeats", "[]"))
-                ]
+                repeats = [int(value) for value in json.loads(root.get("cgn_fill_repeats", "[]"))]
             except (ValueError, TypeError):
                 repeats = []
             if len(repeats) == 3:
@@ -6148,9 +5951,7 @@ class CGN_OT_pack_cell_boxes(Operator):
             try:
                 repeats = [
                     int(value)
-                    for value in json.loads(
-                        root.get("cgn_cell_pack_repeats", "[2, 2, 2]")
-                    )
+                    for value in json.loads(root.get("cgn_cell_pack_repeats", "[2, 2, 2]"))
                 ]
             except (ValueError, TypeError):
                 repeats = []
@@ -6225,10 +6026,7 @@ def _visible_atom_mask(atoms, root):
     if not hidden_elements:
         return np.ones(count, dtype=bool)
     return np.fromiter(
-        (
-            str(atom.get("element", "X")).upper() not in hidden_elements
-            for atom in atoms
-        ),
+        (str(atom.get("element", "X")).upper() not in hidden_elements for atom in atoms),
         dtype=bool,
         count=count,
     )
@@ -6334,15 +6132,11 @@ class _CGN_OT_select_atoms(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         try:
-            self._initial_selection = set(
-                json.loads(root.get("cgn_selected_indices", "[]"))
-            )
+            self._initial_selection = set(json.loads(root.get("cgn_selected_indices", "[]")))
         except (ValueError, TypeError) as exc:
             self.report({"ERROR"}, f"Stored atom selection is invalid: {exc}")
             return {"CANCELLED"}
-        self._selected = (
-            set(self._initial_selection) if self.keep_stored_selection else set()
-        )
+        self._selected = set(self._initial_selection) if self.keep_stored_selection else set()
         self._drag_start = None
         self._drag_end = None
         self._drag_additive = False
@@ -6503,10 +6297,7 @@ class _CGN_OT_select_atoms(Operator):
                 self._drag_additive = event.shift
                 self._dragging = False
             return {"RUNNING_MODAL"}
-        if (
-            event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"}
-            and self._drag_start is not None
-        ):
+        if event.type in {"MOUSEMOVE", "INBETWEEN_MOUSEMOVE"} and self._drag_start is not None:
             point = self._region_mouse(event, clamp=True)
             self._drag_end = point
             if (self._drag_end - self._drag_start).length >= self.box_drag_threshold:
@@ -6796,9 +6587,7 @@ class CGN_OT_grow_further(Operator):
             # untouched.
             if _current_model(context.scene) != "SPACE_FILLING":
                 if not any(obj.get("cgn_role") == "bonds" for obj in root.all_objects):
-                    atoms = _materialize_atoms(
-                        sites, cell_matrix, instances, initial_count
-                    )
+                    atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)
                     _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
                     bpy.context.view_layer.update()
             self.report(
@@ -6808,9 +6597,7 @@ class CGN_OT_grow_further(Operator):
             return {"FINISHED"}
         new_instances = result.get("new_instances", [])
         if len(new_instances) < grew_by * 4:
-            self.report(
-                {"ERROR"}, "The gemmi worker returned an invalid growth result."
-            )
+            self.report({"ERROR"}, "The gemmi worker returned an invalid growth result.")
             return {"CANCELLED"}
         snapshot = _snapshot_structure_state(root, context.scene.cgn_connectivity_pairs)
         try:
@@ -6862,9 +6649,7 @@ class CGN_OT_grow_further(Operator):
                     # bond the new atoms to the old ones but never re-derive
                     # the bonds among the initial atoms; with nothing to
                     # preserve, build the full set instead.
-                    _bond_objects(
-                        root, atoms, context.scene.cgn_connectivity_pairs
-                    )
+                    _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
             _set_instances(root, instances)
             root["cgn_growth_shells"] = int(root.get("cgn_growth_shells", 0)) + 1
         except Exception as exc:
@@ -6950,10 +6735,7 @@ def _build_polyhedra_objects(
                 _remove_object(obj)
                 continue
             try:
-                previous = [
-                    int(index)
-                    for index in json.loads(obj.get("cgn_poly_centers", "[]"))
-                ]
+                previous = [int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]"))]
             except (TypeError, ValueError):
                 previous = []
             existing_sites[int(p1)] = (obj, previous)
@@ -6989,9 +6771,7 @@ def _build_polyhedra_objects(
 
         # Canonical site label: strip the [P1:...] translation suffix so all
         # images of the same site share one style and one panel entry.
-        raw_label = str(
-            rep_atom.get("source_label", rep_atom.get("label", "")) or ""
-        ).strip()
+        raw_label = str(rep_atom.get("source_label", rep_atom.get("label", "")) or "").strip()
         site_label = raw_label.split(" [")[0] if " [" in raw_label else raw_label
 
         style = _polyhedron_style(scene, element, site_label)
@@ -7014,12 +6794,9 @@ def _build_polyhedra_objects(
         )
         for center in centers_to_add:
             translation = tuple(
-                int(value)
-                for value in atoms[center].get("growth_translation", (0, 0, 0))
+                int(value) for value in atoms[center].get("growth_translation", (0, 0, 0))
             )
-            delta = tuple(
-                translation[axis] - rep_translation[axis] for axis in range(3)
-            )
+            delta = tuple(translation[axis] - rep_translation[axis] for axis in range(3))
             for _pos, site_index, (tx, ty, tz) in ligands:
                 quad = (
                     int(site_index),
@@ -7038,12 +6815,8 @@ def _build_polyhedra_objects(
                 existing_obj,
                 [_display_point(atoms[center]["cart"]) for center in centers_to_add],
             )
-            existing_obj["cgn_poly_centers"] = json.dumps(
-                [int(center) for center in merged]
-            )
-            existing_obj["cgn_poly_map"] = json.dumps(
-                {str(int(center)): [] for center in merged}
-            )
+            existing_obj["cgn_poly_centers"] = json.dumps([int(center) for center in merged])
+            existing_obj["cgn_poly_map"] = json.dumps({str(int(center)): [] for center in merged})
             built_total += 1
             continue
 
@@ -7081,15 +6854,9 @@ def _build_polyhedra_objects(
         prototype["cgn_poly_site_label"] = site_label
         prototype["cgn_p1_index"] = p1_index
         prototype["cgn_poly_edge_width"] = float(thickness)
-        prototype["cgn_poly_local_vertices"] = json.dumps(
-            [list(vertex) for vertex in local]
-        )
-        prototype["cgn_poly_local_faces"] = json.dumps(
-            [list(loop) for loop in local_faces]
-        )
-        prototype["cgn_poly_local_edges"] = json.dumps(
-            [list(edge) for edge in local_edges]
-        )
+        prototype["cgn_poly_local_vertices"] = json.dumps([list(vertex) for vertex in local])
+        prototype["cgn_poly_local_faces"] = json.dumps([list(loop) for loop in local_faces])
+        prototype["cgn_poly_local_edges"] = json.dumps([list(edge) for edge in local_edges])
         _polyhedron_prototype_collection(root).objects.link(prototype)
 
         # The scaffold is a points-only mesh: one vertex per image.  The node
@@ -7097,9 +6864,7 @@ def _build_polyhedra_objects(
         # instances so the object stays editable and exports without special
         # cases.
         mesh = bpy.data.meshes.new(f"CGN_Polyhedron_{element}_P1{p1_index}_Points")
-        mesh.from_pydata(
-            [_display_point(atoms[center]["cart"]) for center in merged], [], []
-        )
+        mesh.from_pydata([_display_point(atoms[center]["cart"]) for center in merged], [], [])
         mesh.update()
 
         obj = bpy.data.objects.new(f"CGN_Polyhedron_{element}_P1{p1_index}", mesh)
@@ -7228,8 +6993,7 @@ class CGN_OT_create_polyhedra(Operator):
         if built == 0:
             self.report(
                 {"ERROR"},
-                f"No {element} atom has four or more bonded neighbours to "
-                "enclose a polyhedron.",
+                f"No {element} atom has four or more bonded neighbours to enclose a polyhedron.",
             )
             return {"CANCELLED"}
         message = f"Built {built} {element} polyhedra."
@@ -7408,9 +7172,7 @@ class CGN_PT_panel(Panel):
                 )
                 for index, value in enumerate((a, b, c, alpha, beta, gamma))
             ]
-            grid = layout.grid_flow(
-                row_major=True, columns=2, even_columns=True, align=True
-            )
+            grid = layout.grid_flow(row_major=True, columns=2, even_columns=True, align=True)
             grid.label(text=f"a = {displayed[0]} Å")
             grid.label(text=f"α = {displayed[3]}°")
             grid.label(text=f"b = {displayed[1]} Å")
@@ -7446,9 +7208,7 @@ class CGN_PT_build(Panel):
     def draw(self, context):
         layout = self.layout
         layout.menu("CGN_MT_fill", text="Fill", icon="MESH_GRID")
-        layout.operator(
-            "cgn.grow_further", text="Grow Structure", icon="ADD"
-        ).all_atoms = True
+        layout.operator("cgn.grow_further", text="Grow Structure", icon="ADD").all_atoms = True
         layout.operator(
             "cgn.select_growth_atoms",
             text="Grow Selected Atoms",
@@ -7483,18 +7243,14 @@ class CGN_PT_connectivity(Panel):
         layout = self.layout
         if _active_root(context.scene) is None:
             return
-        layout.label(
-            text="Distances in Å. Toggle pairs and set inclusive minimum/maximum."
-        )
+        layout.label(text="Distances in Å. Toggle pairs and set inclusive minimum/maximum.")
         for item in context.scene.cgn_connectivity_pairs:
             row = layout.row(align=True)
             row.prop(item, "enabled", text="")
             row.label(text=f"{item.element_a} — {item.element_b}")
             row.prop(item, "min_distance", text="Min")
             row.prop(item, "max_distance", text="Max")
-        layout.operator(
-            "cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK"
-        )
+        layout.operator("cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK")
 
 
 class CGN_PT_unit_cell(Panel):
@@ -7566,9 +7322,7 @@ class CGN_PT_model_style(Panel):
             ortep_box.prop(scene, "cgn_ortep_inner_color", text="Inner Faces")
             ortep_box.prop(scene, "cgn_ortep_inner_roughness", text="Inner Roughness")
             ortep_box.prop(scene, "cgn_ortep_ellipse_color", text="Ellipses")
-            ortep_box.prop(
-                scene, "cgn_ortep_ellipse_roughness", text="Ellipse Roughness"
-            )
+            ortep_box.prop(scene, "cgn_ortep_ellipse_roughness", text="Ellipse Roughness")
             ortep_box.prop(
                 scene,
                 "cgn_ortep_ellipse_thickness",
@@ -7757,13 +7511,9 @@ class CGN_PT_polyhedra(Panel):
             head.label(text=f"{title} polyhedron")
             if style.expanded:
                 box.prop(style, "face_color", text="Face")
-                box.prop(
-                    style, "face_transparency", text="Face Transparency", slider=True
-                )
+                box.prop(style, "face_transparency", text="Face Transparency", slider=True)
                 box.prop(style, "edge_color", text="Edge")
-                box.prop(
-                    style, "edge_transparency", text="Edge Transparency", slider=True
-                )
+                box.prop(style, "edge_transparency", text="Edge Transparency", slider=True)
                 box.prop(style, "edge_width", text="Edge Width", slider=True)
         if not shown:
             layout.label(
@@ -7806,9 +7556,7 @@ class CGN_MT_viewport(Menu):
             return
         layout.separator()
         layout.menu("CGN_MT_fill", text="Fill", icon="MESH_GRID")
-        layout.operator(
-            "cgn.grow_further", text="Grow Structure", icon="ADD"
-        ).all_atoms = True
+        layout.operator("cgn.grow_further", text="Grow Structure", icon="ADD").all_atoms = True
         layout.operator(
             "cgn.select_growth_atoms",
             text="Grow Selected Atoms",
@@ -7816,9 +7564,7 @@ class CGN_MT_viewport(Menu):
         )
         layout.operator("cgn.delete_atoms", text="Delete Atoms", icon="X")
         layout.separator()
-        layout.operator(
-            "cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK"
-        )
+        layout.operator("cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK")
 
 
 def _draw_viewport_menu(self, context):
@@ -7864,9 +7610,7 @@ _CLASSES = (
 def register():
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(
-        type=CGN_ConnectivityPair
-    )
+    bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(type=CGN_ConnectivityPair)
     bpy.types.Scene.cgn_atom_styles = CollectionProperty(type=CGN_AtomStyle)
     bpy.types.Scene.cgn_active_structure = StringProperty(options={"HIDDEN"})
     bpy.types.Scene.cgn_show_hydrogens = BoolProperty(
@@ -7885,9 +7629,7 @@ def register():
         update=_update_hide_polyhedron_bonds,
     )
     bpy.types.Scene.cgn_unit_cell_settings = PointerProperty(type=CGN_UnitCellSettings)
-    bpy.types.Scene.cgn_polyhedron_settings = PointerProperty(
-        type=CGN_PolyhedronSettings
-    )
+    bpy.types.Scene.cgn_polyhedron_settings = PointerProperty(type=CGN_PolyhedronSettings)
     bpy.types.Scene.cgn_polyhedron_styles = CollectionProperty(type=CGN_PolyhedronStyle)
     bpy.types.Scene.cgn_quality_preset = EnumProperty(
         name="Quality",

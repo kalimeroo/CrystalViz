@@ -11,12 +11,16 @@ Checks:
 Run:
   blender --background --factory-startup --python test_polyhedra_site_objects.py
 """
-import sys, bpy
+
+import sys
+
+import bpy
 from mathutils import Vector
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -60,20 +64,24 @@ scene.cgn_polyhedron_settings.element = "AG"
 bpy.ops.cgn.create_polyhedra()
 
 polys = [
-    o for o in root.objects
-    if o.get("cgn_role") == "polyhedron"
-    and str(o.get("cgn_poly_element", "")).upper() == "AG"
+    o
+    for o in root.objects
+    if o.get("cgn_role") == "polyhedron" and str(o.get("cgn_poly_element", "")).upper() == "AG"
 ]
 built_sites = {int(o.get("cgn_p1_index", -1)) for o in polys}
 print(f"  AG polyhedron objects: {len(polys)}  sites: {sorted(built_sites)}")
 
 # 1. One object per site
-check("one polyhedron object per crystallographic site",
-      len(polys) == len(built_sites),
-      f"{len(polys)} objects vs {len(built_sites)} sites")
-check("fewer objects than atom images (9)",
-      len(polys) < len(ag_images),
-      f"{len(polys)} objects vs {len(ag_images)} images")
+check(
+    "one polyhedron object per crystallographic site",
+    len(polys) == len(built_sites),
+    f"{len(polys)} objects vs {len(built_sites)} sites",
+)
+check(
+    "fewer objects than atom images (9)",
+    len(polys) < len(ag_images),
+    f"{len(polys)} objects vs {len(ag_images)} images",
+)
 
 # 2 + 3. Correct size and every image baked in
 qualifying = {s: [a for a in ag_images if int(a.get("p1_index", -1)) == s] for s in built_sites}
@@ -83,24 +91,35 @@ for obj in polys:
     coords = [Vector(v.co) for v in mesh.vertices]
     # Size per image: vertices belonging to one image lie within ~0.5 BU of
     # that image's centre.  The old 10x-shrink bug produced ~0.05 BU.
-    centers = [Vector(CrystalViz._display_point(a["cart"])) for a in qualifying[int(obj.get("cgn_p1_index", -1))]]
+    centers = [
+        Vector(CrystalViz._display_point(a["cart"]))
+        for a in qualifying[int(obj.get("cgn_p1_index", -1))]
+    ]
     for center in centers:
         nearby = [c for c in coords if (c - center).length < 0.5]
         radius = max((c - center).length for c in nearby) if nearby else 0.0
-        check(f"{obj.name}: image at {tuple(round(v, 2) for v in center)} is display-sized",
-              0.2 < radius < 0.6, f"max vertex distance={radius:.4f} BU")
+        check(
+            f"{obj.name}: image at {tuple(round(v, 2) for v in center)} is display-sized",
+            0.2 < radius < 0.6,
+            f"max vertex distance={radius:.4f} BU",
+        )
         nearest = min((c - center).length for c in coords)
-        check(f"{obj.name}: covers image at {tuple(round(v, 2) for v in center)}",
-              nearest < 0.4, f"nearest vertex {nearest:.3f} BU")
+        check(
+            f"{obj.name}: covers image at {tuple(round(v, 2) for v in center)}",
+            nearest < 0.4,
+            f"nearest vertex {nearest:.3f} BU",
+        )
 
 # 4. Faces + edges in the same mesh, two material slots
 for obj in polys:
     mesh = render_mesh(obj)
     indices = {p.material_index for p in mesh.polygons}
-    check(f"{obj.name}: 2 material slots", len(mesh.materials) == 2,
-          f"{len(mesh.materials)} slots")
-    check(f"{obj.name}: face + edge polygons in one mesh", indices == {0, 1},
-          f"material indices={sorted(indices)}")
+    check(f"{obj.name}: 2 material slots", len(mesh.materials) == 2, f"{len(mesh.materials)} slots")
+    check(
+        f"{obj.name}: face + edge polygons in one mesh",
+        indices == {0, 1},
+        f"material indices={sorted(indices)}",
+    )
 
 # 5. Edge-width change rebuilds tubes; colour change does not
 obj0 = polys[0]
@@ -116,50 +135,57 @@ if style is None:
 old_width = float(obj0.get("cgn_poly_edge_width", 0.0))
 geometry_before = geometry_mesh(obj0)
 old_verts = len(geometry_before.vertices)
-old_signature = tuple(
-    round(component, 6) for v in geometry_before.vertices for component in v.co
-)
+old_signature = tuple(round(component, 6) for v in geometry_before.vertices for component in v.co)
 target_width = 0.05 if old_width > 0.1 else 0.2
-print(f"  site_label0={site_label0!r} style.edge_width before={style.edge_width:.3f} object width={old_width:.3f}")
+print(
+    f"  site_label0={site_label0!r} style.edge_width before={style.edge_width:.3f} "
+    f"object width={old_width:.3f}"
+)
 style.edge_width = target_width
 print(f"  style.edge_width after={style.edge_width:.3f}")
 polys_after = [
-    o for o in root.objects
+    o
+    for o in root.objects
     if o.get("cgn_role") == "polyhedron"
     and str(o.get("cgn_poly_element", "")).upper() == "AG"
     and int(o.get("cgn_p1_index", -1)) == obj0_p1
 ]
-check("edge-width change still leaves one object per site", len(polys_after) == 1,
-      f"{len(polys_after)} objects")
-check("edge-width change rebuilds tube geometry",
-      tuple(
-          round(component, 6)
-          for v in geometry_mesh(polys_after[0]).vertices
-          for component in v.co
-      ) != old_signature,
-      f"{old_verts} -> {len(geometry_mesh(polys_after[0]).vertices)} vertices, coords changed")
+check(
+    "edge-width change still leaves one object per site",
+    len(polys_after) == 1,
+    f"{len(polys_after)} objects",
+)
+check(
+    "edge-width change rebuilds tube geometry",
+    tuple(round(component, 6) for v in geometry_mesh(polys_after[0]).vertices for component in v.co)
+    != old_signature,
+    f"{old_verts} -> {len(geometry_mesh(polys_after[0]).vertices)} vertices, coords changed",
+)
 new_verts = len(geometry_mesh(polys_after[0]).vertices)
 style.edge_color = (0.1, 0.9, 0.2, 1.0)
 polys_color = [
-    o for o in root.objects
+    o
+    for o in root.objects
     if o.get("cgn_role") == "polyhedron"
     and str(o.get("cgn_poly_element", "")).upper() == "AG"
     and int(o.get("cgn_p1_index", -1)) == obj0_p1
 ]
-check("colour change does not rebuild geometry",
-      len(polys_color) == 1 and len(geometry_mesh(polys_color[0]).vertices) == new_verts,
-      f"{new_verts} vertices kept")
+check(
+    "colour change does not rebuild geometry",
+    len(polys_color) == 1 and len(geometry_mesh(polys_color[0]).vertices) == new_verts,
+    f"{new_verts} vertices kept",
+)
 
 # 6. Delete path: remove a centre atom and remap polyhedra
 atoms_before = CrystalViz._structure_atoms(root)
 removed = 0
 CrystalViz._remap_polyhedra(root, [removed], atoms_before, scene)
-polys_after_delete = [
-    o for o in root.objects if o.get("cgn_role") == "polyhedron"
-]
-check("remap after delete keeps one object per surviving site",
-      len(polys_after_delete) <= len(built_sites),
-      f"{len(polys_after_delete)} objects")
+polys_after_delete = [o for o in root.objects if o.get("cgn_role") == "polyhedron"]
+check(
+    "remap after delete keeps one object per surviving site",
+    len(polys_after_delete) <= len(built_sites),
+    f"{len(polys_after_delete)} objects",
+)
 
 CrystalViz.unregister()
 check("unregister OK", True)

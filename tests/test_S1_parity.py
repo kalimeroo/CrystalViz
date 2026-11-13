@@ -8,16 +8,23 @@ new table is byte-identical, and that end-to-end growth output is unchanged.
 
 Run:  python test_S1_parity.py
 """
-import sys, os, math
+
+import math
+import os
+import sys
+
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (puts a gemmi build on sys.path)
+
 sys.path.insert(0, _env.REPO_DIR)  # so `import gemmi_worker` resolves
 import gemmi
+
 import gemmi_worker as gw
 
 CIF = _env.CIF_DIR
 
 FAILURES = []
+
 
 def check(name, cond, detail=""):
     status = "PASS" if cond else "FAIL"
@@ -61,7 +68,9 @@ def reference_table(unit_cell, base_atoms, base_elements, windows_by_element, ca
                 tz = int(round(f_img.z - frac_j.z))
                 c_img = cell.orthogonalize(f_img)
                 c_i = cell.orthogonalize(frac_i)
-                dist = math.sqrt((c_img.x - c_i.x)**2 + (c_img.y - c_i.y)**2 + (c_img.z - c_i.z)**2)
+                dist = math.sqrt(
+                    (c_img.x - c_i.x) ** 2 + (c_img.y - c_i.y) ** 2 + (c_img.z - c_i.z) ** 2
+                )
                 if dist <= 1e-12:
                     continue
                 if dist < bounds[0]:
@@ -104,34 +113,87 @@ def build_context(cif_path, pair_settings):
 # ---- Table-level parity across example CIFs ----
 print("=== Table-level cctbx parity ===")
 CIFS = [
-    ("Brookite.cif", [{"element_a": "Ti", "element_b": "O", "enabled": True,
-                       "min_distance": 1.4, "max_distance": 2.4}]),
-    ("aromatic.cif", [{"element_a": "C", "element_b": "C", "enabled": True,
-                       "min_distance": 1.1, "max_distance": 1.9},
-                      {"element_a": "C", "element_b": "H", "enabled": True,
-                       "min_distance": 0.8, "max_distance": 1.4},
-                      {"element_a": "C", "element_b": "N", "enabled": True,
-                       "min_distance": 1.1, "max_distance": 1.6},
-                      {"element_a": "H", "element_b": "O", "enabled": True,
-                       "min_distance": 0.8, "max_distance": 1.2}]),
-    ("test.cif", [{"element_a": "Ti", "element_b": "O", "enabled": True,
-                   "min_distance": 1.4, "max_distance": 2.4},
-                  {"element_a": "O", "element_b": "O", "enabled": True,
-                   "min_distance": 2.0, "max_distance": 3.2}]),
+    (
+        "Brookite.cif",
+        [
+            {
+                "element_a": "Ti",
+                "element_b": "O",
+                "enabled": True,
+                "min_distance": 1.4,
+                "max_distance": 2.4,
+            }
+        ],
+    ),
+    (
+        "aromatic.cif",
+        [
+            {
+                "element_a": "C",
+                "element_b": "C",
+                "enabled": True,
+                "min_distance": 1.1,
+                "max_distance": 1.9,
+            },
+            {
+                "element_a": "C",
+                "element_b": "H",
+                "enabled": True,
+                "min_distance": 0.8,
+                "max_distance": 1.4,
+            },
+            {
+                "element_a": "C",
+                "element_b": "N",
+                "enabled": True,
+                "min_distance": 1.1,
+                "max_distance": 1.6,
+            },
+            {
+                "element_a": "H",
+                "element_b": "O",
+                "enabled": True,
+                "min_distance": 0.8,
+                "max_distance": 1.2,
+            },
+        ],
+    ),
+    (
+        "test.cif",
+        [
+            {
+                "element_a": "Ti",
+                "element_b": "O",
+                "enabled": True,
+                "min_distance": 1.4,
+                "max_distance": 2.4,
+            },
+            {
+                "element_a": "O",
+                "element_b": "O",
+                "enabled": True,
+                "min_distance": 2.0,
+                "max_distance": 3.2,
+            },
+        ],
+    ),
 ]
 for name, pairs in CIFS:
     uc, ba, be, canonical, wbe, data, windows = build_context(os.path.join(CIF, name), pairs)
     new = gw._periodic_neighbour_table_gemmi(uc, ba, be, wbe, canonical)
     ref = reference_table(uc, ba, be, wbe, canonical)
-    check(f"{name}: neighbour table byte-identical to reference", new == ref,
-          f"base_atoms={len(ba)}")
+    check(
+        f"{name}: neighbour table byte-identical to reference", new == ref, f"base_atoms={len(ba)}"
+    )
 
 # ---- End-to-end growth parity (Brookite) ----
 print("\n=== End-to-end growth parity ===")
 # Reference: emulate one shell using the reference table via _grow_shell_keys,
 # but _grow_shell_keys builds the table itself (the patched one).  Instead we
 # compare the NEW table fed into the same key-walk against the reference walk.
-uc, ba, be, canonical, wbe, data, windows = build_context(os.path.join(CIF, "Brookite.cif"), CIFS[0][1])
+uc, ba, be, canonical, wbe, data, windows = build_context(
+    os.path.join(CIF, "Brookite.cif"), CIFS[0][1]
+)
 all_instances = data["instances"]
 seed = [0, 0, 0, 0]  # base atom 0, no translation
 new_tbl = gw._periodic_neighbour_table_gemmi(uc, ba, be, wbe, canonical)
@@ -141,8 +203,11 @@ seed_keys = gw._instance_keys(seed, canonical)
 n_ref, _ = gw._grow_shell_keys(uc, ba, canonical, set(visited), seed_keys, windows, ref_tbl)
 n_new, _ = gw._grow_shell_keys(uc, ba, canonical, set(visited), seed_keys, windows, new_tbl)
 # note: pass copies of visited since _grow_shell_keys mutates it
-check("Brookite: one growth shell identical (new vs reference keys)",
-      sorted(n_ref) == sorted(n_new), f"ref={len(n_ref)} new={len(n_new)}")
+check(
+    "Brookite: one growth shell identical (new vs reference keys)",
+    sorted(n_ref) == sorted(n_new),
+    f"ref={len(n_ref)} new={len(n_new)}",
+)
 
 print()
 print("TOTAL FAILURES:", len(FAILURES))

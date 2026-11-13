@@ -1,9 +1,13 @@
 """Debug: count centers per site and verify instance creation."""
-import sys, bpy
+
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -35,19 +39,20 @@ for center in ag_indices:
 print(f"Site groups: {len(site_groups)}")
 for p1, centers in sorted(site_groups.items()):
     rep = site_rep[p1]
-    rep_trans = tuple(atoms2[rep].get("growth_translation", (0,0,0)))
+    rep_trans = tuple(atoms2[rep].get("growth_translation", (0, 0, 0)))
     print(f"  P1={p1}: {len(centers)} centers, rep translation={rep_trans}")
     for c in centers:
-        trans = tuple(atoms2[c].get("growth_translation", (0,0,0)))
+        trans = tuple(atoms2[c].get("growth_translation", (0, 0, 0)))
         print(f"    center {c}: translation={trans}")
 
 # Check which sites qualify (4+ ligands)
 search = CrystalViz._polyhedron_search(root, scene)
-for p1, centers in sorted(site_groups.items()):
+for p1, _centers in sorted(site_groups.items()):
     rep = site_rep[p1]
     rep_atom = atoms2[rep]
     element = str(rep_atom.get("element", "X")).upper()
     ligands = search.ligands(rep_atom["cart"], element)
-    print(f"  P1={p1}: {len(ligands)} ligands (need 4+) -> {'QUALIFIES' if len(ligands) >= 4 else 'SKIP'}")
+    verdict = "QUALIFIES" if len(ligands) >= 4 else "SKIP"
+    print(f"  P1={p1}: {len(ligands)} ligands (need 4+) -> {verdict}")
 
 CrystalViz.unregister()

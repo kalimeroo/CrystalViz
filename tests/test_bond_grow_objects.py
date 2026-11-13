@@ -11,13 +11,16 @@ set explicitly with ``_bond_objects`` — the same call the grow path uses.
 Run:
   blender --background --factory-startup --python test_bond_grow_objects.py
 """
+
 import re
 import sys
+
 import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")
@@ -33,7 +36,8 @@ def check(name, cond, detail=""):
 
 def bond_objects(root):
     return [
-        obj for obj in root.objects
+        obj
+        for obj in root.objects
         if obj.get("cgn_role") == "bonds" and not obj.get("cgn_aromatic_torus")
     ]
 
@@ -69,8 +73,10 @@ def report(root, label):
     keys = [group_key(obj) for obj in objs]
     duplicate_groups = {key for key in keys if keys.count(key) > 1}
     suffixes = [obj.name for obj in objs if SUFFIX.search(obj.name)]
-    print(f"  {label}: {len(objs)} bond objects, {len(set(keys))} groups, "
-          f"{segment_count(root)} segments")
+    print(
+        f"  {label}: {len(objs)} bond objects, {len(set(keys))} groups, "
+        f"{segment_count(root)} segments"
+    )
     if duplicate_groups:
         print(f"    duplicate groups: {sorted(duplicate_groups)}")
     if suffixes:
@@ -87,9 +93,7 @@ def exercise(two_color):
     CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
     # A fill/import shows atoms only; build the baseline bond set so the grow
     # assertions below start from existing per-group objects.
-    CrystalViz._bond_objects(
-        root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
-    )
+    CrystalViz._bond_objects(root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs)
     bpy.context.view_layer.update()
 
     label = "two-colour" if two_color else "single-colour"
@@ -105,16 +109,18 @@ def exercise(two_color):
     for step in range(1, 4):
         bpy.ops.cgn.grow_further()
         objs, keys, dupes, suffixes = report(root, f"after grow {step}")
-        check(f"{label}: grow {step} keeps one object per bond group",
-              not dupes, str(dupes))
-        check(f"{label}: grow {step} creates no suffixed bond objects",
-              not suffixes, str(suffixes))
-        check(f"{label}: grow {step} does not multiply bond objects",
-              len(objs) <= baseline_objects + 4,
-              f"{baseline_objects} -> {len(objs)}")
-        check(f"{label}: grow {step} adds bond segments",
-              segment_count(root) > previous_segments,
-              f"{previous_segments} -> {segment_count(root)}")
+        check(f"{label}: grow {step} keeps one object per bond group", not dupes, str(dupes))
+        check(f"{label}: grow {step} creates no suffixed bond objects", not suffixes, str(suffixes))
+        check(
+            f"{label}: grow {step} does not multiply bond objects",
+            len(objs) <= baseline_objects + 4,
+            f"{baseline_objects} -> {len(objs)}",
+        )
+        check(
+            f"{label}: grow {step} adds bond segments",
+            segment_count(root) > previous_segments,
+            f"{previous_segments} -> {segment_count(root)}",
+        )
         previous_count = len(objs)
         previous_segments = segment_count(root)
     # Option B: append-only growth must be a SUPERSET of a full rebuild — it
@@ -123,20 +129,19 @@ def exercise(two_color):
     grown = segment_sets(root)
     CrystalViz._bond_objects(root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs)
     rebuilt = segment_sets(root)
-    missing = {
-        group: rebuilt.get(group, set()) - grown.get(group, set())
-        for group in rebuilt
-    }
+    missing = {group: rebuilt.get(group, set()) - grown.get(group, set()) for group in rebuilt}
     missing = {group: keys for group, keys in missing.items() if keys}
-    check(f"{label}: append-only bonds contain every rebuilt bond",
-          not missing, str({k: len(v) for k, v in missing.items()}))
+    check(
+        f"{label}: append-only bonds contain every rebuilt bond",
+        not missing,
+        str({k: len(v) for k, v in missing.items()}),
+    )
     return previous_count
 
 
 single_objects = exercise(two_color=False)
 two_objects = exercise(two_color=True)
-print(f"  final single-colour objects: {single_objects}, "
-      f"two-colour objects: {two_objects}")
+print(f"  final single-colour objects: {single_objects}, two-colour objects: {two_objects}")
 
 # Consolidation: a .blend grown by an older build contains duplicate bond
 # objects for the same group.  The next grow must fold them back into one.
@@ -145,9 +150,7 @@ scene = bpy.context.scene
 bpy.ops.cgn.import_cif(filepath=CIF)
 root = bpy.data.collections.get(scene.cgn_active_structure)
 CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
-CrystalViz._bond_objects(
-    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
-)
+CrystalViz._bond_objects(root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs)
 bpy.context.view_layer.update()
 objs = bond_objects(root)
 victim = objs[0]

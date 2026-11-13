@@ -14,8 +14,9 @@ that still finds nothing must NOT tear down those bonds (append-only guarantee).
 Run headless:
   blender --background --factory-startup --python test_grow_fill_noadd_bonds.py
 """
-import sys
+
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
@@ -67,24 +68,34 @@ def scenario(name, label):
     print(f"\n=== {label}: {name} ===")
     root = import_and_fill_asu(name)
     initial = atom_count(root)
-    check("control: fill left no bonds", not bond_objects(root),
-          f"atoms={initial} bonds={len(bond_objects(root))}")
+    check(
+        "control: fill left no bonds",
+        not bond_objects(root),
+        f"atoms={initial} bonds={len(bond_objects(root))}",
+    )
     bpy.ops.cgn.grow_further()
     bpy.context.view_layer.update()
     root = bpy.data.collections.get(bpy.context.scene.cgn_active_structure)
-    check("grow did not add atoms (finite molecule)",
-          atom_count(root) == initial, f"{initial} -> {atom_count(root)}")
-    check("grow bonded the initial atoms",
-          len(bond_objects(root)) > 0 and bond_edges(root) > 0,
-          f"bonds={len(bond_objects(root))} edges={bond_edges(root)}")
+    check(
+        "grow did not add atoms (finite molecule)",
+        atom_count(root) == initial,
+        f"{initial} -> {atom_count(root)}",
+    )
+    check(
+        "grow bonded the initial atoms",
+        len(bond_objects(root)) > 0 and bond_edges(root) > 0,
+        f"bonds={len(bond_objects(root))} edges={bond_edges(root)}",
+    )
     # A second grow that also adds nothing must NOT clear those bonds.
     before_edges = bond_edges(root)
     bpy.ops.cgn.grow_further()
     bpy.context.view_layer.update()
     root = bpy.data.collections.get(bpy.context.scene.cgn_active_structure)
-    check("a second grow preserves the bonds",
-          len(bond_objects(root)) > 0 and bond_edges(root) == before_edges,
-          f"{before_edges} -> {bond_edges(root)}")
+    check(
+        "a second grow preserves the bonds",
+        len(bond_objects(root)) > 0 and bond_edges(root) == before_edges,
+        f"{before_edges} -> {bond_edges(root)}",
+    )
     return root
 
 
@@ -98,15 +109,18 @@ scenario("test.cif", "B")
 print("\n=== C: a filling structure still gains atoms and bonds (sanity) ===")
 root = import_and_fill_asu("Brookite.cif")
 initial = atom_count(root)
-check("C control: Brookite fill left no bonds", not bond_objects(root),
-      f"atoms={initial}")
+check("C control: Brookite fill left no bonds", not bond_objects(root), f"atoms={initial}")
 bpy.ops.cgn.grow_further()
 bpy.context.view_layer.update()
 root = bpy.data.collections.get(bpy.context.scene.cgn_active_structure)
-check("C: Brookite grow added atoms", atom_count(root) > initial,
-      f"{initial} -> {atom_count(root)}")
-check("C: Brookite grow bonded the structure",
-      len(bond_objects(root)) > 0, f"bonds={len(bond_objects(root))}")
+check(
+    "C: Brookite grow added atoms", atom_count(root) > initial, f"{initial} -> {atom_count(root)}"
+)
+check(
+    "C: Brookite grow bonded the structure",
+    len(bond_objects(root)) > 0,
+    f"bonds={len(bond_objects(root))}",
+)
 
 CrystalViz.unregister()
 print()

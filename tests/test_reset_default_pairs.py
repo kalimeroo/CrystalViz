@@ -11,9 +11,9 @@ import-time windows.
 Run headless:
   blender --background --factory-startup --python test_reset_default_pairs.py
 """
-import sys
+
 import os
-import math
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
@@ -67,10 +67,12 @@ def close(a, b, eps=1e-3):
 print("\n=== A: reset restores the import-time windows ===")
 root = import_brookite()
 import_windows = pair_windows()
-check("A control: Brookite has an ionic Ti-O pair",
-      ("O", "TI") in import_windows, f"pairs={sorted(import_windows)}")
-print("A: import windows:", {k: tuple(round(v, 2) for v in w)
-                              for k, w in import_windows.items()})
+check(
+    "A control: Brookite has an ionic Ti-O pair",
+    ("O", "TI") in import_windows,
+    f"pairs={sorted(import_windows)}",
+)
+print("A: import windows:", {k: tuple(round(v, 2) for v in w) for k, w in import_windows.items()})
 
 # The user edits the windows (e.g. grows the Ti-O range).
 for pair in bpy.context.scene.cgn_connectivity_pairs:
@@ -89,26 +91,30 @@ all_close = set(reset_windows) == set(import_windows) and all(
     and close(reset_windows[key][1], import_windows[key][1])
     for key in import_windows
 )
-check("A: reset reproduces every import-time window",
-      all_close,
-      f"got={ {k: tuple(round(v,2) for v in w) for k, w in reset_windows.items()} } "
-      f"expect={ {k: tuple(round(v,2) for v in w) for k, w in import_windows.items()} }")
+check(
+    "A: reset reproduces every import-time window",
+    all_close,
+    f"got={ {k: tuple(round(v, 2) for v in w) for k, w in reset_windows.items()} } "
+    f"expect={ {k: tuple(round(v, 2) for v in w) for k, w in import_windows.items()} }",
+)
 
 # ---- B: persisted chemistry drives reset's defaults -------------------------
 print("\n=== B: persisted chemistry drives reset's default windows ===")
 import json
+
 charges = json.loads(root.get("cgn_atom_charges", "{}"))
 ionic = json.loads(root.get("cgn_ionic_radii", "{}"))
 metals = set(json.loads(root.get("cgn_metal_elements", "[]")))
-check("B: charges/ionic radii/metals were persisted on the root",
-      bool(charges) and bool(ionic) and bool(metals),
-      f"charges={sorted(charges)} metals={sorted(metals)}")
+check(
+    "B: charges/ionic radii/metals were persisted on the root",
+    bool(charges) and bool(ionic) and bool(metals),
+    f"charges={sorted(charges)} metals={sorted(metals)}",
+)
 atoms = CrystalViz._structure_atoms(root)
-radii = {str(a.get("element", "X")).upper(): float(a.get("covalent_radius", 0.75))
-         for a in atoms}
+radii = {str(a.get("element", "X")).upper(): float(a.get("covalent_radius", 0.75)) for a in atoms}
 expected = {}
 for element_a in sorted(set(radii)):
-    for element_b in sorted(set(radii))[sorted(set(radii)).index(element_a):]:
+    for element_b in sorted(set(radii))[sorted(set(radii)).index(element_a) :]:
         expected[(element_a, element_b)] = CrystalViz._default_pair_window(
             element_a, element_b, radii, charges, metals, ionic
         )
@@ -116,20 +122,24 @@ CrystalViz._default_connectivity_pairs(bpy.context.scene, atoms, root=root)
 via_reset = pair_windows()
 for key, (low, high) in expected.items():
     got = via_reset.get(key)
-    check(f"B: {key[0]}-{key[1]} uses the ionic default",
-          got is not None and close(got[0], low) and close(got[1], high),
-          f"got={got} expect={(low, high)}")
+    check(
+        f"B: {key[0]}-{key[1]} uses the ionic default",
+        got is not None and close(got[0], low) and close(got[1], high),
+        f"got={got} expect={(low, high)}",
+    )
 
 # The whole point: the ionic default disagrees with the covalent-only default,
 # so the old (chemistry-less) reset was wrong for this structure.
-covalent = CrystalViz._default_pair_window(
-    "TI", "O", radii, {}, set(), {}
+covalent = CrystalViz._default_pair_window("TI", "O", radii, {}, set(), {})
+check(
+    "B: ionic differs from covalent for Ti-O (the bug's root)",
+    not (
+        close(covalent[0], expected[("O", "TI")][0])
+        and close(covalent[1], expected[("O", "TI")][1])
+    ),
+    f"covalent={tuple(round(v, 2) for v in covalent)} "
+    f"ionic={tuple(round(v, 2) for v in expected[('O', 'TI')])}",
 )
-check("B: ionic differs from covalent for Ti-O (the bug's root)",
-      not (close(covalent[0], expected[("O", "TI")][0])
-           and close(covalent[1], expected[("O", "TI")][1])),
-      f"covalent={tuple(round(v,2) for v in covalent)} "
-      f"ionic={tuple(round(v,2) for v in expected[('O','TI')])}")
 
 # ---- C: a root without persisted chemistry falls back to covalent -----------
 print("\n=== C: a chemistry-less root stays covalent ===")
@@ -142,10 +152,12 @@ CrystalViz._default_connectivity_pairs(
 )
 covalent_windows = pair_windows()
 exp_covalent = {}
-radii_c = {str(a.get("element", "X")).upper(): float(a.get("covalent_radius", 0.75))
-           for a in CrystalViz._structure_atoms(bare)}
+radii_c = {
+    str(a.get("element", "X")).upper(): float(a.get("covalent_radius", 0.75))
+    for a in CrystalViz._structure_atoms(bare)
+}
 for element_a in sorted(set(radii_c)):
-    for element_b in sorted(set(radii_c))[sorted(set(radii_c)).index(element_a):]:
+    for element_b in sorted(set(radii_c))[sorted(set(radii_c)).index(element_a) :]:
         exp_covalent[(element_a, element_b)] = CrystalViz._default_pair_window(
             element_a, element_b, radii_c, {}, set(), {}
         )
@@ -154,8 +166,7 @@ all_cov = set(covalent_windows) == set(exp_covalent) and all(
     and close(covalent_windows[key][1], exp_covalent[key][1])
     for key in exp_covalent
 )
-check("C: a chemistry-less root uses the covalent fallback", all_cov,
-      f"got={covalent_windows}")
+check("C: a chemistry-less root uses the covalent fallback", all_cov, f"got={covalent_windows}")
 
 CrystalViz.unregister()
 print()

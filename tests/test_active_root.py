@@ -4,6 +4,7 @@
 the collection is unlinked from the scene.  Before the fix, operators acted on
 that invisible data; now the scene's collection tree is checked.
 """
+
 import json
 import os
 import sys
@@ -48,17 +49,22 @@ check("linked structure is found", CrystalViz._active_root(scene) is root)
 # ---- 1. unlinked collection must not be returned -------------------------
 scene.collection.children.unlink(root)
 check("collection survives in bpy.data (unlink, not delete)", root.name in bpy.data.collections)
-check("unlinked collection is still role=structure",
-      root.get("cgn_role") == "structure")
+check("unlinked collection is still role=structure", root.get("cgn_role") == "structure")
 check("unlinked structure is rejected", CrystalViz._active_root(scene) is None)
 
 before = atom_count(root)
 result, message = run_operator(bpy.ops.cgn.fill_cell)
 check("operator refuses the unlinked structure", "CANCELLED" in result, str(result))
-check("message names the unlinked structure",
-      "is not linked to this scene" in message, message.strip())
-check("no atoms were written to the hidden data", atom_count(root) == before,
-      f"{before} -> {atom_count(root)}")
+check(
+    "message names the unlinked structure",
+    "is not linked to this scene" in message,
+    message.strip(),
+)
+check(
+    "no atoms were written to the hidden data",
+    atom_count(root) == before,
+    f"{before} -> {atom_count(root)}",
+)
 
 # ---- 2. relinking restores it -------------------------------------------
 scene.collection.children.link(root)
@@ -71,20 +77,17 @@ scene.collection.children.unlink(root)
 container = bpy.data.collections.new("CGN_Test_Container")
 scene.collection.children.link(container)
 container.children.link(root)
-check("collection nested one level down is found",
-      CrystalViz._active_root(scene) is root)
+check("collection nested one level down is found", CrystalViz._active_root(scene) is root)
 deeper = bpy.data.collections.new("CGN_Test_Deep")
 container.children.link(deeper)
 deeper.children.link(root)
 container.children.unlink(root)  # keep only the two-levels-down copy
-check("collection nested two levels down is found",
-      CrystalViz._active_root(scene) is root)
+check("collection nested two levels down is found", CrystalViz._active_root(scene) is root)
 
 # ---- 4. a different scene must not see it -------------------------------
 other = bpy.data.scenes.new("CGN_Test_Other")
 other.cgn_active_structure = root.name
-check("other scene does not inherit the structure",
-      CrystalViz._active_root(other) is None)
+check("other scene does not inherit the structure", CrystalViz._active_root(other) is None)
 check("original scene still resolves it", CrystalViz._active_root(scene) is root)
 
 # ---- 5. deleting the collection is still handled ------------------------
@@ -92,8 +95,11 @@ bpy.data.collections.remove(root, do_unlink=True)
 check("deleted structure is rejected", CrystalViz._active_root(scene) is None)
 result, message = run_operator(bpy.ops.cgn.fill_cell)
 check("operator refuses after deletion", "CANCELLED" in result, str(result))
-check("deleted structure falls back to the import message",
-      "Import a CIF before" in message, message.strip())
+check(
+    "deleted structure falls back to the import message",
+    "Import a CIF before" in message,
+    message.strip(),
+)
 
 print("TOTAL FAILURES:", len(FAILURES))
 print("RESULT:", "FAIL" if FAILURES else "ALL PASS")

@@ -11,11 +11,17 @@ report:
   4. Assert the previously-built OTHER bond pairs are NOT lost, the total bond
      object count did not decrease, and the structure gained atoms.
 """
-import sys, os, json, bpy
+
+import json
+import os
+import sys
+
+import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.CIF_DIR
@@ -24,24 +30,31 @@ scene.cgn_chemdraw = False
 
 FAILURES = []
 
+
 def check(name, cond, detail=""):
     status = "PASS" if cond else "FAIL"
     print(f"[{status}] {name}" + (f"  ({detail})" if detail else ""))
     if not cond:
         FAILURES.append(name)
 
+
 def bond_pairs(root):
-    return sorted({
-        str(o.get("cgn_pair", ""))
-        for o in root.objects
-        if o.get("cgn_role") == "bonds" and not o.get("cgn_aromatic_torus")
-    })
+    return sorted(
+        {
+            str(o.get("cgn_pair", ""))
+            for o in root.objects
+            if o.get("cgn_role") == "bonds" and not o.get("cgn_aromatic_torus")
+        }
+    )
+
 
 def bond_object_count(root):
     return sum(1 for o in root.objects if o.get("cgn_role") == "bonds")
 
+
 def atom_count(root):
     return len(json.loads(root.get("cgn_instances", "[]"))) // 4
+
 
 # --- import multi-pair structure; build full bond set ---
 scene.cgn_connectivity_pairs.clear()
@@ -50,9 +63,7 @@ root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.ops.cgn.rebuild_connectivity("INVOKE_DEFAULT")
 # Import (like a fill) displays atoms only; build the full bond set explicitly
 # so the grow below has bonds that Option B must preserve.
-CrystalViz._bond_objects(
-    root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs
-)
+CrystalViz._bond_objects(root, CrystalViz._structure_atoms(root), scene.cgn_connectivity_pairs)
 bpy.context.view_layer.update()
 
 full_pairs = bond_pairs(root)
@@ -100,11 +111,16 @@ print("after grow -> atoms:", after_atoms, "| bond objects:", count_after, "| pa
 
 # Core Option-B assertions:
 lost = sorted(set(full_pairs) - set(pairs_after))
-check("grow preserved the OTHER (non-re-enabled) bond pairs",
-      set(full_pairs) <= set(pairs_after),
-      f"lost={lost}")
-check("grow did not remove any bond objects", count_after >= full_bond_count,
-      f"before={full_bond_count} after={count_after}")
+check(
+    "grow preserved the OTHER (non-re-enabled) bond pairs",
+    set(full_pairs) <= set(pairs_after),
+    f"lost={lost}",
+)
+check(
+    "grow did not remove any bond objects",
+    count_after >= full_bond_count,
+    f"before={full_bond_count} after={count_after}",
+)
 
 print()
 print("TOTAL FAILURES:", len(FAILURES))

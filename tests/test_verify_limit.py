@@ -5,7 +5,9 @@ but whose post-extension count is above it.  With that L, the in-loop check
 cannot fire (it only bounds the pre-extension list), so a CANCELLED result
 proves the NEW post-extension check works.
 """
+
 import sys
+
 import bpy
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
@@ -30,7 +32,7 @@ if cell_instances is None:
 pre = len(cell_instances) // 4
 post_list = CrystalViz._extend_cell_boundary_instances(sites, list(cell_instances))
 post = len(post_list) // 4
-print(f"diamond CELL pack=1: pre-extension={pre} post-extension={post} (x{post/pre:.2f})")
+print(f"diamond CELL pack=1: pre-extension={pre} post-extension={post} (x{post / pre:.2f})")
 
 original_limit = CrystalViz._MAX_FILL_ATOMS
 try:
@@ -61,4 +63,5 @@ finally:
 result = bpy.ops.cgn.fill_pack(repeat_a=1, repeat_b=1, repeat_c=1)
 atoms_after = len(CrystalViz._structure_atoms(root))
 print(f"normal fill result={result} atoms={atoms_after} expected={post}")
-print(f"CHECK 3 (no regression)  : {'PASS' if result == {'FINISHED'} and atoms_after == post else 'FAIL'}")
+regression_ok = result == {"FINISHED"} and atoms_after == post
+print(f"CHECK 3 (no regression)  : {'PASS' if regression_ok else 'FAIL'}")

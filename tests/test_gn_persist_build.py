@@ -4,6 +4,7 @@ Run order matters: `test_gn_persist_build.py` -> `test_gn_persist_check.py` ->
 `test_gn_persist_export.py` (alphabetical, as `run_all.ps1` does it).  All three
 share the file below through the OS temp directory.
 """
+
 import os
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import bpy
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
 CrystalViz.register()
 
 CIF = _env.cif("Ag2Cr2O7.cif")

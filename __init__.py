@@ -1761,7 +1761,9 @@ def _set_modifier_input(modifier, node_group, socket_name, value):
         modifier[identifier] = value
     except TypeError:
         if input_value is None:
-            raise RuntimeError(f"Geometry Nodes modifier input '{socket_name}' is unavailable.")
+            raise RuntimeError(
+                f"Geometry Nodes modifier input '{socket_name}' is unavailable."
+            ) from None
         input_value.value = value
 
 
@@ -4046,7 +4048,10 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
         path = [start]
         path_edges = []
 
-        def find_ring(current):
+        # Bound per iteration so the closure captures this iteration's state
+        # instead of the last one's (ruff B023): find_ring is only ever called
+        # below, within the same loop body.
+        def find_ring(current, path=path, path_edges=path_edges, edge_index=edge_index, end=end):
             if len(path_edges) >= 5 or degrees[current] > 3:
                 return
             for neighbor, next_edge in neighbors.get(current, ()):
@@ -4110,7 +4115,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                             and unsubstituted_nitrogens
                         ):
 
-                            def mean_nitrogen_bond_length(node):
+                            def mean_nitrogen_bond_length(node, ring_edges=ring_edges):
                                 lengths = [
                                     math.dist(
                                         nodes[node],

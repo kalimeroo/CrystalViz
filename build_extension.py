@@ -115,7 +115,7 @@ def _fetch(dist):
         with urllib.request.urlopen(url, timeout=60) as resp:
             return json.load(resp)
     except Exception as exc:  # network or JSON errors
-        raise SystemExit(f"error: could not reach PyPI for '{dist}': {exc}")
+        raise SystemExit(f"error: could not reach PyPI for '{dist}': {exc}") from exc
 
 
 def _select_wheels(version):
@@ -318,7 +318,7 @@ def download(args):
             with urllib.request.urlopen(url, timeout=120) as resp:
                 blob = resp.read()
         except Exception as exc:
-            raise SystemExit(f"error downloading {filename}: {exc}")
+            raise SystemExit(f"error downloading {filename}: {exc}") from exc
         with open(dest, "wb") as handle:
             handle.write(blob)
         print(f"  -> {os.path.relpath(dest, _HERE)}")

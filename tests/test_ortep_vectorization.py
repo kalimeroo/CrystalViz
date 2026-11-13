@@ -58,7 +58,7 @@ def old_base_components(atom, size_scale=1.0):
                     tuple(float(v) for v in axes),
                     (float(rotation.x), float(rotation.y), float(rotation.z)),
                 )
-            except Exception:
+            except Exception:  # nosec B110
                 pass
     radius = CrystalViz._atom_radius(
         atom.get("vdw_radius", CrystalViz._DEFAULT_VDW_RADIUS), "BALL_STICK"

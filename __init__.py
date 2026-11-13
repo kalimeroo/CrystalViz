@@ -2340,9 +2340,10 @@ def _update_ellipsoid_probability(scene, context):
                     traceback.print_exc()
         if updated:
             obj.update_tag(refresh={"OBJECT", "DATA"})
+    # A failed depsgraph refresh must not break the rebuild.
     try:
         context.view_layer.update()
-    except Exception:
+    except Exception:  # nosec B110
         pass
 
 

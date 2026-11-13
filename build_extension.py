@@ -112,7 +112,8 @@ def wheel_matches_platform(filename, platform):
 def _fetch(dist):
     url = f"https://pypi.org/pypi/{dist}/json"
     try:
-        with urllib.request.urlopen(url, timeout=60) as resp:
+        # The PyPI JSON API only ever serves https:// URLs.
+        with urllib.request.urlopen(url, timeout=60) as resp:  # nosec B310
             return json.load(resp)
     except Exception as exc:  # network or JSON errors
         raise SystemExit(f"error: could not reach PyPI for '{dist}': {exc}") from exc
@@ -315,7 +316,8 @@ def download(args):
             continue
         print(f"downloading {filename}")
         try:
-            with urllib.request.urlopen(url, timeout=120) as resp:
+            # The wheel URL comes straight from the PyPI JSON payload (https).
+            with urllib.request.urlopen(url, timeout=120) as resp:  # nosec B310
                 blob = resp.read()
         except Exception as exc:
             raise SystemExit(f"error downloading {filename}: {exc}") from exc

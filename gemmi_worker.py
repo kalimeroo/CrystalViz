@@ -585,9 +585,10 @@ def _read_structure(cif_path, block_name=None):
         raise ValueError(f"This file could not be parsed as a CIF: {exc}") from exc
     structures = {}
     for block in document:
+        # Some blocks are not small-structure blocks; skip them.
         try:
             structure = gemmi.make_small_structure_from_block(block)
-        except Exception:
+        except Exception:  # nosec B112
             continue
         if not structure.sites or not structure.cell.a > 0.0:
             continue
@@ -674,10 +675,11 @@ def _metal_elements(structure):
         symbol = _site_element(site)
         if not _is_element(symbol):
             continue
+        # Unknown symbols are skipped rather than failing the whole CIF.
         try:
             if gemmi.Element(symbol).is_metal:
                 metals.add(symbol.upper())
-        except Exception:
+        except Exception:  # nosec B112
             continue
     return sorted(metals)
 

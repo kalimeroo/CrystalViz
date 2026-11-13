@@ -40,5 +40,8 @@ jobs:
 
       - name: Bandit security scan
         run: |
+          # B101 (assert) and B311 (non-crypto RNG) are test-only patterns:
+          # neither appears in the shipped modules.
           bandit -r . \
-            -x dist,wheels,.git,.opencode,tests/external_cctbx,tests/legacy_baked_polyhedra
+            -x dist,wheels,.git,.opencode,tests/external_cctbx,tests/legacy_baked_polyhedra \
+            -s B101,B311

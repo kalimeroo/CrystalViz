@@ -38,7 +38,7 @@ class TestLoadStructure(unittest.TestCase):
             self.assertIn("space_group", result)
 
     def test_missing_file_raises(self):
-        with self.assertRaises(Exception):
+        with self.assertRaises(FileNotFoundError):
             gw.load_structure(os.path.join(EXAMPLES, "nope.cif"))
 
     def test_legacy_error_message(self):

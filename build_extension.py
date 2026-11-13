@@ -162,7 +162,7 @@ tagline = "Import CIF atoms and render with Geometry Nodes"
 maintainer = "Erwann Jeanneau"
 type = "add-on"
 license = [
-  "SPDX:MPL-2.0",
+  "SPDX:GPL-3.0-or-later",
 ]
 
 tags = ["Import-Export", "Geometry Nodes", "Material"]

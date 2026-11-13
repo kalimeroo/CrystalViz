@@ -258,3 +258,17 @@ and the strings are informational only.
 Structures imported by an earlier version of this add-on store per-atom data
 instead of the compact site table used now. Re-import the CIF to grow or
 rebuild such a structure.
+
+## License
+
+CrystalViz is free software licensed under the **GNU General Public License,
+version 3 or (at your option) any later version** (SPDX: GPL-3.0-or-later).
+You can redistribute it and/or modify it under the terms of the GPL; see
+`LICENSE.txt` for the full text.
+
+The add-on bundles **gemmi**, which is distributed under the **Mozilla Public
+License 2.0** (https://github.com/project-gemmi/gemmi). The MPL-2.0 is
+[GPL-3.0-compatible](https://www.gnu.org/licenses/license-list.html#MPL-2.0)
+(and, via MPL §3.3, may be distributed as part of a GPL-3.0-or-later work with
+the corresponding notice joining the distribution), so the combination is
+lawful. gemmi itself remains under the MPL-2.0 and its own copyright.

@@ -5803,9 +5803,22 @@ def _default_connectivity_pairs(scene, atoms, root=None):
         except (TypeError, ValueError):
             charges, ionic, metals = {}, {}, set()
     scene.cgn_connectivity_pairs.clear()
-    elements = sorted({str(a.get("element", "X")).upper() for a in atoms})
+    # Restore a window for every element the structure was imported with, not
+    # just the ones still displayed: deleting atoms must not drop a pair's
+    # min/max from the list.  The P1 site table keeps the full element set even
+    # after instances are deleted, so prefer it and fall back to the displayed
+    # atoms only when it is unavailable (legacy structure).
+    source_atoms = atoms
+    if root is not None:
+        try:
+            site_atoms = json.loads(root.get("cgn_sites", "") or "[]")
+        except (TypeError, ValueError):
+            site_atoms = []
+        if site_atoms:
+            source_atoms = site_atoms
+    elements = sorted({str(a.get("element", "X")).upper() for a in source_atoms})
     radii = {}
-    for atom in atoms:
+    for atom in source_atoms:
         element = str(atom.get("element", "X")).upper()
         radii[element] = float(atom.get("covalent_radius", 0.75))
     for index, element_a in enumerate(elements):
@@ -5850,6 +5863,41 @@ class CGN_OT_rebuild_connectivity(Operator):
             "Connectivity reset to defaults. Existing bonds kept; the next grow "
             "uses these windows.",
         )
+        return {"FINISHED"}
+
+
+class CGN_OT_update_connectivity(Operator):
+    bl_idname = "cgn.update_connectivity"
+    bl_label = "Update Bonds"
+    bl_description = (
+        "Rebuild the bonds of the displayed atoms using the current connectivity "
+        "windows (apply edited min/max distances without growing)"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report({"ERROR"}, _no_structure_message(context.scene, "updating bonds"))
+            return {"CANCELLED"}
+        try:
+            atoms = _structure_atoms(root)
+        except (ValueError, TypeError) as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        try:
+            _bond_objects(root, atoms, context.scene.cgn_connectivity_pairs)
+            _apply_hydrogen_visibility(root, context.scene.cgn_show_hydrogens)
+            context.view_layer.update()
+        except Exception:
+            traceback.print_exc()
+            self.report({"ERROR"}, "Could not rebuild the bonds.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Bonds updated from the current connectivity windows.")
         return {"FINISHED"}
 
 
@@ -7256,7 +7304,9 @@ class CGN_PT_connectivity(Panel):
             row.label(text=f"{item.element_a} — {item.element_b}")
             row.prop(item, "min_distance", text="Min")
             row.prop(item, "max_distance", text="Max")
-        layout.operator("cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK")
+        buttons = layout.row(align=True)
+        buttons.operator("cgn.update_connectivity", text="Update Bonds", icon="FILE_REFRESH")
+        buttons.operator("cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK")
 
 
 class CGN_PT_unit_cell(Panel):
@@ -7570,6 +7620,7 @@ class CGN_MT_viewport(Menu):
         )
         layout.operator("cgn.delete_atoms", text="Delete Atoms", icon="X")
         layout.separator()
+        layout.operator("cgn.update_connectivity", text="Update Bonds", icon="FILE_REFRESH")
         layout.operator("cgn.rebuild_connectivity", text="Reset Default", icon="LOOP_BACK")
 
 
@@ -7590,6 +7641,7 @@ _CLASSES = (
     CGN_PolyhedronStyle,
     CGN_OT_import_cif,
     CGN_OT_rebuild_connectivity,
+    CGN_OT_update_connectivity,
     CGN_OT_fill_asu,
     CGN_OT_fill_cell,
     CGN_OT_fill_pack,

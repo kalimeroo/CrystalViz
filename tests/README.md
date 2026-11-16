@@ -88,7 +88,10 @@ for a first run.
   ionic radii for ionically bonded pairs (e.g. Ti-O in Brookite: (1.2, 2.41) vs
   the covalent (1.36, 2.66)). The import now persists that chemistry on the
   structure root and the reset reads it, with a covalent fallback for roots that
-  predate it.
+  predate it. It also pins that reset keeps every element pair after atoms are
+  deleted (only Ag left in Ag2Cr2O7 — the list is rebuilt from the persistent P1
+  site table, not the displayed atoms), and that **Update Bonds** rebuilds the
+  displayed atoms' bonds from the current windows.
 
 - `test_bond_clear_on_rebuild.py` pins that a full `_bond_objects` rebuild
   (`append_only=False`) drops the previous bond set when nothing can be

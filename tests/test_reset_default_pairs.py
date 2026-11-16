@@ -168,6 +168,83 @@ all_cov = set(covalent_windows) == set(exp_covalent) and all(
 )
 check("C: a chemistry-less root uses the covalent fallback", all_cov, f"got={covalent_windows}")
 
+# ---- D: deleting atoms must not drop pair windows --------------------------
+# User report: import Ag2Cr2O7, delete every atom except Ag, then Reset Default
+# -> the Ag-Cr / Ag-O / Cr-O / O-O rows vanished because reset rebuilt the list
+# from the *displayed* atoms only.  Reset must read the persistent P1 site
+# table, which still holds every element after instances are deleted.
+print("\n=== D: reset keeps every pair after atoms are deleted ===")
+scene = bpy.context.scene
+CrystalViz._cancel_all_debounce()
+scene.cgn_connectivity_pairs.clear()
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Ag2Cr2O7.cif"))
+root_d = bpy.data.collections.get(scene.cgn_active_structure)
+import_windows_d = pair_windows()
+check(
+    "D control: Ag2Cr2O7 has several element pairs",
+    len(import_windows_d) >= 3,
+    f"pairs={sorted(import_windows_d)}",
+)
+
+sites_d, instances_d, _cell_d, _initial_d = CrystalViz._structure_tables(root_d)
+ag_sites = {i for i, s in enumerate(sites_d) if str(s.get("element", "X")).upper() == "AG"}
+ag_instances = []
+for _off in range(0, len(instances_d) - len(instances_d) % 4, 4):
+    if int(instances_d[_off]) in ag_sites:
+        ag_instances.extend(instances_d[_off : _off + 4])
+CrystalViz._set_instances(root_d, ag_instances)
+remaining = CrystalViz._structure_atoms(root_d)
+check(
+    "D: only Ag atoms remain",
+    {str(a.get("element", "X")).upper() for a in remaining} == {"AG"},
+    f"elements={sorted({str(a.get('element', 'X')).upper() for a in remaining})}",
+)
+
+reset_default()
+after_windows = pair_windows()
+check(
+    "D: reset keeps every pair after atoms were deleted",
+    set(after_windows) == set(import_windows_d),
+    f"got={sorted(after_windows)} expect={sorted(import_windows_d)}",
+)
+check(
+    "D: reset restores the import-time values for those pairs",
+    all(
+        close(after_windows[key][0], import_windows_d[key][0])
+        and close(after_windows[key][1], import_windows_d[key][1])
+        for key in import_windows_d
+    ),
+    f"got={ {k: tuple(round(v, 2) for v in w) for k, w in after_windows.items()} }",
+)
+
+# ---- E: Update Bonds applies the current windows ---------------------------
+# The new button rebuilds the displayed atoms' bonds from the current min/max,
+# so edited distances can be applied without growing.
+print("\n=== E: Update Bonds rebuilds from the current windows ===")
+
+
+def bond_object_count(root):
+    return sum(1 for o in root.objects if o.get("cgn_role") == "bonds")
+
+
+root_e = import_brookite()
+check("E: import leaves no bonds", bond_object_count(root_e) == 0, f"{bond_object_count(root_e)}")
+bpy.ops.cgn.update_connectivity("INVOKE_DEFAULT")
+check(
+    "E: Update Bonds creates bonds from the default windows",
+    bond_object_count(root_e) > 0,
+    f"{bond_object_count(root_e)}",
+)
+for pair in bpy.context.scene.cgn_connectivity_pairs:
+    pair.enabled = False
+bpy.context.view_layer.update()
+bpy.ops.cgn.update_connectivity("INVOKE_DEFAULT")
+check(
+    "E: disabling every pair then updating clears the bonds",
+    bond_object_count(root_e) == 0,
+    f"{bond_object_count(root_e)}",
+)
+
 CrystalViz.unregister()
 print()
 print("TOTAL FAILURES:", len(FAILURES))

@@ -75,7 +75,11 @@ sub-panel. Those windows steer the next grow and every bond rebuild. Defaults
 come from the cctbx covalent radii (plus 0.4 Å), except ionically bonded
 cation-anion pairs (e.g. Ti-O, Ag-O), which import computes from the CIF's
 formal charges and Shannon ionic radii. **Reset Default** restores those exact
-import-time windows without touching bonds already shown.
+import-time windows without touching bonds already shown, and keeps a row for
+every element the structure was imported with — deleting atoms does not drop a
+pair's min/max. **Update Bonds** (next to Reset Default) rebuilds the displayed
+atoms' bonds from the current windows, so edited distances can be applied
+without growing.
 
 Atoms use the JMOL CPK colour scheme (the Science Notes table): colours are
 stored as sRGB hex and converted to linear values so Blender displays the

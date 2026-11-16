@@ -13,6 +13,7 @@ maintain consistency in atom sizing and default connectivity windows.
 
 import math
 import re
+from typing import Any
 
 import gemmi
 
@@ -729,10 +730,12 @@ def _site_u_cart(site, unit_cell, operation=None):
     ``adptbx.u_cif_as_u_cart``).
     """
     aniso = getattr(site, "aniso", None)
-    try:
-        values = [float(value) for value in aniso.elements_voigt()]
-    except Exception:
-        values = [0.0] * 6
+    values = [0.0] * 6
+    if aniso is not None:
+        try:
+            values = [float(value) for value in aniso.elements_voigt()]
+        except Exception:
+            values = [0.0] * 6
     if values[0] > 0.0 and values[1] > 0.0 and values[2] > 0.0:
         u_cif = [
             [values[0], values[5], values[4]],
@@ -1163,7 +1166,7 @@ def _neighbor_search_index(unit_cell, base_atoms, radius):
     Returns ``(search, sites)`` where ``sites`` parallels ``base_atoms`` so a
     query atom can be addressed by base-atom index.
     """
-    sites = []
+    sites = gemmi.SmallStructure.SiteList()
     for i, atom in enumerate(base_atoms):
         site = gemmi.SmallStructure.Site()
         site.fract = gemmi.Fractional(*atom["frac"])
@@ -1237,7 +1240,7 @@ def _grow_shell_keys(
     return new_keys, neighbour_table
 
 
-_GROWTH_CACHE = None
+_GROWTH_CACHE: dict[str, Any] | None = None
 
 
 def _growth_cache_key(unit_cell_parameters, sites, windows):
@@ -1267,12 +1270,13 @@ def grow_connectivity_shell(
     windows = _enabled_windows(pair_settings)
     cache_key = _growth_cache_key(unit_cell_parameters, sites, windows)
     current_signature = tuple(int(value) for value in current_instances)
-    cache_matches = _GROWTH_CACHE is not None and _GROWTH_CACHE["key"] == cache_key
-    if cache_matches:
-        unit_cell = _GROWTH_CACHE["unit_cell"]
-        base_atoms = _GROWTH_CACHE["base_atoms"]
-        canonical = _GROWTH_CACHE["canonical"]
-        neighbour_table = _GROWTH_CACHE["neighbour_table"]
+    cache = _GROWTH_CACHE
+    cache_matches = cache is not None and cache["key"] == cache_key
+    if cache_matches and cache is not None:
+        unit_cell = cache["unit_cell"]
+        base_atoms = cache["base_atoms"]
+        canonical = cache["canonical"]
+        neighbour_table = cache["neighbour_table"]
     else:
         unit_cell = _UnitCell(unit_cell_parameters)
         base_atoms = _base_atoms(unit_cell, sites)
@@ -1281,9 +1285,11 @@ def grow_connectivity_shell(
         canonical = _canonical_base_indices(base_atoms)
         neighbour_table = None
 
-    state_matches = cache_matches and _GROWTH_CACHE["instances"] == current_signature
+    state_matches = cache is not None and cache_matches and cache["instances"] == current_signature
     visited = (
-        _GROWTH_CACHE["visited"] if state_matches else _instance_keys(current_instances, canonical)
+        cache["visited"]
+        if cache is not None and state_matches
+        else _instance_keys(current_instances, canonical)
     )
     seed_keys = _instance_keys(seed_instances, canonical)
     if not seed_keys:

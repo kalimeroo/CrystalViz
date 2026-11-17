@@ -24,3 +24,6 @@ tests/legacy_baked_polyhedra/
 
 # Windows Explorer folder metadata
 desktop.ini
+
+# Built extension archives are attached to GitHub Releases, not committed.
+dist/

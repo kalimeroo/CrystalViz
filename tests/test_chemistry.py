@@ -152,6 +152,95 @@ class AromaticRingsTest(unittest.TestCase):
         rings = chemistry.aromatic_rings(elements, edges, orders)
         self.assertEqual(len(rings), 1)
 
+    def test_pyrrole_sextet_is_donated_by_the_nitrogen(self):
+        # IUPAC GR-6.3: pyrrole has one unique arrangement of alternating single
+        # and double bonds, so the depiction layer draws it Kekule.  That is
+        # decided from the lone-pair share of the sextet.
+        nodes = ["N0", "C0", "C1", "C2", "C3"]
+        atoms = {node: ("N" if node == "N0" else "C") for node in nodes}
+        atoms["H0"] = "H"
+        bonds = ring_bonds(nodes, 1.39)
+        bonds.append(("N0", "H0", 1.01))
+        for index in range(4):
+            atoms[f"H{index + 1}"] = "H"
+            bonds.append((f"C{index}", f"H{index + 1}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(len(rings), 1)
+        self.assertEqual(rings[0].pi_electrons, 6)
+        self.assertEqual(rings[0].lone_pair_electrons, 2)
+
+    def test_carbocyclic_sextet_uses_no_lone_pair(self):
+        # Benzene and pyridine keep the delocalisation curve: their sextet is
+        # built only from ring double bonds.
+        atoms, bonds = cycle("C", 6)
+        for index in range(6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual([ring.lone_pair_electrons for ring in rings], [0])
+
+        nodes = ["N0", "C0", "C1", "C2", "C3", "C4"]
+        atoms = {node: ("N" if node == "N0" else "C") for node in nodes}
+        bonds = ring_bonds(nodes, 1.39)
+        for index in range(5):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual([ring.lone_pair_electrons for ring in rings], [0])
+
+    def test_metallocene_cyclopentadienyl_is_a_six_pi_ligand(self):
+        # Ferrocene: every Cp carbon is bonded to two ring carbons, one hydrogen
+        # and the iron, so no Kekule double bond can be placed.  The ring is the
+        # aromatic 6 pi Cp- ligand, so it is still perceived as aromatic, and
+        # the metal is reported (IUPAC GR-1.7.2 draws it with a curve).
+        atoms, bonds = cycle("C", 5)
+        atoms["FE0"] = "FE"
+        for index in range(5):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+            bonds.append((f"C{index}", "FE0", 2.05))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(multiple_bonds(orders), {})
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(len(rings), 1)
+        self.assertEqual(rings[0].pi_electrons, 6)
+        self.assertEqual(rings[0].lone_pair_electrons, 0)
+        self.assertEqual(rings[0].haptic_metal, "FE")
+
+    def test_coordinated_ring_with_an_exocyclic_double_bond_stays_kekule(self):
+        # An eta6-coordinated p-benzoquinone: the two exocyclic C=O bonds veto
+        # the haptic shortcut just as they veto a Kekule ring, so the metal does
+        # not turn the quinone into an aromatic ligand.
+        elements = {f"C{index}": "C" for index in range(6)}
+        elements.update({"O0": "O", "O5": "O", "FE0": "FE"})
+        edges = [
+            ("C0", "C1"),
+            ("C1", "C2"),
+            ("C2", "C3"),
+            ("C3", "C4"),
+            ("C4", "C5"),
+            ("C5", "C0"),
+            ("C0", "O0"),
+            ("C5", "O5"),
+        ]
+        edges.extend((f"C{index}", "FE0") for index in range(6))
+        orders = {
+            chemistry.edge_key("C0", "O0"): 2,
+            chemistry.edge_key("C5", "O5"): 2,
+            chemistry.edge_key("C1", "C2"): 2,
+            chemistry.edge_key("C3", "C4"): 2,
+        }
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
     def test_naphthalene_has_two_aromatic_rings(self):
         atoms = {f"C{index}": "C" for index in range(10)}
         bonds = [

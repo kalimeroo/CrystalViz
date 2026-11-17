@@ -3992,23 +3992,34 @@ def _chemdraw_bond_orders(segments, covalent_radii):
 
 
 def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
-    """Find the aromatic rings of the Kekulé structure and their torus geometry."""
+    """Find the aromatic rings of the Kekulé structure and their torus geometry.
+
+    A ring whose sextet needs a heteroatom lone pair is left out: it has only
+    one arrangement of alternating single and double bonds (furan, pyrrole, the
+    azoles), and IUPAC GR-6.3 prefers that localized depiction over a
+    delocalization curve.  Leaving it out of ``aromatic_edges`` is what makes
+    its double bonds render as strokes.  A haptically coordinated ring (the
+    cyclopentadienyl of a metallocene) is the opposite case: it has no
+    alternating-bond depiction at all, and IUPAC GR-1.7.2 requires the curve.
+    """
     elements, edges, _lengths, points = _chemdraw_graph(segments, covalent_radii)
     aromatic_edges = set()
     aromatic_rings = []
-    for ring_nodes, ring_edges in _chemistry().aromatic_rings(elements, edges, bond_orders):
-        coordinates = np.asarray([points[node] for node in sorted(ring_nodes)], dtype=float)
+    for ring in _chemistry().aromatic_rings(elements, edges, bond_orders, detail=True):
+        if ring.lone_pair_electrons:
+            continue
+        coordinates = np.asarray([points[node] for node in sorted(ring.nodes)], dtype=float)
         centroid_array = coordinates.mean(axis=0)
         _left, singular_values, plane_axes = np.linalg.svd(
             coordinates - centroid_array, full_matrices=False
         )
         if (
             len(singular_values) < 3
-            or singular_values[-1] / math.sqrt(len(ring_nodes)) > _AROMATIC_PLANARITY_MAX
+            or singular_values[-1] / math.sqrt(len(ring.nodes)) > _AROMATIC_PLANARITY_MAX
         ):
             continue
         centroid = tuple(float(value) for value in centroid_array)
-        ring_symbols = [elements[node] for node in sorted(ring_nodes)]
+        ring_symbols = [elements[node] for node in sorted(ring.nodes)]
         ring_element = min(
             set(ring_symbols),
             key=lambda element: (
@@ -4027,7 +4038,7 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
                 ring_element,
             )
         )
-        aromatic_edges.update(ring_edges)
+        aromatic_edges.update(ring.edges)
     return aromatic_edges, aromatic_rings
 
 

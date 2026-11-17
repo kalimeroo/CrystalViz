@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 51/51 pass.
+`pwsh tests/run_all.ps1` → 52/52 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -84,7 +84,11 @@ for a first run.
   bounded), acetylene/acetonitrile triples, allene, formaldehyde, the "long
   contacts are never promoted" gate, unknown elements staying single-bonded,
   orientation independence of the edge keys, and the ring enumerator (4-rings
-  skipped, hydrogens/metals excluded). It finishes on the real fixture: the
+  skipped, hydrogens/metals excluded). The aromatic records also pin the
+  depiction split: pyrrole reports 2 lone-pair electrons of its sextet, benzene
+  and pyridine report 0, a ferrocene-shaped Cp + Fe fragment is a 6 π haptic
+  ligand with no double bond, and an η6-coordinated quinone is still vetoed by
+  its exocyclic C=O. It finishes on the real fixture: the
   `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly the reference
   Kekulé structure (7 C=C + 3 C=O, no triple) and exactly one aromatic ring (the
   benzene; the annulated-indolizine five-ring is a bridgehead case), with every
@@ -97,6 +101,18 @@ for a first run.
   invented triple bond, and one grouped aromatic object holding exactly one ring.
   The previous length-cutoff heuristic found only 3 C=C + 3 C=O and drew the
   aromatic rings as Kekulé strokes.
+
+- `test_chemdraw_azole.py` is the depiction counterpart for five-membered rings.
+  On `aromatic.cif` (CSD AABHTZ, a local fixture: those checks are skipped when
+  it is absent) it pins that the 4-substituted 1,2,4-triazole keeps its two
+  ring C=N doubles as strokes (6 C|N double strokes) and that the benzene is the
+  only torus left (48 segments, its three doubles still suppressed); the ring
+  reports 2 lone-pair electrons, so IUPAC GR-6.3's "one unique arrangement of
+  alternating bonds" rule applies. The same perception is checked on hand-built
+  fragments: N-methylpyrrole → two doubles and no torus, benzene → torus, and a
+  Cp + Fe fragment → no double bond but a torus (the 6 π haptic ligand of
+  GR-1.7.2). It closes on `Ferrocene.cif`, which must draw three tori
+  (2 × η5-Cp + the arene, 144 segments) where it used to draw one.
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
   atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,

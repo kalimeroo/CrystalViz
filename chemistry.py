@@ -23,6 +23,8 @@ Edge keys are always normalised with :func:`edge_key`, so callers can pass
 either orientation.
 """
 
+from typing import NamedTuple
+
 # Highest bond order this module will ever assign.
 MAX_BOND_ORDER = 3
 
@@ -57,6 +59,72 @@ RING_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S"})
 # bond of their own inside the ring — pyrrole N, furan O, thiophene S.
 LONE_PAIR_ELEMENTS = frozenset({"N", "P", "O", "S"})
 
+# Metals that carry an eta5/eta6/eta7 pi ligand (metallocenes, half-sandwiches,
+# arene complexes).  A coordinated cyclopentadienyl ring is the 6 pi Huckel
+# aromatic Cp- ligand, and IUPAC GR-1.7.2 requires such a coordinated
+# contiguous pi system to be drawn with a delocalisation curve because no
+# alternating single/double bond arrangement describes it.
+HAPTIC_METALS = frozenset(
+    {
+        # Group 2 (Cp2Mg, Cp2Ca) and group 12 (Cp2Zn, Cp2Hg).
+        "MG",
+        "CA",
+        "SR",
+        "BA",
+        "ZN",
+        "CD",
+        "HG",
+        # d block.
+        "SC",
+        "TI",
+        "V",
+        "CR",
+        "MN",
+        "FE",
+        "CO",
+        "NI",
+        "CU",
+        "Y",
+        "ZR",
+        "NB",
+        "MO",
+        "TC",
+        "RU",
+        "RH",
+        "PD",
+        "AG",
+        "LA",
+        "HF",
+        "TA",
+        "W",
+        "RE",
+        "OS",
+        "IR",
+        "PT",
+        "AU",
+        # f block (lanthanocenes, uranocene and relatives).
+        "CE",
+        "PR",
+        "ND",
+        "PM",
+        "SM",
+        "EU",
+        "GD",
+        "TB",
+        "DY",
+        "HO",
+        "ER",
+        "TM",
+        "YB",
+        "LU",
+        "TH",
+        "PA",
+        "U",
+        "NP",
+        "PU",
+    }
+)
+
 # A candidate multiple bond may not be longer than the covalent radii predict
 # (normalised length 1.0).  Real double/triple bonds sit well below that.
 _CANDIDATE_MAX_LENGTH_SCALE = 1.0
@@ -76,6 +144,24 @@ _REPAIR_NODE_LIMIT = 12
 _REPAIR_DEFICIT_LIMIT = 12
 _CYCLE_STEP_BUDGET = 40_000
 _AUGMENT_STEP_BUDGET = 200_000
+
+
+class AromaticRing(NamedTuple):
+    """One aromatic ring together with the electrons that make it aromatic.
+
+    ``lone_pair_electrons`` is the part of ``pi_electrons`` that a heteroatom
+    donates; a ring that needs such a donation has only one arrangement of
+    alternating single and double bonds (IUPAC GR-6.3, furan/pyrrole), so the
+    depiction layer draws it Kekule instead of with a delocalisation curve.
+    ``haptic_metal`` names the metal the whole ring coordinates to, when the
+    ring is a pi ligand (eta5-Cp, eta6-arene) rather than a Kekule ring.
+    """
+
+    nodes: frozenset
+    edges: frozenset
+    pi_electrons: int
+    lone_pair_electrons: int
+    haptic_metal: str | None = None
 
 
 def edge_key(first, second):
@@ -108,6 +194,45 @@ def _graph(elements, edges):
         adjacency[first].append(second)
         adjacency[second].append(first)
     return adjacency, edge_keys
+
+
+def _haptic_metal(ring, elements, adjacency):
+    """Return the one haptic metal every atom of *ring* is bonded to, or None.
+
+    A metallocene cyclopentadienyl ring coordinates all five carbons to the same
+    metal.  Requiring a *common* metal keeps a pair of unrelated metal
+    contacts (or a bridging ligand) from passing as a pi complex.
+    """
+    common = None
+    for node in ring:
+        bonded = {
+            elements.get(neighbour)
+            for neighbour in adjacency.get(node, ())
+            if elements.get(neighbour) in HAPTIC_METALS
+        }
+        common = bonded if common is None else common & bonded
+        if not common:
+            return None
+    return min(common)
+
+
+def _ring_eligible(node, elements, adjacency):
+    """True when *node* can be walked as an atom of a conjugated ring.
+
+    Two or three neighbours is the normal case.  A ring atom of a coordinated
+    pi ligand also carries its metal bond (eta5-Cp: two ring carbons, one
+    hydrogen and the metal), so the metal bonds are not counted: the ring
+    itself only has the non-metal neighbours.
+    """
+    if elements.get(node) not in RING_ELEMENTS:
+        return False
+    neighbours = adjacency.get(node, ())
+    if 2 <= len(neighbours) <= 3:
+        return True
+    if not any(elements.get(item) in HAPTIC_METALS for item in neighbours):
+        return False
+    non_metal = sum(1 for item in neighbours if elements.get(item) not in HAPTIC_METALS)
+    return 2 <= non_metal <= 3
 
 
 def _in_cycle(adjacency, node, budget):
@@ -390,9 +515,12 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     """Return the simple cycles of *sizes* as frozensets of node keys.
 
     Only atoms that can sit in a conjugated ring are walked (``RING_ELEMENTS``
-    with two or three neighbours), so hydrogens, metals and substituents never
-    appear in the result.  Each ring is reported once, whichever direction the
-    walk took.
+    with two or three non-metal neighbours), so hydrogens, metals and
+    substituents never appear in the result.  A pi ligand atom keeps its metal
+    bond out of that count: the five carbons of a ferrocene cyclopentadienyl
+    ring each have four neighbours (two carbons, one hydrogen, the iron) but
+    only three non-metal ones, so the ring is found.  Each ring is reported
+    once, whichever direction the walk took.
     """
     elements = _normalise_elements(elements)
     adjacency, _edge_keys = _graph(elements, edges)
@@ -401,7 +529,7 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     largest = max(allowed_sizes)
 
     def eligible(node):
-        return elements.get(node) in RING_ELEMENTS and 2 <= len(adjacency[node]) <= 3
+        return _ring_eligible(node, elements, adjacency)
 
     rank = {node: index for index, node in enumerate(sorted(adjacency, key=repr))}
     neighbours = {
@@ -447,8 +575,11 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     return rings
 
 
-def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders, ring_count):
-    """Hückel pi electron count of *ring*, or None when it cannot be aromatic.
+def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count):
+    """``(pi_electrons, lone_pair_electrons)`` for *ring*, or None.
+
+    *by_node* maps every atom to the edge keys around it (the shape
+    :func:`_graph` yields, keyed by edges rather than neighbours).
 
     *ring_atoms* is the union of every ring in the molecule: a multiple bond to
     one of those atoms is a ring-fusion bond (shared with a neighbouring ring),
@@ -461,13 +592,19 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders
     rings) holds a lone pair that belongs to the fused pi system, so no single
     ring may claim it as its own sextet.  Both rings are then depicted Kekulé,
     which is the honest picture of an either/or delocalisation.
+
+    The second value counts how much of the sextet comes from such a donation.
+    It is what tells the depiction layer that the ring has only one arrangement
+    of alternating single and double bonds (IUPAC GR-6.3: furan and pyrrole),
+    so a delocalisation curve is not the preferred drawing.
     """
     pi_electrons = 0
+    lone_pair_electrons = 0
     for node in ring:
         element = elements.get(node, "")
         if element not in RING_ELEMENTS:
             return None
-        incident = adjacency.get(node, ())
+        incident = by_node.get(node, ())
         # An exocyclic multiple bond (C=O, C=CH2, ...) breaks the conjugation
         # of this ring.
         for key in incident:
@@ -479,6 +616,7 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders
             pi_electrons += 1
         elif element in LONE_PAIR_ELEMENTS and ring_count.get(node, 1) == 1:
             pi_electrons += 2
+            lone_pair_electrons += 2
         elif any(orders.get(key, 1) > 1 for key in incident):
             # A fusion atom whose double bond sits on the shared bond of the
             # neighbouring ring (a Clar structure): still one pi electron here.
@@ -488,18 +626,37 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders
             # orbital: the ring is not conjugated.
             return None
     if pi_electrons >= 2 and (pi_electrons - 2) % 4 == 0:
-        return pi_electrons
+        return pi_electrons, lone_pair_electrons
     return None
 
 
-def aromatic_rings(elements, edges, orders):
-    """Return ``[(ring_nodes, ring_edges)]`` for every aromatic ring.
+def _haptic_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, by_node, orders):
+    """6 pi electrons when *ring* is a coordinated pi ligand, else None.
 
-    ``orders`` is the mapping returned by :func:`bond_orders`; rings are judged
-    on the Kekulé structure it produced, so a fused system is described ring by
-    ring (naphthalene yields two aromatic six-rings) instead of relying on bond
-    length equalisation.
+    *adjacency* maps an atom to its neighbour atoms, *by_node* to its edge keys.
+
+    A metallocene cyclopentadienyl ring has no valence left for a Kekule double
+    bond: every carbon is already bonded to its two ring neighbours, its
+    substituent and the metal, so :func:`_ring_pi_electrons` finds an empty p
+    orbital and rejects the ring.  The ligand is nevertheless the 6 pi
+    aromatic Cp- anion (eta5-Cp, and likewise eta6-arene or eta7-tropylium),
+    so a ring whose atoms all coordinate the same haptic metal counts as six pi
+    electrons.  An exocyclic multiple bond still vetoes it, exactly as for a
+    Kekule ring, so a coordinated quinone stays non-aromatic.
     """
+    if _haptic_metal(ring, elements, adjacency) is None:
+        return None
+    for node in ring:
+        for key in by_node.get(node, ()):
+            if key in ring_edges or orders.get(key, 1) <= 1:
+                continue
+            if _other(key, node) not in ring_atoms:
+                return None
+    return 6
+
+
+def _aromatic_ring_details(elements, edges, orders):
+    """Perception of every aromatic ring, with its electron bookkeeping."""
     elements = _normalise_elements(elements)
     orders = {edge_key(*key): order for key, order in (orders or {}).items()}
     adjacency, edge_keys = _graph(elements, edges)
@@ -522,11 +679,38 @@ def aromatic_rings(elements, edges, orders):
             for key in by_node.get(node, ())
             if key[0] in ring and key[1] in ring
         )
-        if (
-            _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count)
-            is None
-        ):
-            continue
-        result.append((frozenset(ring), ring_edges))
-    result.sort(key=lambda item: min(repr(node) for node in item[0]))
+        counts = _ring_pi_electrons(
+            ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count
+        )
+        haptic_metal = None
+        if counts is None:
+            haptic = _haptic_pi_electrons(
+                ring, ring_atoms, elements, ring_edges, adjacency, by_node, orders
+            )
+            if haptic is None:
+                continue
+            counts = (haptic, 0)
+            haptic_metal = _haptic_metal(ring, elements, adjacency)
+
+        result.append(AromaticRing(frozenset(ring), ring_edges, counts[0], counts[1], haptic_metal))
+    result.sort(key=lambda ring: min(repr(node) for node in ring.nodes))
     return result
+
+
+def aromatic_rings(elements, edges, orders, detail=False):
+    """Return the aromatic rings, with their electron bookkeeping on request.
+
+    ``orders`` is the mapping returned by :func:`bond_orders`; rings are judged
+    on the Kekulé structure it produced, so a fused system is described ring by
+    ring (naphthalene yields two aromatic six-rings) instead of relying on bond
+    length equalisation.
+
+    With ``detail=False`` the result is ``[(ring_nodes, ring_edges)]``; with
+    ``detail=True`` it is a list of :class:`AromaticRing` records, which also
+    carry the lone-pair share of the sextet and the haptic metal of a pi
+    ligand.
+    """
+    rings = _aromatic_ring_details(elements, edges, orders)
+    if detail:
+        return rings
+    return [(ring.nodes, ring.edges) for ring in rings]

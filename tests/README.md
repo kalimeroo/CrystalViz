@@ -3,8 +3,9 @@
 Headless Blender checks for the add-on. They import `CrystalViz`, register it,
 and drive the `cgn.*` operators the same way the UI does.
 
-There is no CI: run them locally against the Blender version you ship for
-(5.2+ / CPython 3.13).
+CI runs only the pure-Python quality gates (ruff, formatting, `compileall`,
+bandit); there is no headless Blender in CI. Run these suites locally against
+the Blender version you ship for (5.2+ / CPython 3.13).
 
 ## Layout
 
@@ -13,12 +14,12 @@ tests/
   _env.py                      shared bootstrap (gemmi + the add-on parent on sys.path)
   run_all.ps1                  runs every test_*.py and prints a PASS/FAIL summary
   test_*.py                    the suites run by default
-  tools/                       development-time probes/benchmarks (not run automatically)
-  legacy_baked_polyhedra/      pre-GeoNodes baked-polyhedra tests, superseded by test_gn_polyhedra*.py
-  external_cctbx/              tests for the separate cctbx_geometry_nodes_addon (not CrystalViz)
   _logs/                       per-test logs written by run_all.ps1 (gitignored)
   _gemmi/                      gemmi unpacked from wheels/ on first run (gitignored)
 ```
+
+Local-only groups (`tools/`, `legacy_baked_polyhedra/`, `external_cctbx/`) are
+gitignored and not published; see [Archived groups](#archived-groups).
 
 ## Running
 
@@ -32,10 +33,6 @@ pwsh tests/run_all.ps1 -Only "*polyhedra*"
 # a single test, directly
 & "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" `
   --background --factory-startup --python tests\test_gn_polyhedra.py
-
-# archived groups, run by path
-& "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" `
-  --background --factory-startup --python tests\legacy_baked_polyhedra\test_polyhedra_fixes.py
 ```
 
 `run_all.ps1` accepts `-Blender <path>` (or set `$env:BLENDER`) and
@@ -189,6 +186,8 @@ right sequence, so a `-Only` filter must select all three, e.g.
 `-Only "*persist*"`.
 
 ## Archived groups
+
+Local-only material: gitignored, kept on the author's disk, not published.
 
 - `legacy_baked_polyhedra/` — exercises the pre-GeoNodes baked design
   (`cgn_role == "polyhedron_instance"` empties, prototype collections,

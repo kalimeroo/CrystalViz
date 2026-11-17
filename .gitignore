@@ -12,3 +12,15 @@ wheels/*.whl
 # wheels/ on the first test run.
 tests/_logs/
 tests/_gemmi/
+
+# Local development material, kept on disk but not published: AI-agent
+# configuration, scratch benchmarks/probes, superseded test groups and the
+# separate cctbx add-on's tests.
+.opencode/
+opencode.json
+tests/tools/
+tests/external_cctbx/
+tests/legacy_baked_polyhedra/
+
+# Windows Explorer folder metadata
+desktop.ini

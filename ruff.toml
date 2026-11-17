@@ -4,6 +4,7 @@ target-version = "py313"
 extend-exclude = [
     "dist",
     "wheels",
+    # Local-only material (gitignored, not published).
     ".opencode",
     "tests/external_cctbx",
     "tests/legacy_baked_polyhedra",

@@ -1,12 +1,12 @@
 # AGENTS.md — CrystalViz
 
-Blender **Extension** `crystalviz`. Imports CIF (crystallographic) files via **gemmi** (bundled, in-process — no subprocess, no pip for users) and renders atoms/bonds with Geometry Nodes. MPL-2.0.
+Blender **Extension** `crystalviz`. Imports CIF (crystallographic) files via **gemmi** (bundled, in-process — no subprocess, no pip for users) and renders atoms/bonds with Geometry Nodes. GPL-3.0-or-later (the bundled gemmi stays MPL-2.0).
 
 ## What this repo is
 
 - Targets **Blender 5.2+**, which ships **CPython 3.13** — that's why `build_extension.py` hardcodes `_PY_TAG = "cp313"` and only downloads cp313 wheels.
 - `bl_info` in `__init__.py` is legacy; `blender_manifest.toml` governs extension builds. Keep both in sync on version bumps.
-- `tests/` holds the headless Blender suites (`pwsh tests/run_all.ps1`); no CI, no lint/format config. Verification is still manual (below). Never claim a feature works without it.
+- `tests/` holds the headless Blender suites (`pwsh tests/run_all.ps1`). CI (`.github/workflows/python-quality.yml`) runs ruff, formatting, `compileall` and bandit only — there is no headless Blender in CI, so functional verification is still manual (below). Never claim a feature works without it.
 - Never trust a CIF to be complete: validate input and fail with a meaningful message; don't reinvent math gemmi already provides.
 
 ## Build & release
@@ -57,5 +57,5 @@ Worker speaks **Ångström**; Blender converts with `_DISPLAY_SCALE = 0.1` (1 Bl
 
 - Syntax: `python -m py_compile __init__.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
 - Worker standalone: `pip install gemmi` and run/ad-hoc-test `gemmi_worker.load_structure(...)` in a normal Python — no Blender needed.
-- Example CIFs live in **`CIF\`** (directory name has TWO spaces — agents always miss this): `test.cif` (basics), `Brookite.cif`, `aromatic.cif` (aromatic ring logic), `Ca_autored.cif` (~1.8 MB — use for performance/atom-count limits like `_MAX_FILL_ATOMS = 200000`).
+- Example CIFs live in **`CIF/`**: `test.cif` (basics), `Brookite.cif`, `aromatic.cif` (aromatic ring logic), `Ca_autored.cif` (~1.8 MB — use for performance/atom-count limits like `_MAX_FILL_ATOMS = 200000`).
 - In Blender: install the built zip from `dist/`, check Add-on Preferences shows the bundled gemmi version, import, Fill/Grow, toggle all four models (`BALL_STICK` / `ELLIPSOID` / `SPACE_FILLING` / `WIRE_STICKS` — note the ORTEP mode's `cgn_model` enum value is `ELLIPSOID`, not "ORTEP").

@@ -1,0 +1,8 @@
+# Store text with LF in the repository so every platform checks out the same
+# bytes.  PowerShell scripts keep CRLF so they run under Windows PowerShell.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+
+# Binary artifacts (never diffed, never converted).
+*.zip binary
+*.whl binary

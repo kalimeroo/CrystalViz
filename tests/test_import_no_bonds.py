@@ -221,7 +221,7 @@ check(
 
 # ---- F: chemdraw import creates no bonds and no aromatic tori -------------
 print("\n=== F: chemdraw import stays bond-free ===")
-root = import_cif("aromatic.cif", chemdraw=True)
+root = import_cif("multiple_bonds.cif", chemdraw=True)
 check(
     "F: chemdraw import creates no bond objects",
     not bond_objects(root),

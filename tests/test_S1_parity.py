@@ -126,7 +126,7 @@ CIFS = [
         ],
     ),
     (
-        "aromatic.cif",
+        "multiple_bonds.cif",
         [
             {
                 "element_a": "C",
@@ -159,21 +159,21 @@ CIFS = [
         ],
     ),
     (
-        "test.cif",
+        "Chalco.cif",
         [
             {
-                "element_a": "Ti",
-                "element_b": "O",
-                "enabled": True,
-                "min_distance": 1.4,
-                "max_distance": 2.4,
-            },
-            {
-                "element_a": "O",
-                "element_b": "O",
+                "element_a": "Cu",
+                "element_b": "S",
                 "enabled": True,
                 "min_distance": 2.0,
-                "max_distance": 3.2,
+                "max_distance": 2.8,
+            },
+            {
+                "element_a": "Fe",
+                "element_b": "S",
+                "enabled": True,
+                "min_distance": 2.0,
+                "max_distance": 2.8,
             },
         ],
     ),

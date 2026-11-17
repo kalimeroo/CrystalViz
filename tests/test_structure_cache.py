@@ -154,8 +154,8 @@ root["cgn_sites"] = saved_sites
 CrystalViz._invalidate_structure_cache()
 
 # ---- rough speed check on a larger CIF ----
-print("\n=== speed (test.cif) ===")
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "test.cif"))
+print("\n=== speed (multiple_bonds.cif) ===")
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "multiple_bonds.cif"))
 big = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 n = len(CrystalViz._structure_tables(big)[1]) // 4

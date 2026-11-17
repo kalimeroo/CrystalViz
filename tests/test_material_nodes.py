@@ -131,7 +131,7 @@ for material in list(bpy.data.materials):
     if material.name.startswith("CGN_Mat_"):
         bpy.data.materials.remove(material)
 
-bpy.ops.cgn.import_cif(filepath=_env.cif("diamond.cif"))
+bpy.ops.cgn.import_cif(filepath=_env.cif("Diamond.cif"))
 carbon = bpy.data.materials.get("CGN_Mat_C")
 check("import created the carbon material", carbon is not None)
 check("imported material has a node tree", carbon is not None and carbon.node_tree is not None)

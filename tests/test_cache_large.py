@@ -1,7 +1,7 @@
-"""Measure the structure-cache win on the large Ca_autored.cif.
+"""Measure the structure-cache win on the large Nano.cif.
 
 Run:
-  blender --background --factory-startup --python test_cache_ca.py
+  blender --background --factory-startup --python test_cache_large.py
 """
 
 import sys
@@ -15,7 +15,7 @@ import CrystalViz
 
 CrystalViz.register()
 
-CIF = _env.cif("Ca_autored.cif")
+CIF = _env.cif("Nano.cif")
 scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 

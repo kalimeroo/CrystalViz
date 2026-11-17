@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (0, 9, 9),
+    "version": (1, 0, 0),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -200,15 +200,17 @@ _DEFAULT_VDW_RADIUS = 1.5
 _DEFAULT_BOND_RADIUS = _BOND_VDW_FACTOR * _DEFAULT_VDW_RADIUS * _DISPLAY_SCALE
 # Default connectivity window, as a fraction of (r_a + r_b) with the covalent
 # radii of the two elements.
-# The lower bound rejects collapsed contacts such as the 1.18 A K-K pair in
-# Ca_autored.cif.
+# The lower bound rejects collapsed contacts (for example a symmetry-generated
+# K-K pair at ~1.2 A) that would otherwise be drawn as bonds.
 _BOND_MIN_SCALE = 0.6
 _BOND_MAX_SCALE = 1.2
 _BOND_MAX_SLACK = 0.4
-# Cap applied to same-sign metal-metal pairs (for example Ti(IV)-Ti(IV) in an
-# oxide, or Cu(I)-Cu(I) in Cu2O): only contacts shorter than this fraction of
-# the covalent radius sum survive, which keeps genuine cluster bonds
-# (Rh2(OAc)4, Re2Cl8(2-)) while dropping cation-cation contacts.
+# Cap applied to metal-metal pairs (for example Ti(IV)-Ti(IV) in an oxide, or
+# Cu(I)-Cu(I) in Cu2O): only contacts shorter than this fraction of the
+# covalent radius sum survive, which keeps genuine cluster bonds
+# (Rh2(OAc)4, Re2Cl8(2-)) while dropping cation-cation contacts.  Applies to
+# compounds whether or not the CIF declares the oxidation numbers; an elemental
+# metal keeps the full window.
 _BOND_METAL_CAP_SCALE = 0.85
 # Hard ceiling for a connectivity window (A).  Anything wider than this is not
 # a chemical bond; it only multiplies the periodic image bank, so the UI caps
@@ -1973,7 +1975,7 @@ def _structure_tables(root):
     The parsed tables are cached per (structure id, revision).  Delete, grow,
     fill and the polyhedron paths call this several times per operation, and
     re-running ``json.loads`` over the full instance table each time dominated
-    the cost on large CIFs (e.g. ``Ca_autored.cif``).  The returned lists are
+    the cost on large CIFs (e.g. ``Nano.cif``).  The returned lists are
     shared with the cache: callers must not mutate them (copy first if needed).
     """
     global _STRUCTURE_CACHE
@@ -3890,7 +3892,9 @@ def _pair_key(element_a, element_b):
     return tuple(sorted((str(element_a).upper(), str(element_b).upper())))
 
 
-def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=None):
+def _default_pair_window(
+    element_a, element_b, radii, charges, metals, ionic=None, elemental_metal=False
+):
     """Default (min, max) connectivity distance for one element pair.
 
     *radii* maps uppercase element symbols to covalent radii, *charges* holds the
@@ -3901,10 +3905,13 @@ def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=Non
     multiples (Diamond's model): Ag(I)-O in Ag2Cr2O7 needs 2.55 A as the
     reference, and the covalent sum (2.11 A) misses half the coordination
     sphere.  Every other pair keeps the covalent radii, with the upper bound
-    capped at ``r_a + r_b + 0.4`` so it never exceeds the old additive default,
-    and a metal-metal pair whose two elements carry same-sign non-zero formal
-    charges is capped at ``0.85 * (r_a + r_b)`` so cation-cation contacts in
-    ionic frameworks are not drawn.
+    capped at ``r_a + r_b + 0.4`` so it never exceeds the old additive default.
+    Metal-metal pairs are capped at ``0.85 * (r_a + r_b)`` so cation-cation
+    contacts are not drawn: this applies to same-sign non-zero formal charges
+    and, because most inorganic COD entries omit the oxidation numbers, to any
+    metal-metal pair in a compound.  Only an elemental metal
+    (*elemental_metal*) keeps the wider window, where the close-packed
+    contacts are the bonds.
     """
     ionic = ionic or {}
     charge_a = float(charges.get(element_a, 0.0))
@@ -3921,7 +3928,8 @@ def _default_pair_window(element_a, element_b, radii, charges, metals, ionic=Non
     reference = radii[element_a] + radii[element_b]
     maximum = min(_BOND_MAX_SCALE * reference, reference + _BOND_MAX_SLACK)
     if element_a in metals and element_b in metals:
-        if charge_a and charge_b and (charge_a > 0.0) == (charge_b > 0.0):
+        same_sign_charged = charge_a and charge_b and (charge_a > 0.0) == (charge_b > 0.0)
+        if same_sign_charged or not elemental_metal:
             maximum = _BOND_METAL_CAP_SCALE * reference
     minimum = min(_BOND_MIN_SCALE * reference, maximum)
     return minimum, max(minimum, min(_MAX_BOND_WINDOW, maximum))
@@ -5206,6 +5214,7 @@ def _import_result(scene, result, cif_path):
             str(key).upper(): float(value)
             for key, value in (result.get("ionic_radii") or {}).items()
         }
+        elemental_metal = len(elements) == 1 and elements[0] in metals
         for index, element_a in enumerate(elements):
             for element_b in elements[index:]:
                 item = scene.cgn_connectivity_pairs.add()
@@ -5213,7 +5222,7 @@ def _import_result(scene, result, cif_path):
                 item.element_b = element_b
                 item.enabled = True
                 minimum, maximum = _default_pair_window(
-                    element_a, element_b, radii, charges, metals, ionic
+                    element_a, element_b, radii, charges, metals, ionic, elemental_metal
                 )
                 item.min_distance = minimum
                 item.max_distance = maximum
@@ -5821,6 +5830,9 @@ def _default_connectivity_pairs(scene, atoms, root=None):
     for atom in source_atoms:
         element = str(atom.get("element", "X")).upper()
         radii[element] = float(atom.get("covalent_radius", 0.75))
+    # A one-element structure that is a metal is an elemental metal: its
+    # close-packed contacts are bonds and must keep the wide window.
+    elemental_metal = len(elements) == 1 and elements[0] in metals
     for index, element_a in enumerate(elements):
         for element_b in elements[index:]:
             item = scene.cgn_connectivity_pairs.add()
@@ -5828,7 +5840,7 @@ def _default_connectivity_pairs(scene, atoms, root=None):
             item.element_b = element_b
             item.enabled = True
             minimum, maximum = _default_pair_window(
-                element_a, element_b, radii, charges, metals, ionic
+                element_a, element_b, radii, charges, metals, ionic, elemental_metal
             )
             item.min_distance = minimum
             item.max_distance = maximum
@@ -6635,10 +6647,10 @@ class CGN_OT_grow_further(Operator):
             _update_growth_selection(root, [], [])
             # A grow right after a fill displays atoms only and must still bond
             # the atoms already on screen even when no shell could be added
-            # (small finite molecules like metal.cif / test.cif that do not
-            # pack again within the connectivity window). With nothing to
-            # preserve, build the full set; otherwise leave existing bonds
-            # untouched.
+            # (small finite molecules like Ferrocene.cif / multiple_bonds.cif
+            # that do not pack again within the connectivity window). With
+            # nothing to preserve, build the full set; otherwise leave existing
+            # bonds untouched.
             if _current_model(context.scene) != "SPACE_FILLING":
                 if not any(obj.get("cgn_role") == "bonds" for obj in root.all_objects):
                     atoms = _materialize_atoms(sites, cell_matrix, instances, initial_count)

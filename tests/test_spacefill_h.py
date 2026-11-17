@@ -18,7 +18,7 @@ CrystalViz.register()
 CIF = _env.CIF_DIR
 scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "multiple_bonds.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 

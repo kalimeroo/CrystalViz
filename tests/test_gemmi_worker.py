@@ -16,13 +16,11 @@ import gemmi_worker as gw
 
 EXAMPLES = _env.CIF_DIR
 CIFS = {
-    "test.cif": (108, 54),
-    "aromatic.cif": (70, 35),
+    "multiple_bonds.cif": (172, 43),
+    "Ferrocene.cif": (180, 45),
     "Brookite.cif": (24, 3),
-    # 514 P1 sites = 59x8 + 10x4 + 1x2, verified against an independent gemmi
-    # symmetry expansion of the current CIF/ (an older copy of this
-    # auto-redetermined file expanded to 510).
-    "Ca_autored.cif": (514, 70),
+    # 2048 P1 sites = the 256-atom ASU expanded in C 1 2/c 1.
+    "Nano.cif": (2048, 256),
 }
 
 
@@ -44,12 +42,12 @@ class TestLoadStructure(unittest.TestCase):
     def test_legacy_error_message(self):
         # structures without cgn_sites raise _LEGACY_STRUCTURE_ERROR on the
         # Blender side; here we just ensure load_structure returns sites.
-        result = gw.load_structure(os.path.join(EXAMPLES, "test.cif"))
+        result = gw.load_structure(os.path.join(EXAMPLES, "multiple_bonds.cif"))
         self.assertTrue(result["sites"])
 
 
 class TestGrowConnectivityShell(unittest.TestCase):
-    def _setup(self, name="test.cif"):
+    def _setup(self, name="multiple_bonds.cif"):
         result = gw.load_structure(os.path.join(EXAMPLES, name))
         sites = [{"element": s["element"], "frac": s["frac"]} for s in result["sites"]]
         cov = {s["element"]: s["covalent_radius"] for s in result["sites"]}
@@ -88,10 +86,10 @@ class TestGrowConnectivityShell(unittest.TestCase):
         second_set = to_quads(r2.get("new_instances", []))
         self.assertTrue(first_set.isdisjoint(second_set))
 
-    def test_ca_autored_performance(self):
+    def test_large_structure_performance(self):
         import time
 
-        result, sites, instances, pairs = self._setup("Ca_autored.cif")
+        result, sites, instances, pairs = self._setup("Nano.cif")
         t0 = time.perf_counter()
         gw.grow_connectivity_shell(result["unit_cell"], sites, instances, instances, pairs)
         self.assertLess(time.perf_counter() - t0, 5.0)
@@ -101,11 +99,11 @@ class TestADPConversion(unittest.TestCase):
     def test_site_u_cart_matches_cctbx_chain(self):
         # gemmi voigt order is (U11,U22,U33,U23,U13,U12); verify the helper
         # runs and returns 6 floats for an anisotropic site.
-        result = gw.load_structure(os.path.join(EXAMPLES, "test.cif"))
+        result = gw.load_structure(os.path.join(EXAMPLES, "multiple_bonds.cif"))
         unit_cell = gw._UnitCell(result["unit_cell"])
         import gemmi
 
-        doc = gemmi.cif.read(os.path.join(EXAMPLES, "test.cif"))
+        doc = gemmi.cif.read(os.path.join(EXAMPLES, "multiple_bonds.cif"))
         st = gemmi.make_small_structure_from_block(doc.sole_block())
         site = next(s for s in st.sites if s.aniso.u11 != 0.0)
         tensor = gw._site_u_cart(site, unit_cell)

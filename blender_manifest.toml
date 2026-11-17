@@ -1,12 +1,14 @@
 schema_version = "1.0.0"
 
 id = "crystalviz"
-version = "0.9.9"
+version = "1.0.0"
 name = "CrystalViz"
 tagline = "Import CIF atoms and render with Geometry Nodes"
 maintainer = "Erwann Jeanneau"
 type = "add-on"
-license = ["SPDX:GPL-3.0-or-later"]
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
 
 tags = ["Import-Export", "Geometry Nodes", "Material"]
 

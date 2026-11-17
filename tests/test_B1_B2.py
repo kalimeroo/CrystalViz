@@ -134,7 +134,7 @@ if crash is None:
 # ---- B2: snapshot->mutate->rollback contract used by the delete operator ----
 print("\n=== B2: delete snapshot & rollback contract ===")
 # Build a clean, predictable structure state.
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "multiple_bonds.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 base = CrystalViz._snapshot_structure_state(root, scene.cgn_connectivity_pairs)

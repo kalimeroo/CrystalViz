@@ -41,7 +41,7 @@ def run_operator(operator, **kwargs):
 
 
 scene = bpy.context.scene
-bpy.ops.cgn.import_cif(filepath=_env.cif("diamond.cif"))
+bpy.ops.cgn.import_cif(filepath=_env.cif("Diamond.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 check("setup: structure imported and linked", root is not None)
 check("linked structure is found", CrystalViz._active_root(scene) is root)

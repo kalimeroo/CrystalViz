@@ -73,8 +73,8 @@ for a first run.
 `pwsh tests/run_all.ps1` → 49/49 pass.
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
-  atoms even when grow adds no shell — small finite molecules (metal.cif,
-  test.cif) do not pack again within the connectivity window, and grow used to
+  atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,
+  multiple_bonds.cif) do not pack again within the connectivity window, and grow used to
   return early at "no additional atoms matched" without calling the bond
   builder. It now builds the full set when starting bond-less after a fill; a
   second atom-less grow preserves those bonds.
@@ -82,13 +82,16 @@ for a first run.
 - `test_reset_default_pairs.py` pins that **Reset Default** restores the exact
   import-time connectivity windows. The reset recomputed defaults from covalent
   radii alone, but import derives them from the CIF's formal charges plus Shannon
-  ionic radii for ionically bonded pairs (e.g. Ti-O in Brookite: (1.2, 2.41) vs
-  the covalent (1.36, 2.66)). The import now persists that chemistry on the
+  ionic radii for ionically bonded pairs (e.g. Cu-S in Chalco: (1.54, 3.08) vs
+  the covalent (1.42, 2.77)). The import now persists that chemistry on the
   structure root and the reset reads it, with a covalent fallback for roots that
   predate it. It also pins that reset keeps every element pair after atoms are
   deleted (only Ag left in Ag2Cr2O7 — the list is rebuilt from the persistent P1
   site table, not the displayed atoms), and that **Update Bonds** rebuilds the
-  displayed atoms' bonds from the current windows.
+  displayed atoms' bonds from the current windows. Finally it pins the
+  metal-metal cap: a compound without declared oxidation numbers (Brookite)
+  caps Ti-Ti at 0.85 x the covalent sum, while elemental copper keeps the wide
+  Cu-Cu window.
 
 - `test_bond_clear_on_rebuild.py` pins that a full `_bond_objects` rebuild
   (`append_only=False`) drops the previous bond set when nothing can be
@@ -163,9 +166,10 @@ for a first run.
   images of one atom fall inside the window, the pool-scan fallback, and the
   memo/window-change contract the panel draw relies on.
 
-- `test_optionb_multi.py` used to run on `aromatic.cif`, whose imported ASU is
-  already the complete molecule, so no connectivity pair could grow atoms and
-  the preservation assertions were vacuous. It now runs on `Ag2Cr2O7.cif`
+- `test_optionb_multi.py` used to run on an earlier aromatic fixture whose
+  imported ASU was already the complete molecule, so no connectivity pair could
+  grow atoms and the preservation assertions were vacuous. It now runs on
+  `Ag2Cr2O7.cif`
   (11 → 20 atoms, pairs `AG|O` / `CR|O`), so both Option-B checks are real.
 - `test_grow_duplicate_sites.py` builds a synthetic P1 table with same-element
   duplicate sites 2e-6 Å apart (above the 1e-12 self filter, below the 1e-5

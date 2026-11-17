@@ -294,19 +294,26 @@ if ligand_atom is not None:
         not any(on_any_point(segment, current) for segment in bond_segments(root)),
         f"centres={len(current)}",
     )
-    dropped = all(
-        affected_centre
-        not in [int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]"))]
+    # Deleting an atom renumbers every atom after it, so the affected centre's
+    # old index is stale.  Resolve it again through its instance quad (the
+    # quadruple is stable across the deletion).
+    centre_quad = quad_of[affected_centre]
+    new_quad_of = {quad_of_atom(root, index): index for index in range(len(new_atoms))}
+    new_centre = new_quad_of.get(centre_quad)
+    dropped = new_centre is not None and all(
+        new_centre not in [int(index) for index in json.loads(obj.get("cgn_poly_centers", "[]"))]
         for obj in root.objects
         if obj.get("cgn_role") == "polyhedron"
     )
     # The affected centre's polyhedron was dropped, so its spokes are visible.
-    centre_position = centre_points(new_atoms, [affected_centre])[0]
-    centre_spokes = [
-        segment
-        for segment in bond_segments(root, "O|TI")
-        if near(segment[0], centre_position) or near(segment[1], centre_position)
-    ]
+    centre_spokes = []
+    if new_centre is not None:
+        centre_position = centre_points(new_atoms, [new_centre])[0]
+        centre_spokes = [
+            segment
+            for segment in bond_segments(root, "O|TI")
+            if near(segment[0], centre_position) or near(segment[1], centre_position)
+        ]
     check(
         "F: the dropped polyhedron's spokes come back",
         dropped and bool(centre_spokes),

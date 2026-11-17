@@ -26,7 +26,7 @@ import gemmi
 import gemmi_worker as gw
 
 CIF = _env.CIF_DIR
-CIFS = ["Brookite.cif", "aromatic.cif", "test.cif"]
+CIFS = ["Brookite.cif", "multiple_bonds.cif"]
 
 FAILURES = []
 

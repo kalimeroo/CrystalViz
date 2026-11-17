@@ -92,7 +92,7 @@ def reference_ligands(center_cart, element, pool, cell_matrix, windows):
 
 
 scene = bpy.context.scene
-CIFS = ["Brookite.cif", "aromatic.cif", "test.cif", "Ag2Cr2O7.cif"]
+CIFS = ["Brookite.cif", "multiple_bonds.cif", "Ag2Cr2O7.cif"]
 
 for cif in CIFS:
     print(f"\n=== {cif}: search matches the brute-force reference ===")

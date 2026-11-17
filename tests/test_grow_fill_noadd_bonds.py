@@ -1,11 +1,11 @@
 """Regression: Fill ASU → Grow must bond the initial atoms even when no shell is
 added.
 
-For small finite molecules (metal.cif, test.cif) growing after a Fill ASU adds no
-new atoms — they do not pack again within the connectivity window — and the grow
-operator used to return early at "no additional atoms matched" without ever
-calling the bond builder.  The structure stayed bond-less even though
-``_bond_objects`` can bond those ASU atoms.
+For small finite molecules (Ferrocene.cif, multiple_bonds.cif) growing after a
+Fill ASU adds no new atoms — they do not pack again within the connectivity
+window — and the grow operator used to return early at "no additional atoms
+matched" without ever calling the bond builder.  The structure stayed bond-less
+even though ``_bond_objects`` can bond those ASU atoms.
 
 The grow path now builds the full bond set when it starts from a bond-less
 structure (right after a fill/import) even when nothing was added.  A later grow
@@ -99,11 +99,11 @@ def scenario(name, label):
     return root
 
 
-# ---- A: metal.cif (organometallic, Mo/Ni hints + metals persisted) ----------
-scenario("metal.cif", "A")
+# ---- A: Ferrocene.cif (organometallic, Fe persisted as a metal) ------------
+scenario("Ferrocene.cif", "A")
 
-# ---- B: test.cif (organic molecule) ----------------------------------------
-scenario("test.cif", "B")
+# ---- B: multiple_bonds.cif (organic molecule) ------------------------------
+scenario("multiple_bonds.cif", "B")
 
 # ---- C: a molecule whose grow DOES add atoms still works (sanity) ----------
 print("\n=== C: a filling structure still gains atoms and bonds (sanity) ===")

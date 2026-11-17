@@ -163,7 +163,7 @@ check(
 
 # ---- 3: chemdraw aromatic tori are cleared as well ------------------------
 print("\n=== chemdraw aromatic tori are cleared ===")
-root = import_fresh("aromatic.cif", chemdraw=True)
+root = import_fresh("multiple_bonds.cif", chemdraw=True)
 check(
     "aromatic control: import produced bond objects",
     len(bond_objects(root)) > 0,

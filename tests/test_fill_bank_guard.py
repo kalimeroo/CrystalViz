@@ -72,16 +72,16 @@ check("extension without a limit still works", len(full) // 4 == 8, f"{len(full)
 
 # ---- 3. real fills ---------------------------------------------------
 scene = bpy.context.scene
-for cif, _repeats, expect_cell in (
-    ("diamond.cif", (1, 1, 1), 18),
-    ("test.cif", (1, 1, 1), None),
-    ("aromatic.cif", (2, 2, 2), None),
+for cif, repeats, expect_cell in (
+    ("Diamond.cif", (1, 1, 1), 32),
+    ("multiple_bonds.cif", (1, 1, 1), None),
+    ("Ferrocene.cif", (2, 2, 2), None),
 ):
     path = os.path.join(_env.CIF_DIR, cif)
     bpy.ops.cgn.import_cif(filepath=path)
     root = bpy.data.collections.get(scene.cgn_active_structure)
     CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
-    if cif == "aromatic.cif":
+    if repeats != (1, 1, 1):
         result = bpy.ops.cgn.fill_pack(repeat_a=2, repeat_b=2, repeat_c=2)
     else:
         result = bpy.ops.cgn.fill_cell()

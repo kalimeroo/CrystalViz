@@ -23,7 +23,7 @@ import CrystalViz
 
 CrystalViz.register()
 
-CIF = _env.cif("aromatic.cif")
+CIF = _env.cif("multiple_bonds.cif")
 
 FAILURES = []
 

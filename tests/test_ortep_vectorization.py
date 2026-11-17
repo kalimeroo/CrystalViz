@@ -182,11 +182,13 @@ print("\n=== ellipsoid attribute parity ===")
 scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 scene.cgn_hydrogen_scale = 1.6
-bpy.ops.cgn.import_cif(filepath=f"{CIF}\\test.cif")
+bpy.ops.cgn.import_cif(filepath=f"{CIF}\\multiple_bonds.cif")
 root = bpy.data.collections.get(scene.cgn_active_structure)
 real_atoms = CrystalViz._structure_atoms(root)
 with_adp = [atom for atom in real_atoms if atom.get("u_cart")]
-check("test.cif provides ADP atoms", len(with_adp) > 0, f"{len(with_adp)}/{len(real_atoms)}")
+check(
+    "multiple_bonds.cif provides ADP atoms", len(with_adp) > 0, f"{len(with_adp)}/{len(real_atoms)}"
+)
 
 synthetic = [
     {"element": "C", "u_cart": [0.011, 0.021, 0.015, 0.001, -0.002, 0.003], "vdw_radius": 1.7},

@@ -24,7 +24,7 @@ scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 scene.cgn_chemdraw = True
 
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "multiple_bonds.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 
 # Ensure at least one enabled, generous connectivity pair so grow produces atoms.
@@ -151,7 +151,7 @@ check("grow: polyhedra present unchanged", b_after["poly_objects"] == b_before["
 # ---------------- FILL test ----------------
 print("\n=== FILL rollback test ===")
 # reset scene to a fresh import so fill produces more atoms
-bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "aromatic.cif"))
+bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "multiple_bonds.cif"))
 root = bpy.data.collections.get(scene.cgn_active_structure)
 bpy.context.view_layer.update()
 f_before = baseline()

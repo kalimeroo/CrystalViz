@@ -4,9 +4,9 @@ After the user edits a pair's minimum/maximum distance, clicking Reset Default
 (``CGN_OT_rebuild_connectivity``) repopulates ``scene.cgn_connectivity_pairs``.
 The reset recomputed the defaults from covalent radii alone, but import computes
 them from the CIF's declared formal charges plus Shannon ionic radii for ionic
-cation-anion pairs (e.g. Ti-O in Brookite).  So reset produced values that
-differed from the initial ones.  This pins that reset now reproduces the exact
-import-time windows.
+cation-anion pairs (e.g. Cu-S and Fe-S in Chalco.cif).  So reset produced values
+that differed from the initial ones.  This pins that reset now reproduces the
+exact import-time windows.
 
 Run headless:
   blender --background --factory-startup --python test_reset_default_pairs.py
@@ -43,16 +43,20 @@ def pair_windows():
     }
 
 
-def import_brookite():
+def import_structure(name):
     scene = bpy.context.scene
     CrystalViz._cancel_all_debounce()
     scene.cgn_model = "BALL_STICK"
     scene.cgn_chemdraw = False
     scene.cgn_connectivity_pairs.clear()
-    bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, "Brookite.cif"))
+    bpy.ops.cgn.import_cif(filepath=os.path.join(CIF, name))
     scene = bpy.context.scene
     bpy.context.view_layer.update()
     return bpy.data.collections.get(scene.cgn_active_structure)
+
+
+def import_brookite():
+    return import_structure("Brookite.cif")
 
 
 def reset_default():
@@ -65,21 +69,21 @@ def close(a, b, eps=1e-3):
 
 # ---- A: Reset Default restores the import-time windows ----------------------
 print("\n=== A: reset restores the import-time windows ===")
-root = import_brookite()
+root = import_structure("Chalco.cif")
 import_windows = pair_windows()
 check(
-    "A control: Brookite has an ionic Ti-O pair",
-    ("O", "TI") in import_windows,
+    "A control: Chalco has ionic Cu-S and Fe-S pairs",
+    ("CU", "S") in import_windows and ("FE", "S") in import_windows,
     f"pairs={sorted(import_windows)}",
 )
 print("A: import windows:", {k: tuple(round(v, 2) for v in w) for k, w in import_windows.items()})
 
-# The user edits the windows (e.g. grows the Ti-O range).
+# The user edits the windows (e.g. grows the Cu-S range).
 for pair in bpy.context.scene.cgn_connectivity_pairs:
-    if tuple(sorted((pair.element_a.upper(), pair.element_b.upper()))) == ("O", "TI"):
+    if tuple(sorted((pair.element_a.upper(), pair.element_b.upper()))) == ("CU", "S"):
         pair.min_distance = 0.5
         pair.max_distance = 4.0
-    elif tuple(sorted((pair.element_a.upper(), pair.element_b.upper()))) == ("O", "O"):
+    elif tuple(sorted((pair.element_a.upper(), pair.element_b.upper()))) == ("S", "S"):
         pair.min_distance = 0.1
         pair.max_distance = 1.0
 bpy.context.view_layer.update()
@@ -130,20 +134,20 @@ for key, (low, high) in expected.items():
 
 # The whole point: the ionic default disagrees with the covalent-only default,
 # so the old (chemistry-less) reset was wrong for this structure.
-covalent = CrystalViz._default_pair_window("TI", "O", radii, {}, set(), {})
+covalent = CrystalViz._default_pair_window("CU", "S", radii, {}, set(), {})
 check(
-    "B: ionic differs from covalent for Ti-O (the bug's root)",
+    "B: ionic differs from covalent for Cu-S (the bug's root)",
     not (
-        close(covalent[0], expected[("O", "TI")][0])
-        and close(covalent[1], expected[("O", "TI")][1])
+        close(covalent[0], expected[("CU", "S")][0])
+        and close(covalent[1], expected[("CU", "S")][1])
     ),
     f"covalent={tuple(round(v, 2) for v in covalent)} "
-    f"ionic={tuple(round(v, 2) for v in expected[('O', 'TI')])}",
+    f"ionic={tuple(round(v, 2) for v in expected[('CU', 'S')])}",
 )
 
 # ---- C: a root without persisted chemistry falls back to covalent -----------
 print("\n=== C: a chemistry-less root stays covalent ===")
-bare = import_brookite()
+bare = import_structure("Chalco.cif")
 for prop in ("cgn_atom_charges", "cgn_ionic_radii", "cgn_metal_elements"):
     if prop in bare:
         del bare[prop]
@@ -243,6 +247,52 @@ check(
     "E: disabling every pair then updating clears the bonds",
     bond_object_count(root_e) == 0,
     f"{bond_object_count(root_e)}",
+)
+
+# ---- F: metal-metal pairs are capped in compounds, not in elemental metals --
+# COD Brookite declares no oxidation numbers, so nothing else would cap Ti-Ti:
+# the plain covalent window (1.2 x sum, +0.4 slack) reaches 3.6 A and bonds
+# every Ti to its edge-sharing neighbours, turning the TiO6 polyhedra into
+# 11-vertex hulls.  Elemental copper must keep the wide window, because there
+# the close-packed Cu-Cu contacts are the bonds.
+print("\n=== F: metal-metal cap in compounds ===")
+
+
+def radii_of(root):
+    return {
+        str(atom.get("element", "X")).upper(): float(atom.get("covalent_radius", 0.75))
+        for atom in CrystalViz._structure_atoms(root)
+    }
+
+
+def plain_window(radii, element):
+    reference = radii[element] * 2.0
+    return min(CrystalViz._BOND_MAX_SCALE * reference, reference + CrystalViz._BOND_MAX_SLACK)
+
+
+root_f = import_brookite()
+windows_f = pair_windows()
+radii_f = radii_of(root_f)
+ti_ti = windows_f.get(("TI", "TI"))
+check(
+    "F: compound Ti-Ti is capped at 0.85 x the covalent sum",
+    ti_ti is not None and close(ti_ti[1], CrystalViz._BOND_METAL_CAP_SCALE * radii_f["TI"] * 2.0),
+    f"got={ti_ti} plain={plain_window(radii_f, 'TI'):.2f}",
+)
+check(
+    "F: the cap is tighter than the plain covalent window",
+    ti_ti is not None and ti_ti[1] < plain_window(radii_f, "TI"),
+    f"got={ti_ti}",
+)
+
+root_cu = import_structure("Cu.cif")
+windows_cu = pair_windows()
+radii_cu = radii_of(root_cu)
+cu_cu = windows_cu.get(("CU", "CU"))
+check(
+    "F: elemental copper keeps the wide Cu-Cu window",
+    cu_cu is not None and close(cu_cu[1], plain_window(radii_cu, "CU")),
+    f"got={cu_cu} expect={plain_window(radii_cu, 'CU'):.2f}",
 )
 
 CrystalViz.unregister()

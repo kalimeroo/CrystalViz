@@ -6,13 +6,16 @@ structure is the reference Kekulé one:
 
   * 7 C=C doubles (C1=C16, C2=C3, C4=C5, C6=C15, C8=C13, C9=C10, C11=C12)
   * 3 C=O doubles (C7=O2, C14=O1, C17=O3)
-  * 2 aromatic rings: the pyrrole-type five-ring N1/C1/C6/C15/C16 and the
-    benzene ring C8..C13.  The two rings bearing an exocyclic C=O are not
-    aromatic, and neither is the ring whose only "double bond" leaves it.
+  * 1 aromatic ring: the benzene ring C8..C13.  The two rings bearing an
+    exocyclic C=O are not aromatic, the ring whose only "double bond" leaves it
+    is not either, and the pyrrole-type five-ring N1/C1/C6/C15/C16 is not: it
+    shares its nitrogen with the six-ring N1/C1/C2/C3/C4/C5 (an annulated
+    indolizine), so N1 is a bridgehead and its lone pair belongs to neither
+    ring — both are depicted Kekulé.
 
-Five of the seven C=C bonds are ring bonds of an aromatic ring, so chemdraw
-draws them as plain ring strokes: only 2 C=C doubles and 3 C=O doubles survive
-as explicit multiple-bond objects.
+Three of the seven C=C bonds are ring bonds of the aromatic benzene ring, so
+chemdraw draws them as plain ring strokes: the other 4 C=C and the 3 C=O
+survive as explicit multiple-bond objects.
 
 Run:
   blender --background --factory-startup --python test_chemdraw_depiction.py
@@ -73,15 +76,15 @@ check(
 check("C-H bonds found", strokes(root, "C|H", 1) == 17, str(strokes(root, "C|H", 1)))
 check("C-N bonds found", strokes(root, "C|N", 1) == 3, str(strokes(root, "C|N", 1)))
 
-# 2 non-aromatic C=C doubles x 2 strokes, 3 C=O doubles x 2 strokes.
-check("2 drawn C=C doubles", strokes(root, "C|C", 2) == 4, str(strokes(root, "C|C", 2)))
+# 4 non-aromatic C=C doubles x 2 strokes, 3 C=O doubles x 2 strokes.
+check("4 drawn C=C doubles", strokes(root, "C|C", 2) == 8, str(strokes(root, "C|C", 2)))
 check("3 drawn C=O doubles", strokes(root, "C|O", 2) == 6, str(strokes(root, "C|O", 2)))
 
-# The 14 remaining C-C single bonds plus the 5 ring doubles that chemdraw
-# suppresses inside the aromatic rings.
+# The 14 remaining C-C single bonds plus the 3 ring doubles that chemdraw
+# suppresses inside the aromatic benzene ring.
 check(
     "aromatic ring doubles are drawn as ring strokes",
-    strokes(root, "C|C", 1) == 19,
+    strokes(root, "C|C", 1) == 17,
     str(strokes(root, "C|C", 1)),
 )
 
@@ -93,8 +96,8 @@ check(
 tori = [obj for obj in bond_objects(root) if obj.get("cgn_aromatic_torus")]
 check("one grouped aromatic object", len(tori) == 1, str(len(tori)))
 check(
-    "two aromatic rings (96 segments)",
-    len(tori[0].data.edges) == 96 if tori else False,
+    "one aromatic ring (48 segments)",
+    len(tori[0].data.edges) == 48 if tori else False,
     str(len(tori[0].data.edges)) if tori else "no torus",
 )
 

@@ -180,6 +180,64 @@ class AromaticRingsTest(unittest.TestCase):
         self.assertEqual(len(rings), 2)
         self.assertEqual({len(nodes) for nodes, _edges in rings}, {6})
 
+    def test_bridgehead_nitrogen_donates_no_lone_pair(self):
+        # Indolizine: a five-ring and a six-ring fused on their N-C bond.  The
+        # lone pair of the bridgehead nitrogen belongs to the fused ten-pi
+        # system, so neither ring may claim it as a sextet of its own and both
+        # are depicted with their Kekule doubles.
+        atoms = {"N0": "N", "C1": "C"}
+        bonds = [
+            ("N0", "C1", 1.39),
+            ("C1", "C2", 1.39),
+            ("C2", "C3", 1.39),
+            ("C3", "C4", 1.39),
+            ("C4", "C5", 1.39),
+            ("C5", "N0", 1.37),
+            ("N0", "C8", 1.38),
+            ("C8", "C7", 1.39),
+            ("C7", "C6", 1.39),
+            ("C6", "C1", 1.39),
+        ]
+        for index in range(2, 9):
+            atoms[f"C{index}"] = "C"
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 4, doubles)
+        self.assertTrue(all(order == 2 for order in doubles.values()), doubles)
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
+    def test_indole_keeps_both_rings_aromatic(self):
+        # The same five-ring, but its nitrogen belongs to that ring alone: a
+        # fused ring system must not stop a heteroatom from donating.
+        atoms = {"N0": "N", "H0": "H", "C1": "C", "C2": "C"}
+        bonds = [
+            ("N0", "H0", 1.01),
+            ("N0", "C1", 1.37),
+            ("N0", "C4", 1.38),
+            ("C1", "C2", 1.42),
+            ("C2", "C3", 1.39),
+            ("C3", "C4", 1.38),
+            ("C1", "C8", 1.40),
+            ("C2", "C5", 1.40),
+            ("C5", "C6", 1.39),
+            ("C6", "C7", 1.39),
+            ("C7", "C8", 1.39),
+        ]
+        for index in range(3, 9):
+            atoms[f"C{index}"] = "C"
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(len(multiple_bonds(orders)), 4)
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual({len(nodes) for nodes, _edges in rings}, {5, 6})
+
     def test_hydrogen_less_polycyclic_sheet(self):
         # A graphene patch has no hydrogens at all: every carbon has two ring
         # neighbours and one fusion bond.  Fusion double bonds must not veto the
@@ -406,8 +464,11 @@ class MultipleBondsCifTest(unittest.TestCase):
         ("C14", "O1"),
         ("C17", "O3"),
     }
+    # Only the benzene ring is aromatic.  The pyrrole-type five-ring
+    # (N1/C1/C6/C15/C16) shares its nitrogen with the six-ring
+    # (N1/C1/C2/C3/C4/C5) — an annulated indolizine — so N1 is a bridgehead and
+    # donates its lone pair to neither ring: both are drawn Kekulé.
     EXPECTED_RINGS = {
-        frozenset({"N1", "C1", "C6", "C15", "C16"}),
         frozenset({"C8", "C9", "C10", "C11", "C12", "C13"}),
     }
 

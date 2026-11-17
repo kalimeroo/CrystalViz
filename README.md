@@ -129,7 +129,9 @@ connectivity, and the missing orders are distributed over the shortest bonds
 1.37-1.42 Å aromatic C-C still becomes the double bond it should be, and
 alkynes/nitriles still become triples. Aromaticity is then decided by a 4n+2
 count on that Kekulé structure, ring by ring, which handles fused systems
-(naphthalene gives two aromatic rings) and pyrrole-like lone pairs; a ring whose
+(naphthalene gives two aromatic rings) and pyrrole-like lone pairs; a heteroatom
+shared by two rings (the bridgehead nitrogen of an indolizine) donates its lone
+pair to neither, so both rings keep their Kekulé strokes. A ring whose
 atom carries a multiple bond to a non-ring atom (a ketone, for example) is
 localized and shows centered multiple-bond strokes in the plane of its
 neighboring atoms instead. Single-bond radius is independent of the

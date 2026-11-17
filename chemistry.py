@@ -75,6 +75,7 @@ _REPAIR_STEP_BUDGET = 20_000
 _REPAIR_NODE_LIMIT = 12
 _REPAIR_DEFICIT_LIMIT = 12
 _CYCLE_STEP_BUDGET = 40_000
+_AUGMENT_STEP_BUDGET = 200_000
 
 
 def edge_key(first, second):
@@ -194,56 +195,89 @@ def _greedy(deficits, extras, candidates):
             deficits[second] -= 1
 
 
-def _augment_once(node, deficits, extras, by_node):
-    """Satisfy *node* with a direct match or a 3-edge augmenting path."""
+def _matched_key(node, extras, by_node):
+    """Return the edge carrying *node*'s extra order, or None."""
+    for key in by_node.get(node, ()):
+        if extras.get(key) == 1:
+            return key
+    return None
+
+
+def _find_augmenting_path(node, deficits, extras, by_node, path, visited, budget):
+    """Extend the alternating *path* from *node* to a still-deficient atom.
+
+    *path* holds an even number of edges (unmatched, matched, ..., matched) and
+    *node* is the atom it reaches.  Returns the free endpoint that closes the
+    path, or None.  The walk is depth-first over simple paths and bounded by
+    *budget*, so a pathological graph cannot stall it.
+    """
+    budget[0] -= 1
+    if budget[0] <= 0:
+        return None
     for key in by_node.get(node, ()):
         if extras.get(key):
             continue
-        middle = _other(key, node)
-        if deficits.get(middle, 0) <= 0:
+        other = _other(key, node)
+        if other in visited:
+            continue
+        if deficits.get(other, 0) > 0:
+            path.append(key)
+            return other
+        matched = _matched_key(other, extras, by_node)
+        if matched is None:
+            continue
+        partner = _other(matched, other)
+        if partner in visited:
+            continue
+        path.append(key)
+        path.append(matched)
+        visited.update((other, partner))
+        free = _find_augmenting_path(partner, deficits, extras, by_node, path, visited, budget)
+        if free is not None:
+            return free
+        visited.difference_update((other, partner))
+        del path[-2:]
+    return None
+
+
+def _augment_once(node, deficits, extras, by_node, budget):
+    """Satisfy *node* with a direct match or an augmenting path."""
+    for key in by_node.get(node, ()):
+        if extras.get(key):
+            continue
+        other = _other(key, node)
+        if deficits.get(other, 0) <= 0:
             continue
         extras[key] = 1
         deficits[node] -= 1
-        deficits[middle] -= 1
+        deficits[other] -= 1
         return True
-    # node - middle (single) - partner (already matched) - free atom:
-    # move the match one step further and give node the freed partner.
-    for key in by_node.get(node, ()):
-        if extras.get(key):
-            continue
-        middle = _other(key, node)
-        if deficits.get(middle, 0) > 0:
-            continue
-        for matched in by_node.get(middle, ()):
-            if matched == key or extras.get(matched) != 1:
-                continue
-            partner = _other(matched, middle)
-            if partner in (node, middle):
-                continue
-            for far_key in by_node.get(partner, ()):
-                if far_key == matched:
-                    continue
-                free = _other(far_key, partner)
-                if free in (node, middle, partner) or deficits.get(free, 0) <= 0:
-                    continue
-                extras[key] = 1
-                del extras[matched]
-                extras[far_key] = 1
-                deficits[node] -= 1
-                deficits[free] -= 1
-                return True
-    return False
+    # node - x1 (single) - x2 (already matched) - ... - free atom: flip the
+    # whole alternating path so *node* and the free atom become matched.
+    path = []
+    free = _find_augmenting_path(node, deficits, extras, by_node, path, {node}, budget)
+    if free is None:
+        return False
+    for index, key in enumerate(path):
+        if index % 2:
+            del extras[key]
+        else:
+            extras[key] = 1
+    deficits[node] -= 1
+    deficits[free] -= 1
+    return True
 
 
 def _augment(deficits, extras, by_node):
-    """Repair greedy dead ends with augmenting paths (bounded by degree)."""
+    """Repair greedy dead ends with augmenting paths."""
+    budget = [_AUGMENT_STEP_BUDGET]
     changed = True
-    while changed:
+    while changed and budget[0] > 0:
         changed = False
         for node in sorted(deficits, key=repr):
             if deficits[node] <= 0:
                 continue
-            if _augment_once(node, deficits, extras, by_node):
+            if _augment_once(node, deficits, extras, by_node, budget):
                 changed = True
 
 
@@ -413,13 +447,20 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     return rings
 
 
-def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders):
+def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders, ring_count):
     """Hückel pi electron count of *ring*, or None when it cannot be aromatic.
 
     *ring_atoms* is the union of every ring in the molecule: a multiple bond to
     one of those atoms is a ring-fusion bond (shared with a neighbouring ring),
     not an exocyclic double bond, so only bonds leading out of the ring system
     veto the ring.
+
+    *ring_count* maps every ring atom to the number of rings it belongs to.  A
+    lone pair is only donated to a ring by a heteroatom of that ring alone: the
+    bridgehead nitrogen of an indolizine (or any heteroatom shared by two
+    rings) holds a lone pair that belongs to the fused pi system, so no single
+    ring may claim it as its own sextet.  Both rings are then depicted Kekulé,
+    which is the honest picture of an either/or delocalisation.
     """
     pi_electrons = 0
     for node in ring:
@@ -436,7 +477,7 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, orders
                 return None
         if any(orders.get(key, 1) > 1 for key in incident if key in ring_edges):
             pi_electrons += 1
-        elif element in LONE_PAIR_ELEMENTS:
+        elif element in LONE_PAIR_ELEMENTS and ring_count.get(node, 1) == 1:
             pi_electrons += 2
         elif any(orders.get(key, 1) > 1 for key in incident):
             # A fusion atom whose double bond sits on the shared bond of the
@@ -470,6 +511,10 @@ def aromatic_rings(elements, edges, orders):
     result = []
     rings = find_rings(elements, edges)
     ring_atoms = frozenset(node for ring in rings for node in ring)
+    ring_count = {}
+    for ring in rings:
+        for node in ring:
+            ring_count[node] = ring_count.get(node, 0) + 1
     for ring in rings:
         ring_edges = frozenset(
             key
@@ -477,7 +522,10 @@ def aromatic_rings(elements, edges, orders):
             for key in by_node.get(node, ())
             if key[0] in ring and key[1] in ring
         )
-        if _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders) is None:
+        if (
+            _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count)
+            is None
+        ):
             continue
         result.append((frozenset(ring), ring_edges))
     result.sort(key=lambda item: min(repr(node) for node in item[0]))

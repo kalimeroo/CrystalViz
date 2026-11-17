@@ -104,8 +104,10 @@ scene = bpy.context.scene
 scene.cgn_connectivity_pairs.clear()
 scene.cgn_chemdraw = True
 
-# CSD entry AABHTZ.  It is a local fixture (CCDC data is not redistributed with
-# the add-on), so the triazole checks are skipped when it is absent.
+# COD 4025500: a 1H-1,2,4-triazole ring carrying methyl and phenyl
+# substituents, from Saleem & Tepe, J. Org. Chem. 75 (2010) 4330,
+# doi:10.1021/jo100716m.  The phenyl ring keeps its torus; the triazole is
+# drawn Kekule.  The checks are skipped when the fixture is absent.
 AROMATIC_CIF = _env.cif("aromatic.cif")
 
 
@@ -115,30 +117,29 @@ def check_triazole_fixture():
     CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
     CrystalViz._rebuild_bonds(scene)
 
-    # The triazole ring N3/N4/C8/C9/N5 has no torus: its two C=N bonds are
-    # drawn as ordinary double strokes (2 strokes each: N1=C7 is the exocyclic
-    # hydrazone, N3=C8 and N4=C9 are the ring bonds).
+    # The triazole ring N1/N2/C2/N3/C3 has no torus: its two ring C=N bonds
+    # (N2=C3 and N3=C2) are drawn as ordinary double strokes, 2 segments each.
     check(
         "triazole C=N doubles are drawn",
-        strokes(root, "C|N", 2) == 6,
+        strokes(root, "C|N", 2) == 4,
         f"{strokes(root, 'C|N', 2)} C|N double strokes",
     )
     check(
         "triazole ring bonds are single strokes",
-        strokes(root, "C|N", 1) == 5,
+        strokes(root, "C|N", 1) == 2,
         f"{strokes(root, 'C|N', 1)} C|N single strokes",
     )
 
-    # The benzene ring keeps its torus, so its three doubles stay suppressed.
+    # The phenyl ring keeps its torus, so its three doubles stay suppressed.
     check(
-        "benzene doubles are suppressed",
+        "phenyl doubles are suppressed",
         strokes(root, "C|C", 2) == 0,
         f"{strokes(root, 'C|C', 2)} C|C double strokes",
     )
     aromatic_objects = tori(root)
     check("one aromatic object", len(aromatic_objects) == 1, str(len(aromatic_objects)))
     check(
-        "only the benzene keeps a torus (48 segments)",
+        "only the phenyl keeps a torus (48 segments)",
         len(aromatic_objects[0].data.edges) == 48 if aromatic_objects else False,
         str(len(aromatic_objects[0].data.edges)) if aromatic_objects else "no torus",
     )

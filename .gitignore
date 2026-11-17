@@ -21,6 +21,8 @@ opencode.json
 tests/tools/
 tests/external_cctbx/
 tests/legacy_baked_polyhedra/
+CIF/olex2/
+cap.png
 
 # Windows Explorer folder metadata
 desktop.ini

@@ -12,6 +12,7 @@ below so the provenance of each fixture is checkable.
 | `Chalco.cif` | 1010940 | Cu Fe S2 | Declared oxidation numbers, ionic Cu-S / Fe-S windows |
 | `Cu.cif` | 4105040 | Cu | Elemental metal (wide Cu-Cu window) |
 | `Cu2O.cif` | 1000063 | Cu2 O | Ionic oxide, metal-metal cap |
+| `aromatic.cif` | 4025500 | C9 H9 N3 | Aromatic ChemDraw: Kekulé triazole (methyl+phenyl 1H-1,2,4-triazole) |
 | `Diamond.cif` | 1541404 | C | Fill/bank guards (32 P1 sites per cell) |
 | `Ferrocene.cif` | 1100887 | C26 H18 Fe | Organometallic finite molecule, grow after fill |
 | `Graphite.cif` | 1200017 | C | Layered carbon, oxidation numbers |

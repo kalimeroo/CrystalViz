@@ -103,16 +103,16 @@ for a first run.
   aromatic rings as Kekulé strokes.
 
 - `test_chemdraw_azole.py` is the depiction counterpart for five-membered rings.
-  On `aromatic.cif` (CSD AABHTZ, a local fixture: those checks are skipped when
-  it is absent) it pins that the 4-substituted 1,2,4-triazole keeps its two
-  ring C=N doubles as strokes (6 C|N double strokes) and that the benzene is the
-  only torus left (48 segments, its three doubles still suppressed); the ring
-  reports 2 lone-pair electrons, so IUPAC GR-6.3's "one unique arrangement of
-  alternating bonds" rule applies. The same perception is checked on hand-built
-  fragments: N-methylpyrrole → two doubles and no torus, benzene → torus, and a
-  Cp + Fe fragment → no double bond but a torus (the 6 π haptic ligand of
-  GR-1.7.2). It closes on `Ferrocene.cif`, which must draw three tori
-  (2 × η5-Cp + the arene, 144 segments) where it used to draw one.
+  On `aromatic.cif` (COD 4025500: a methyl+phenyl 1H-1,2,4-triazole) it pins
+  that the 1,2,4-triazole keeps its two ring C=N doubles as strokes (4 C|N
+  double strokes) and that the phenyl is the only torus left (48 segments, its
+  three doubles still suppressed); the ring reports 2 lone-pair electrons, so
+  IUPAC GR-6.3's "one unique arrangement of alternating bonds" rule applies.
+  The same perception is checked on hand-built fragments: N-methylpyrrole → two
+  doubles and no torus, benzene → torus, and a Cp + Fe fragment → no double
+  bond but a torus (the 6 π haptic ligand of GR-1.7.2). It closes on
+  `Ferrocene.cif`, which must draw three tori (2 × η5-Cp + the arene, 144
+  segments) where it used to draw one.
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
   atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,

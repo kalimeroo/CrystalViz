@@ -27,10 +27,13 @@ blender --command extension build --split-platforms                  # cross-che
 
 ## Architecture
 
-Two-module split — respect it:
+Three-module split — respect it:
 
 - **`gemmi_worker.py`**: all crystallography (CIF parsing, symmetry expansion, P1 sites, growth). Pure Python + `gemmi`; imports no `bpy`, so it must stay runnable standalone for testing. The add-on calls only `load_structure()` and `grow_connectivity_shell()` (both call sites go through the lazy import helper `_gemmi_worker()` — keep it that way, it delays `import gemmi` until an operator actually runs).
+- **`chemistry.py`**: bond-order and aromatic-ring perception for the ChemDraw depiction (`bond_orders()`, `find_rings()`, `aromatic_rings()`). Pure standard library — no `bpy`, no `gemmi`, no numpy — so it is unit tested in plain CPython (`tests/test_chemistry.py`). It takes a plain graph (`{node: symbol}`, `(a, b)` edges, optional normalised lengths) and never touches Blender or crystallography; `__init__.py` adapts display segments to it through `_chemdraw_graph()` and the lazy `_chemistry()` helper.
 - **`__init__.py`** (~4.2k lines): everything Blender — operators (`cgn.*`), panels (`CGN_PT_*`), Geometry-Nodes groups, materials, viewport drawing. Don't move display logic into the worker.
+
+ChemDraw contract: multiple-bond orders come from valence bookkeeping (greedy matching, augmenting paths, bounded repair), aromatic rings from Hückel counting on the resulting Kekulé structure — never from bond-length cutoffs. A ring atom's multiple bond to a non-ring atom (C=O) vetoes the ring; a fusion bond to another ring atom does not. Rings are enumerated 5–7 members, bounded by a step budget, so keep the searches bounded when touching them.
 
 Data flow and storage contract:
 
@@ -53,9 +56,10 @@ Worker speaks **Ångström**; Blender converts with `_DISPLAY_SCALE = 0.1` (1 Bl
 
 ## Verification (manual)
 
-- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 49/49, see `tests/README.md` for the archived groups.
+- Suites: `pwsh tests/run_all.ps1` (optionally `-Only "*polyhedra*"`); expected 51/51, see `tests/README.md` for the archived groups.
 
-- Syntax: `python -m py_compile __init__.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
+- Syntax: `python -m py_compile __init__.py chemistry.py gemmi_worker.py` (note `__init__.py` imports `bpy`, so compile only).
 - Worker standalone: `pip install gemmi` and run/ad-hoc-test `gemmi_worker.load_structure(...)` in a normal Python — no Blender needed.
+- Chemistry standalone: `python tests/test_chemistry.py` (plain CPython, no Blender, no gemmi).
 - Example CIFs live in **`CIF/`** (all COD entries, provenance in `CIF/README.md`): `multiple_bonds.cif` (organic, ADPs + bond table), `Brookite.cif` (polyhedra), `Ag2Cr2O7.cif` (polyhedra/grow), `Ferrocene.cif` (organometallic), `Nano.cif` (2048 P1 sites — use for performance/atom-count limits like `_MAX_FILL_ATOMS = 200000`), plus `Chalco`, `Cu`, `Cu2O`, `Diamond`, `Graphite`.
 - In Blender: install the built zip from `dist/`, check Add-on Preferences shows the bundled gemmi version, import, Fill/Grow, toggle all four models (`BALL_STICK` / `ELLIPSOID` / `SPACE_FILLING` / `WIRE_STICKS` — note the ORTEP mode's `cgn_model` enum value is `ELLIPSOID`, not "ORTEP").

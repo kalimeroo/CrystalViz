@@ -121,22 +121,26 @@ The expandable **Bond Style** panel lets bonds use one shared color or color
 each half with the corresponding bonded atom's element color. Single-color
 bonds have an adjustable color. Its **ChemDraw** checkbox adds parallel strokes
 for inferred double/triple bonds, with slightly slimmer cylinders for multiple
-bonds. Planar, approximately regular five- and six-membered aromatic rings
-with conjugation and sufficiently equalized normalized bond lengths are shown
-with an inner torus even when individual bond lengths suggest one Kekule double
-bond; localized cycles instead show centered multiple-bond strokes in the plane
-of their neighboring atoms. Single-bond radius is independent of the
+bonds. Aromatic rings are drawn with an inner torus instead of Kekulé strokes.
+Multiple-bond orders are inferred by valence bookkeeping rather than by length
+cutoffs: each atom is given the smallest common valence at or above its
+connectivity, and the missing orders are distributed over the shortest bonds
+(greedy matching, augmenting paths, then a bounded backtracking repair), so a
+1.37-1.42 Å aromatic C-C still becomes the double bond it should be, and
+alkynes/nitriles still become triples. Aromaticity is then decided by a 4n+2
+count on that Kekulé structure, ring by ring, which handles fused systems
+(naphthalene gives two aromatic rings) and pyrrole-like lone pairs; a ring whose
+atom carries a multiple bond to a non-ring atom (a ketone, for example) is
+localized and shows centered multiple-bond strokes in the plane of its
+neighboring atoms instead. Single-bond radius is independent of the
 **Multiple Bond Radius** control, and **Bond Spacing** adjusts the distance
 between parallel strokes. Torus size, width, and color are adjustable.
-Multiple-bond inference
-compares observed lengths with the CIF covalent radii and limits assignments by
-common valences; ring depiction also checks planarity, connectivity, and a
-simple 4n+2 electron count, including a heuristic for pyrrole-like nitrogen
-lone pairs. It remains a geometry-based estimate, not
-a chemical-structure assignment. It does not use chemical databases or the
-statistical fragment priors used by comprehensive assignment software. CIFs
-often omit explicit bond orders, and unusual valence, disorder, or metal
-coordination can still make an assignment ambiguous. The approach follows the
+It remains an estimate, not a full chemical-structure assignment: formal
+charges and radical centres are not modelled, rings are only enumerated for 5-
+to 7-membered cycles, and unusual valence, disorder, or metal coordination can
+still make an assignment ambiguous. It does not use chemical databases or the
+statistical fragment priors used by comprehensive assignment software. The
+approach follows the
 hard-rule, bond-length, and conjugation-rule stages described by
 [Zhang et al. (2012)](https://doi.org/10.1186/1758-2946-4-26), and is also
 inspired by the distinction between bond detection and bond typing in

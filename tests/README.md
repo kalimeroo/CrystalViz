@@ -70,7 +70,29 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 49/49 pass.
+`pwsh tests/run_all.ps1` → 51/51 pass.
+
+- `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
+  standard library only — it also runs under plain `python tests/test_chemistry.py`,
+  no Blender or gemmi). It pins Kekulé repair on synthetic benzene, pyridine,
+  pyrrole (nitrogen lone pair, no N=C), naphthalene (two aromatic rings),
+  cyclohexane/piperidine (nothing aromatic), a hydrogen-less benzene ring and a
+  hydrogen-less graphene patch (fusion bonds must not veto a ring, and the
+  bounded searches must stay bounded), acetylene/acetonitrile triples, allene,
+  formaldehyde, the "long contacts are never promoted" gate, unknown elements
+  staying single-bonded, orientation independence of the edge keys, and the ring
+  enumerator (4-rings skipped, hydrogens/metals excluded). It finishes on the
+  real fixture: the `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly
+  the reference Kekulé structure (7 C=C + 3 C=O, no triple) and exactly two
+  aromatic rings, with every atom at a valid valence.
+
+- `test_chemdraw_depiction.py` is the end-to-end counterpart: it imports
+  `multiple_bonds.cif`, builds the bond set with ChemDraw on and asserts the
+  drawn stroke counts (2 non-aromatic C=C doubles, 3 C=O doubles, 14 single C-C
+  plus the 5 ring doubles suppressed inside the two aromatic rings), no invented
+  triple bond, and one grouped aromatic object holding exactly two rings. The
+  previous length-cutoff heuristic found only 3 C=C + 3 C=O and drew the
+  aromatic rings as Kekulé strokes.
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
   atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,

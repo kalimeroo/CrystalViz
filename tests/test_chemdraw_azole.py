@@ -222,9 +222,19 @@ CrystalViz._rebuild_bonds(scene)
 aromatic_objects = tori(root)
 check("ferrocene draws one aromatic object", len(aromatic_objects) == 1, str(len(aromatic_objects)))
 check(
-    "ferrocene draws three tori (2 Cp + arene)",
-    len(aromatic_objects[0].data.edges) == 144 if aromatic_objects else False,
+    "ferrocene draws five tori (2 Cp + 3 anthracene rings)",
+    len(aromatic_objects[0].data.edges) == 240 if aromatic_objects else False,
     str(len(aromatic_objects[0].data.edges)) if aromatic_objects else "no torus",
+)
+check(
+    "ferrocene draws the alkyne as a triple bond",
+    strokes(root, "C|C", 3) == 3,
+    str(strokes(root, "C|C", 3)),
+)
+check(
+    "ferrocene draws no C=C double (arene bonds are tori)",
+    strokes(root, "C|C", 2) == 0,
+    str(strokes(root, "C|C", 2)),
 )
 
 print("TOTAL FAILURES:", len(FAILURES))

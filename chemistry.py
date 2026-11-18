@@ -310,6 +310,40 @@ def _candidates(elements, edge_keys, deficits, lengths):
     return [key for _length, key in candidates], by_node
 
 
+def _force_triples(elements, deficits, by_node, extras):
+    """Triple the only usable bond of an atom that has nowhere else to go.
+
+    A two-connected alkyne carbon carries no hydrogen, so it needs a triple
+    bond to reach its valence.  When one of its two neighbours is already
+    saturated (a haptic metallocene carbon whose fourth bond is the metal, an
+    aromatic ring atom whose extra order is spent in the ring), the remaining
+    bond must carry both extra orders.  Seeding that triple *before* the greedy
+    pass keeps the rest of the graph's Kekule repair intact.  Escalating after
+    the greedy pass cannot: the partner is by then satisfied by another double
+    bond, and moving that order away would strand a ring atom that the bounded
+    repair is not allowed to reopen.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for node in sorted(deficits, key=repr):
+            if deficits[node] != 2 or elements.get(node) not in {"C", "N"}:
+                continue
+            useful = [
+                key for key in by_node.get(node, ()) if deficits.get(_other(key, node), 0) > 0
+            ]
+            if len(useful) != 1:
+                continue
+            key = useful[0]
+            other = _other(key, node)
+            if deficits.get(other, 0) < 2:
+                continue
+            extras[key] = 2
+            deficits[node] -= 2
+            deficits[other] -= 2
+            changed = True
+
+
 def _greedy(deficits, extras, candidates):
     """Give every pair of neighbouring deficits one extra order each."""
     for key in candidates:
@@ -473,8 +507,12 @@ def _repair(deficits, extras, by_node, budget, depth=0):
 def bond_orders(elements, edges, lengths=None):
     """Return ``{edge_key: order}`` for every bond that is not a single bond.
 
-    The algorithm is a valence repair, in four bounded stages:
+    The algorithm is a valence repair, in five bounded stages:
 
+    0. forced triples: an atom with two extra orders and only one usable bond
+       (an alkyne or nitrile whose other neighbour is saturated) gets that bond
+       tripled up front, so the rest of the graph can still find a clean Kekule
+       structure;
     1. greedy: give one extra order to every edge joining two atoms that both
        still want one;
     2. augmenting paths: rescue atoms the greedy pass stranded even though a
@@ -499,6 +537,7 @@ def bond_orders(elements, edges, lengths=None):
 
     candidates, by_node = _candidates(elements, edge_keys, deficits, lengths)
     extras = {}
+    _force_triples(elements, deficits, by_node, extras)
     _greedy(deficits, extras, candidates)
     _augment(deficits, extras, by_node)
     _escalate(deficits, extras, by_node)

@@ -87,8 +87,9 @@ for a first run.
   skipped, hydrogens/metals excluded). The aromatic records also pin the
   depiction split: pyrrole reports 2 lone-pair electrons of its sextet, benzene
   and pyridine report 0, a ferrocene-shaped Cp + Fe fragment is a 6 π haptic
-  ligand with no double bond, and an η6-coordinated quinone is still vetoed by
-  its exocyclic C=O. It finishes on the real fixture: the
+  ligand with no double bond, a Cp–C≡C–anthracene fragment keeps its alkyne
+  triple (the Ferrocene.cif allene failure mode), and an η6-coordinated quinone
+  is still vetoed by its exocyclic C=O. It finishes on the real fixture: the
   `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly the reference
   Kekulé structure (7 C=C + 3 C=O, no triple) and exactly one aromatic ring (the
   benzene; the annulated-indolizine five-ring is a bridgehead case), with every
@@ -111,8 +112,12 @@ for a first run.
   The same perception is checked on hand-built fragments: N-methylpyrrole → two
   doubles and no torus, benzene → torus, and a Cp + Fe fragment → no double
   bond but a torus (the 6 π haptic ligand of GR-1.7.2). It closes on
-  `Ferrocene.cif`, which must draw three tori (2 × η5-Cp + the arene, 144
-  segments) where it used to draw one.
+  `Ferrocene.cif` (9-(ferrocenylethynyl)anthracene), which must draw five tori
+  (2 × η5-Cp + the three anthracene rings, 240 segments), the alkyne as a
+  C|C triple (3 strokes) and no C|C double at all: the Cp carbon that carries
+  the alkyne is four-coordinate, so the alkyne takes both spare orders itself
+  instead of borrowing one from the arene (the old allene depiction drew
+  C11=C12=C13 and cost two of the three rings).
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
   atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,

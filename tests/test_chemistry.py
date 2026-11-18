@@ -427,6 +427,54 @@ class MultipleBondTest(unittest.TestCase):
             {chemistry.edge_key("C0", "C1"), chemistry.edge_key("C1", "C2")},
         )
 
+    def test_alkyne_on_a_saturated_cp_carbon_stays_a_triple(self):
+        # Ferrocene.cif: the Cp carbon that carries the alkyne is four
+        # coordinate (two ring carbons, the iron, the alkyne carbon), so it has
+        # no valence deficit left to spend.  The alkyne must take both extra
+        # orders on its own bond instead of borrowing one from the arene, which
+        # would invent an allene (the fixture drew C12=C13 as a double bond).
+        atoms, bonds = cycle("C", 5, distance=1.42)
+        atoms["FE0"] = "FE"
+        for index in range(1, 5):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        for index in range(5):
+            bonds.append((f"C{index}", "FE0", 2.05))
+        # Anthracene, substituted at its 9-position (M1) by the alkyne.
+        rings = [
+            ["L0", "L1", "L2", "L3", "L4", "L5"],
+            ["L3", "M0", "M1", "M2", "M3", "L4"],
+            ["M2", "R0", "R1", "R2", "R3", "M3"],
+        ]
+        atoms.update({node: "C" for ring in rings for node in ring})
+        seen = set()
+        for ring in rings:
+            for first, second, distance in ring_bonds(ring, 1.40):
+                key = chemistry.edge_key(first, second)
+                if key in seen:
+                    continue
+                seen.add(key)
+                bonds.append((first, second, distance))
+        fusion = {"L3", "L4", "M2", "M3"}
+        hydrogen_sites = [
+            node for node in list(atoms) if node[0] in "LMR" and node not in fusion and node != "M1"
+        ]
+        for index, node in enumerate(hydrogen_sites):
+            atoms[f"HX{index}"] = "H"
+            bonds.append((node, f"HX{index}", 1.08))
+        atoms.update({"X0": "C", "X1": "C", "X2": "C"})
+        bonds.extend(
+            [("C0", "X0", 1.44), ("X0", "X1", 1.19), ("X1", "X2", 1.44), ("X2", "M1", 1.43)]
+        )
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders.get(chemistry.edge_key("X0", "X1")), 3)
+        self.assertNotIn(chemistry.edge_key("X1", "X2"), orders)
+        self.assertNotIn(chemistry.edge_key("X2", "M1"), orders)
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual(len(rings), 4)  # the Cp ligand and the three arene rings
+
     def test_carbonyl_oxygen_is_double_bonded(self):
         elements, edges, lengths = molecule(
             {"C0": "C", "O0": "O", "H0": "H", "H1": "H"},

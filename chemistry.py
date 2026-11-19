@@ -763,6 +763,14 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
     It is what tells the depiction layer that the ring has only one arrangement
     of alternating single and double bonds (IUPAC GR-6.3: furan and pyrrole),
     so a delocalisation curve is not the preferred drawing.
+
+    A double bond to a *terminal* carbon is exempt from the exocyclic veto: a
+    graphite or graphene patch that has been grown by whole shells ends in
+    dangling carbons, and a Kekule structure gives some of them a double bond to
+    the ring.  That is a truncated lattice, not a C=CH2 substituent, so the ring
+    stays aromatic.  With hydrogens present the CH2 carbon has a second
+    neighbour and the veto still fires; the exemption only reaches a carbon that
+    is bonded to nothing else.
     """
     pi_electrons = 0
     lone_pair_electrons = 0
@@ -779,6 +787,18 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
                 continue
             other = _other(key, node)
             if other in ring_atoms:
+                continue
+            if (
+                element == "C"
+                and elements.get(other) == "C"
+                and orders.get(key, 1) == 2
+                and len(by_node.get(other, ())) == 1
+            ):
+                # A dangling carbon at the edge of a truncated lattice: the
+                # double bond is an artefact of growing a finite patch out of
+                # an infinite sheet, not an exocyclic C=CH2.  A real methylene
+                # carbon carries its hydrogens, so it is never degree one; a
+                # terminal alkyne stays a triple and is still vetoed.
                 continue
             if (
                 element in _SIX_RING_CHALCOGENS

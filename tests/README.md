@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 55/55 pass.
+`pwsh tests/run_all.ps1` → 56/56 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -80,8 +80,10 @@ for a first run.
   fused 5+6 system is drawn Kekulé) and indole (a nitrogen in a single ring still
   donates, so both fused rings stay aromatic), cyclohexane/piperidine (nothing
   aromatic), a hydrogen-less benzene ring and a hydrogen-less graphene patch
-  (fusion bonds must not veto a ring, and the bounded searches must stay
-  bounded), acetylene/acetonitrile triples, allene, formaldehyde, the "long
+  (fusion bonds must not veto a ring, the bounded searches must stay bounded,
+  and the dangling carbons at the patch edge — which the Kekulé structure
+  doubles — do not veto their ring; a real exocyclic =CH2 still does, while a
+  hydrogen-less p-quinodimethane is the documented exception), acetylene/acetonitrile triples, allene, formaldehyde, the "long
   contacts are never promoted" gate, unknown elements staying single-bonded,
   orientation independence of the edge keys, the N-oxide rule (a three-connected
   N carrying one terminal O is four-valent: its dative N-O bond stays single and
@@ -171,6 +173,15 @@ for a first run.
   `Borazine.cif` (2216154) pins the boron rule: the two B3N3 rings are aromatic
   in the chemistry API but draw all twelve B-N bonds single and no torus, since
   the sextet is the three nitrogen lone pairs (the furan/pyrrole picture).
+
+- `test_chemdraw_graphite.py` pins the grown-lattice case. `Graphite.cif`
+  imports as a single C-C bond (two atoms, no torus); growing the sheet shell
+  by shell must then give every closed hexagon a torus — 2 at grow ×2, 4 at ×3,
+  10 at ×4 and 14 at ×5 (54 atoms) — and every torus is a full 48-segment
+  six-ring. The patch edge ends in dangling carbons that the Kekulé structure
+  doubles; that is a truncated lattice, not an exocyclic C=CH2, so it must not
+  veto the ring. The last check keeps the exemption honest: `multiple_bonds.cif`
+  still draws exactly one torus, its exocyclic C=O veto intact.
 
 - `test_gemmi_worker.py` (bpy-free, plain gemmi) pins the P1 site and ASU
   instance counts of the example CIFs, the grow shell, the ADP conversion, and

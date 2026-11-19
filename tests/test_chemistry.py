@@ -439,9 +439,57 @@ class AromaticRingsTest(unittest.TestCase):
         orders = chemistry.bond_orders(elements, edges, lengths)
         self.assertEqual(len(multiple_bonds(orders)), len(elements) // 2)
 
+        # The patch ends in dangling carbons, and the Kekule structure doubles
+        # them.  That is a truncated lattice, not an exocyclic C=CH2, so no ring
+        # may be vetoed for it.
+        adjacency = {node: set() for node in elements}
+        for first, second in edges:
+            adjacency[first].add(second)
+            adjacency[second].add(first)
+        dangling = [node for node in elements if len(adjacency[node]) == 1]
+        self.assertTrue(dangling)
+        for node in dangling:
+            self.assertEqual(
+                max(orders.get(chemistry.edge_key(node, other), 1) for other in adjacency[node]),
+                2,
+            )
+
         rings = chemistry.aromatic_rings(elements, edges, orders)
-        self.assertGreaterEqual(len(rings), 20)
+        self.assertEqual(len(rings), len(chemistry.find_rings(elements, edges)))
         self.assertEqual({len(nodes) for nodes, _edges in rings}, {6})
+
+    def test_methylene_with_hydrogens_still_vetoes_the_ring(self):
+        # The dangling-carbon exemption only reaches a carbon with no other
+        # neighbour: a real exocyclic =CH2 carries its hydrogens and still
+        # breaks the conjugation of the ring it hangs from.
+        atoms, bonds = cycle("C", 6)
+        atoms["C6"] = "C"
+        bonds.append(("C0", "C6", 1.34))
+        for suffix in ("a", "b"):
+            atoms[f"H6{suffix}"] = "H"
+            bonds.append(("C6", f"H6{suffix}", 1.08))
+        for index in range(1, 6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders[chemistry.edge_key("C0", "C6")], 2)
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
+    def test_hydrogen_less_quinodimethane_is_the_known_exception(self):
+        # Accepted trade-off of the dangling-carbon exemption: a CIF with no
+        # hydrogens cannot tell =CH2 from a lattice edge, so the heavy-atom
+        # graph of p-quinodimethane is drawn as an aromatic ring.  Structures
+        # that carry their hydrogens keep the exocyclic veto above.
+        atoms, bonds = cycle("C", 6)
+        for label, ring_atom in (("C6", "C0"), ("C7", "C3")):
+            atoms[label] = "C"
+            bonds.append((ring_atom, label, 1.34))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(len(chemistry.aromatic_rings(elements, edges, orders)), 1)
 
     def test_exocyclic_double_bond_vetoes_the_ring(self):
         # Cyclohexa-2,4-dien-1-one: the ring carries a C=O, so it is not

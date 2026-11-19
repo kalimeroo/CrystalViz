@@ -138,8 +138,33 @@ HAPTIC_METALS = frozenset(
 )
 
 # A candidate multiple bond may not be longer than the covalent radii predict
-# (normalised length 1.0).  Real double/triple bonds sit well below that.
-_CANDIDATE_MAX_LENGTH_SCALE = 1.0
+# (normalised length 1.0).  Real double/triple bonds sit well below that, but
+# pairs differ: the gap between a stretched C=C and a single C-C is smaller
+# than the gap between a sulfone S=O and a long S-O contact, so the gate is
+# per pair.  Pairs missing from the table keep the uniform 1.0 gate.
+_DEFAULT_CANDIDATE_MAX_LENGTH_SCALE = 1.0
+_CANDIDATE_MAX_LENGTH_BY_PAIR = {
+    frozenset(("C", "C")): 0.98,
+    frozenset(("C", "N")): 0.98,
+    frozenset(("C", "O")): 0.98,
+    frozenset(("C", "S")): 0.98,
+    frozenset(("C", "SE")): 0.98,
+    frozenset(("C", "TE")): 0.98,
+    frozenset(("N", "N")): 0.98,
+    frozenset(("N", "O")): 0.98,
+    frozenset(("P", "O")): 0.96,
+    frozenset(("S", "O")): 0.96,
+    frozenset(("SE", "O")): 0.96,
+    frozenset(("TE", "O")): 0.96,
+}
+
+
+def _candidate_max_length_scale(element_a, element_b):
+    """Largest normalised length at which an edge may carry a multiple bond."""
+    return _CANDIDATE_MAX_LENGTH_BY_PAIR.get(
+        frozenset((element_a, element_b)), _DEFAULT_CANDIDATE_MAX_LENGTH_SCALE
+    )
+
 
 # A six-membered ring of a heavy chalcogen takes one ring double bond of its
 # own only when its ring bonds are clearly shortened towards a double bond
@@ -153,6 +178,15 @@ _RING_CHALCOGEN_MAX_LENGTH_SCALE = 0.97
 # The chalcogens that take a genuine ring double bond in a six-membered ring,
 # and whose terminal oxide (S=O, Se=O, Te=O) is then outside the ring pi system.
 _SIX_RING_CHALCOGENS = frozenset({"S", "SE", "TE"})
+
+# Tier 1 oxo-pattern centers (see :func:`_oxo_double_bonds`): an element whose
+# terminal oxide oxygens are drawn as genuine X=O doubles — sulfone/sulfonate/
+# sulfate S(=O)2 (and Se/Te analogues), nitro/nitrate N(=O)2, phosphate P=O.
+# The spares come from the valence ladder (hexavalent chalcogen, pentavalent
+# N/P); the actual double-bond count never exceeds _OXO_MAX_DOUBLES.
+_OXO_TARGET_VALENCE = {"S": 6, "SE": 6, "TE": 6, "N": 5, "P": 5}
+_OXO_MIN_TERMINAL_OXYGENS = {"S": 2, "SE": 2, "TE": 2, "N": 2, "P": 1}
+_OXO_MAX_DOUBLES = 2
 
 # Ring sizes ChemDraw depicts as rings.  5, 6 and 7 cover the overwhelming
 # majority of organic structures; 3- and 4-rings are handled by the ring-atom
@@ -345,7 +379,6 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
         if element in {"N", *_SIX_RING_CHALCOGENS}
         else ()
     )
-    sulfone = element in _SIX_RING_CHALCOGENS and len(oxygens) >= 2
     if element == "N" and target == 3 and degree == 3:
         if len(oxygens) >= 2:
             # Nitro (and nitrate) nitrogen: the depiction shows both N-O bonds
@@ -358,15 +391,6 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
             # no pi bond, the ring is left with an odd number of unsatisfied
             # carbons and cannot close a Kekule structure at all.
             target = 4
-    elif sulfone:
-        # A sulfone/selenone/tellurone chalcogen carries two or more terminal
-        # oxygens and is hexavalent, so it is drawn S(=O)2 (Se=O, Te=O) with
-        # two genuine chalcogen-oxygen double bonds — the chalcogen analogue
-        # of the nitro N(=O)2.  The first ladder rung at or above the degree
-        # would pick 4 for a four-connected sulfur, leaving both S-O bonds
-        # single because the terminal oxygens' own deficits then have no
-        # partner to accept them.
-        target = 6
     deficit = target - degree
     if element == "O":
         # An exocyclic oxide oxygen of nitrogen or a chalcogen (nitro N=O,
@@ -380,11 +404,9 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
             for other in adjacency.get(node, ())
         ):
             deficit = 1
-    if deficit > 1 and _in_cycle(adjacency, node, budget) and not sulfone:
+    if deficit > 1 and _in_cycle(adjacency, node, budget):
         # A two-connected ring atom is one substituent short (usually an
-        # implicit hydrogen): one extra order is the most it can carry.  A
-        # sulfone is exempt: its extra orders ride on its terminal oxygens,
-        # never on a ring bond, so a cyclic sulfone keeps both S=O doubles.
+        # implicit hydrogen): one extra order is the most it can carry.
         deficit = 1
     return deficit
 
@@ -427,7 +449,7 @@ def _candidates(elements, edge_keys, deficits, lengths, single_only=frozenset())
             continue
         length = lengths.get(key)
         length = 1.0 if length is None else float(length)
-        if length > _CANDIDATE_MAX_LENGTH_SCALE:
+        if length > _candidate_max_length_scale(elements[first], elements[second]):
             continue
         candidates.append((length, key))
     candidates.sort()
@@ -669,24 +691,77 @@ def _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency):
     return result
 
 
+def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only):
+    """Tier-1 pass: seed the genuine terminal X=O double bonds of oxo acids.
+
+    A centre with enough terminal (oxide) oxygens is drawn with its chalcogen/
+    group-15 ``X=O`` doubles decided by the oxo pattern itself instead of by
+    deficit bookkeeping: a sulfone/sulfonate/triflate draws ``S(=O)2``, a
+    selenone/tellurone likewise, a nitro or nitrate nitrogen ``N(=O)2``, and a
+    phosphate/phosphonate phosphorus one ``P=O``.  The count is
+    ``min(target valence - covalent degree, terminal oxygens, _OXO_MAX_DOUBLES)``
+    drawn shortest-oxygen-first, and the centre's degree counts only ladder
+    neighbours (``VALENCE_LADDERS``), so the cation contacts of a salt cannot
+    inflate it and hide a double: a metal-coordinated sulfonate still draws its
+    two S=O bonds.  ``B/Cl/Br/I`` never qualify, and a chalcogen already in
+    the ring pi system (``_six_ring_chalcogen_deficits``) never has two
+    terminal oxygens, so the two tiers cannot collide.
+
+    Each seeded edge is written into *extras*, its endpoints' deficits are
+    decremented (never below zero) and the edge is added to *single_only*, so
+    the candidate engine never sees or overturns it.  Terminal oxide oxygens
+    beyond the count keep an unmet deficit and are drawn single (charged).
+    """
+    for node, element in elements.items():
+        target = _OXO_TARGET_VALENCE.get(element)
+        if target is None:
+            continue
+        oxygens = _terminal_oxygens(node, elements, adjacency)
+        if len(oxygens) < _OXO_MIN_TERMINAL_OXYGENS.get(element, 2):
+            continue
+        covalent_degree = sum(
+            1 for other in adjacency.get(node, ()) if elements.get(other) in VALENCE_LADDERS
+        )
+        budget = min(target - covalent_degree, len(oxygens), _OXO_MAX_DOUBLES)
+        if budget <= 0:
+            continue
+        gate = _candidate_max_length_scale(element, "O")
+        ordered = sorted(
+            oxygens,
+            key=lambda oxygen: (lengths.get(edge_key(node, oxygen), 1.0), repr(oxygen)),
+        )
+        for oxygen in ordered[:budget]:
+            if lengths.get(edge_key(node, oxygen), 1.0) > gate:
+                continue
+            key = edge_key(node, oxygen)
+            extras[key] = 1
+            single_only.add(key)
+            deficits[node] = max(0, deficits.get(node, 0) - 1)
+            deficits[oxygen] = max(0, deficits.get(oxygen, 0) - 1)
+
+
 def bond_orders(elements, edges, lengths=None):
     """Return ``{edge_key: order}`` for every bond that is not a single bond.
 
-    The algorithm is a valence repair, in five bounded stages:
+    The algorithm is a valence repair, in six bounded stages:
 
-    0. forced triples: an atom with two extra orders and only one usable bond
+    0. oxo seeding: a centre whose terminal oxidic oxygens call for a genuine
+       ``X=O`` double (sulfone, sulfonate, triflate, selenone/tellurone, nitro/
+       nitrate, phosphate) gets those doubles seeded up front and reserved, so
+       no later stage can overturn them (see :func:`_oxo_double_bonds`);
+    1. forced triples: an atom with two extra orders and only one usable bond
        (an alkyne or nitrile whose other neighbour is saturated) gets that bond
        tripled up front, so the rest of the graph can still find a clean Kekule
        structure.  An N-oxide nitrogen counts as four-valent and its dative N-O
        bond is never a candidate, so its fourth bond goes into the ring (see
        :func:`_initial_deficit` and :func:`_dative_bonds`);
-    1. greedy: give one extra order to every edge joining two atoms that both
+    2. greedy: give one extra order to every edge joining two atoms that both
        still want one;
-    2. augmenting paths: rescue atoms the greedy pass stranded even though a
+    3. augmenting paths: rescue atoms the greedy pass stranded even though a
        valid assignment exists;
-    3. escalation: promote a double bond to a triple when an atom has exactly
+    4. escalation: promote a double bond to a triple when an atom has exactly
        one possible partner left (alkynes, nitriles);
-    4. bounded backtracking for whatever is still unsatisfied.
+    5. bounded backtracking for whatever is still unsatisfied.
 
     Atoms whose element is unknown, or whose degree already exceeds its highest
     valence, are left unconstrained rather than guessed at.
@@ -707,10 +782,11 @@ def bond_orders(elements, edges, lengths=None):
         # does not ask for (see :func:`_six_ring_chalcogen_deficits`).
         deficits.update(_six_ring_chalcogen_deficits(elements, edges, lengths, adjacency))
 
-    candidates, by_node = _candidates(
-        elements, edge_keys, deficits, lengths, _dative_bonds(elements, adjacency)
-    )
+    single_only = _dative_bonds(elements, adjacency)
     extras = {}
+    _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
+
+    candidates, by_node = _candidates(elements, edge_keys, deficits, lengths, single_only)
     _force_triples(elements, deficits, by_node, extras)
     _greedy(deficits, extras, candidates)
     _augment(deficits, extras, by_node)

@@ -42,3 +42,10 @@ CIF/S2.cif
 # Not redistributable; stays on the author's machine like the S1/S2 CSD
 # fixtures above.
 CIF/Ca.cif
+
+# Local user structures used to debug the sulfonate/triflate S=O depiction
+# (ABEFUL: terbium tetrakis-sulfonatoporphyrin, ABOLIP: titanium triflate;
+# CCDC 993277 / 1517523).  Not redistributable; stay on the author's machine
+# like the CSD fixtures above.
+CIF/test1.cif
+CIF/test2.cif

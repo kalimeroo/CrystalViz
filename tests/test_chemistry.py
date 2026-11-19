@@ -24,7 +24,10 @@ RADII = {
     "C": 0.76,
     "N": 0.71,
     "O": 0.66,
+    "F": 0.57,
+    "P": 1.07,
     "S": 1.05,
+    "CL": 0.99,
     "SE": 1.20,
     "AS": 1.19,
     "TE": 1.38,
@@ -1125,6 +1128,125 @@ class ChalcogenRingTest(unittest.TestCase):
         selenone = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
         self.assertEqual(
             selenone, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+
+
+class OxoPatternTest(unittest.TestCase):
+    """Tier-1 oxo seeding: sulfonate/triflate/phosphate oxo patterns.
+
+    The genuine X=O doubles of an oxo acid are decided by the oxo pattern
+    (the centre plus its terminal oxidic oxygens) *before* valence
+    bookkeeping runs, so a cation salt cannot hide them: a metal-coordinated
+    sulfonate still draws exactly two S=O doubles, a phosphate one P=O, and
+    the reserved edges survive every later stage untouched.  Boron and the
+    halogens are never oxo centres, and a stretched terminal S-O contact is
+    still gated out of promotion.
+    """
+
+    def _coordinated_sulfonate(self):
+        # test1.cif (ABEFUL) shape: an S(O)3 carbon-bearing centre whose every
+        # oxygen also contacts a cation (each O has graph degree two, one
+        # covalent and one ionic).
+        atoms = {"S0": "S", "O1": "O", "O2": "O", "O3": "O", "C1": "C"}
+        bonds = [
+            ("S0", "O1", 1.43),
+            ("S0", "O2", 1.435),
+            ("S0", "O3", 1.45),
+            ("S0", "C1", 1.77),
+        ]
+        for index in (1, 2, 3):
+            atoms[f"FE{index}"] = "FE"
+            bonds.append((f"O{index}", f"FE{index}", 2.0))
+        return molecule(atoms, bonds)
+
+    def test_metal_coordinated_sulfonate_draws_two_s_oxygen_doubles(self):
+        # Exactly two S=O doubles no matter that every oxygen also bonds a
+        # cation: the third oxygen stays single (charged).
+        elements, edges, lengths = self._coordinated_sulfonate()
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        s_doubles = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            s_doubles, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+
+    def test_sulfonate_double_set_is_metal_invariant(self):
+        # Removing every cation contact must not move a single S=O double.
+        plain = molecule(
+            {"S0": "S", "O1": "O", "O2": "O", "O3": "O", "C1": "C"},
+            [("S0", "O1", 1.43), ("S0", "O2", 1.435), ("S0", "O3", 1.45), ("S0", "C1", 1.77)],
+        )
+        self.assertEqual(
+            chemistry.bond_orders(*self._coordinated_sulfonate()), chemistry.bond_orders(*plain)
+        )
+
+    def test_triflate_draws_two_s_oxygen_doubles(self):
+        # CF3-SO3-: the oxo pattern is the sulfonate's regardless of the
+        # trifluoromethyl substituent on the sulfur.
+        atoms = {"S0": "S", "O1": "O", "O2": "O", "O3": "O", "C1": "C"}
+        bonds = [
+            ("S0", "O1", 1.43),
+            ("S0", "O2", 1.435),
+            ("S0", "O3", 1.45),
+            ("S0", "C1", 1.82),
+        ]
+        for index in (1, 2, 3):
+            atoms[f"F{index}"] = "F"
+            bonds.append(("C1", f"F{index}", 1.33))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        s_doubles = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            s_doubles, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+
+    def test_phosphate_draws_one_p_oxygen_double(self):
+        # A metal phosphate salt: four terminal oxygens, so exactly one P=O
+        # (the phosphate analogue of the nitro N=O2 two-for-three) even though
+        # every oxygen also coordinates a cation.
+        atoms = {"P0": "P", "O1": "O", "O2": "O", "O3": "O", "O4": "O"}
+        bonds = [("P0", f"O{index}", 1.52) for index in range(1, 5)]
+        for index in (1, 2, 3, 4):
+            atoms[f"FE{index}"] = "FE"
+            bonds.append((f"O{index}", f"FE{index}", 2.0))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        p_doubles = {key: order for key, order in multiple_bonds(orders).items() if "P0" in key}
+        self.assertEqual(p_doubles, {chemistry.edge_key("P0", "O1"): 2})
+        self.assertEqual(valences(elements, edges, orders)["P0"], 5)
+
+    def test_perchlorate_has_no_double_bonds(self):
+        # Chlorine is neither an oxo-pattern centre nor a multiple-bond
+        # element, so a perchlorate stays all-single.
+        atoms = {"CL0": "CL", "O1": "O", "O2": "O", "O3": "O", "O4": "O"}
+        bonds = [("CL0", f"O{index}", 1.44) for index in range(1, 5)]
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        self.assertEqual(chemistry.bond_orders(elements, edges, lengths), {})
+
+    def test_long_terminal_s_oxygen_contact_is_not_promoted(self):
+        # A stretched terminal S-O contact (still single) must lose out to the
+        # short genuine S=O bonds: the oxo count picks the shortest two and the
+        # long bond neither passes the length gate nor finds a deficient
+        # partner.
+        atoms = {"S0": "S", "O1": "O", "O2": "O", "O3": "O", "C1": "C"}
+        bonds = [
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+            ("S0", "O3", 1.72),
+            ("S0", "C1", 1.77),
+        ]
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        s_doubles = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            s_doubles, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
         )
         self.assertEqual(valences(elements, edges, orders)["S0"], 6)
 

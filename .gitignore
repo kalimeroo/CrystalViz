@@ -29,3 +29,10 @@ desktop.ini
 
 # Built extension archives are attached to GitHub Releases, not committed.
 dist/
+
+# Cambridge Structural Database fixtures are not redistributable (their CIFs
+# carry _database_code_CSD and the CCDC header).  They stay on the machine of
+# whoever runs tests/test_chemdraw_sulfur.py; the committed chalcogen evidence
+# is the COD-based tests/test_chemdraw_heterocycles.py.
+CIF/S1.cif
+CIF/S2.cif

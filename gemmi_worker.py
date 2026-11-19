@@ -785,11 +785,39 @@ def _site_u_cart(site, unit_cell, operation=None):
     return None
 
 
-def _p1_sites(structure, unit_cell):
+def _dummy_labels(block):
+    """Labels of the sites the CIF flags ``_atom_site_calc_flag`` = ``dum``.
+
+    gemmi does not expose ``calc_flag`` on its sites, and a dummy site has no
+    ``_atom_site_type_symbol``: the label fallback in :func:`_site_element`
+    would then turn a ring centroid like ``Cg1`` into carbon, which bonds to
+    every atom of the ring it sits on and destroys the ring (cyanoferrocene,
+    COD 2005233).
+    """
+    labels = [str(value) for value in block.find_values("_atom_site_label")]
+    flags = [str(value) for value in block.find_values("_atom_site_calc_flag")]
+    return frozenset(
+        label for label, flag in zip(labels, flags, strict=False) if flag.strip().lower() == "dum"
+    )
+
+
+def _skip_site(site, skip_labels):
+    """True for a dummy site or a site with an explicit zero occupancy."""
+    if site.label in skip_labels:
+        return True
+    try:
+        return float(site.occ) <= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _p1_sites(structure, unit_cell, skip_labels=frozenset()):
     """Cell contents in P1 as a small table of sites."""
     ops = _space_group_ops(structure)
     sites = []
     for site in structure.sites:
+        if _skip_site(site, skip_labels):
+            continue
         element = _site_element(site)
         vdw_radius, covalent_radius = _radius_tables(element)
         frac = [float(v) for v in site.fract]
@@ -815,11 +843,14 @@ def load_structure(cif_path, block_name=None):
     structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
-    sites = _p1_sites(structure, unit_cell)
+    skip_labels = _dummy_labels(block)
+    sites = _p1_sites(structure, unit_cell, skip_labels)
     base_atoms = _base_atoms(unit_cell, sites)
     lookup = _base_atom_lookup(unit_cell, base_atoms)
     asu_atoms = []
     for site in structure.sites:
+        if _skip_site(site, skip_labels):
+            continue
         frac = [float(value) for value in site.fract]
         asu_atoms.append(
             {

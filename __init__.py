@@ -3994,19 +3994,22 @@ def _chemdraw_bond_orders(segments, covalent_radii):
 def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
     """Find the aromatic rings of the Kekulé structure and their torus geometry.
 
-    A ring whose sextet needs a heteroatom lone pair is left out: it has only
-    one arrangement of alternating single and double bonds (furan, pyrrole, the
-    azoles), and IUPAC GR-6.3 prefers that localized depiction over a
-    delocalization curve.  Leaving it out of ``aromatic_edges`` is what makes
-    its double bonds render as strokes.  A haptically coordinated ring (the
-    cyclopentadienyl of a metallocene) is the opposite case: it has no
-    alternating-bond depiction at all, and IUPAC GR-1.7.2 requires the curve.
+    A ring whose sextet needs a heteroatom lone pair is left out when every one
+    of its remaining atoms carries a drawn double bond (furan, pyrrole, the
+    azoles, a thiophene fused into a larger Kekulé system): IUPAC GR-6.3 prefers
+    that localized depiction over a delocalization curve.  Leaving it out of
+    ``aromatic_edges`` is what makes its double bonds render as strokes.  When
+    no such arrangement exists — borazine and an h-BN sheet have three donating
+    heteroatoms in a six-ring and no B=N at all — the curve is the only honest
+    depiction and the ring keeps its torus.  A haptically coordinated ring (the
+    cyclopentadienyl of a metallocene) is the other no-arrangement case: IUPAC
+    GR-1.7.2 requires the curve.
     """
     elements, edges, _lengths, points = _chemdraw_graph(segments, covalent_radii)
     aromatic_edges = set()
     aromatic_rings = []
     for ring in _chemistry().aromatic_rings(elements, edges, bond_orders, detail=True):
-        if ring.lone_pair_electrons:
+        if ring.lone_pair_electrons and ring.kekule:
             continue
         coordinates = np.asarray([points[node] for node in sorted(ring.nodes)], dtype=float)
         centroid_array = coordinates.mean(axis=0)

@@ -12,8 +12,10 @@ arsole/stibole keeps its lone pair.  The diazastibolene is a genuine 8 pi ring,
 so it stays non-aromatic and keeps its single C=C.
 
 A three-connected boron has an empty p orbital: borazine is aromatic with no
-B=N double bond at all (the sextet is the three nitrogen lone pairs), so it is
-drawn as a plain ring rather than a torus.
+B=N double bond at all (the sextet is the three nitrogen lone pairs), and a
+six-ring with three donating nitrogens has no complete arrangement of
+alternating single and double bonds (it would need one and a half B=N), so it
+keeps its delocalisation torus -- just like the isoelectronic h-BN sheet.
 
 Run:
   blender --background --factory-startup --python test_chemdraw_heterocycles.py
@@ -226,15 +228,21 @@ def check_diazastibolene():
 
 # --------------------------------------------------------- COD 2216154 (B)
 # 2,4,6-trichloro-1,3,5-trimethylborazine: both B3N3 rings are aromatic in the
-# chemistry API (six electrons from the three nitrogen lone pairs), but no B=N
-# double bond is drawn, so there is no torus either -- exactly the plain-ring
-# picture the lone-pair rule already gives furan and pyrrole.
+# chemistry API (six electrons from the three nitrogen lone pairs), and a
+# six-ring with three donating nitrogens has no complete arrangement of
+# alternating single and double bonds -- it would need one and a half B=N
+# doubles -- so the ring keeps its delocalisation torus, exactly like the
+# isoelectronic h-BN sheet.  No B=N double bond is drawn.
 
 
 def check_borazine():
     root = rebuild("Borazine.cif")
 
-    check("Borazine has no aromatic torus", len(tori(root)) == 0, str(len(tori(root))))
+    check(
+        "Borazine draws two aromatic tori (96 segments)",
+        len(tori(root)) == 1 and torus_edges(root) == 96,
+        f"{len(tori(root))} object(s), {torus_edges(root)} segments",
+    )
     check(
         "Borazine draws all twelve B-N bonds as singles",
         strokes(root, "B|N", 1) == 12 and strokes(root, "B|N", 2) == 0,

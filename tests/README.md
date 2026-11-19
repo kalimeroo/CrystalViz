@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 56/56 pass.
+`pwsh tests/run_all.ps1` → 57/57 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -110,7 +110,9 @@ for a first run.
   arsole/stibole keep their lone pair, and a B3N3H6 borazine / B3O3R3 boroxine is
   aromatic from the N/O lone pairs even though a three-connected boron has no
   double bond and contributes 0 π electrons (a saturated boracyclohexane is
-  still rejected, so boron alone does not make a ring conjugated). It finishes on
+  still rejected, so boron alone does not make a ring conjugated; an h-BN patch
+  keeps the shared nitrogen donating, and its rings report `kekule` false
+  because no B=N exists to draw). It finishes on
   the real fixture: the
   `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly the reference
   Kekulé structure (7 C=C + 3 C=O, no triple) and exactly one aromatic ring (the
@@ -171,8 +173,17 @@ for a first run.
   the antimony ring is found but its 8 π count is not aromatic, so there is no
   torus and the single C=C and both Sb-N bonds are drawn as they are.
   `Borazine.cif` (2216154) pins the boron rule: the two B3N3 rings are aromatic
-  in the chemistry API but draw all twelve B-N bonds single and no torus, since
-  the sextet is the three nitrogen lone pairs (the furan/pyrrole picture).
+  in the chemistry API (the sextet is the three nitrogen lone pairs), and with
+  no B=N double bond there is no alternating arrangement to draw, so both rings
+  keep their delocalisation torus (one object, 96 segments) while all twelve
+  B-N bonds are drawn single.
+
+- `test_chemdraw_bn.py` pins the grown h-BN lattice. `BN.cif` (1010602) imports
+  as four atoms and no torus; growing the sheet shell by shell must then give
+  every closed hexagon a torus — 4 at grow ×2, 8 at ×3, 20 at ×4, 28 at ×5 and
+  48 at ×6 (148 atoms) — each a full 48-segment six-ring. Every nitrogen belongs
+  to three rings, so the indolizine rule would withhold all lone pairs; a ring
+  containing boron is an aromatic network and keeps donating.
 
 - `test_chemdraw_graphite.py` pins the grown-lattice case. `Graphite.cif`
   imports as a single C-C bond (two atoms, no torus); growing the sheet shell

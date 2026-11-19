@@ -14,6 +14,7 @@ below so the provenance of each fixture is checkable.
 | `Cu2O.cif` | 1000063 | Cu2 O | Ionic oxide, metal-metal cap |
 | `Cyanoferrocene.cif` | 2005233 | C11 H9 Fe N | Dummy `Cg` sites (`_atom_site_calc_flag` = `dum`) skipped; haptic Cp + C≡N |
 | `aromatic.cif` | 4025500 | C9 H9 N3 | Aromatic ChemDraw: Kekulé triazole (methyl+phenyl 1H-1,2,4-triazole) |
+| `BN.cif` | 1010602 | B N | Hexagonal boron nitride: grown sheet draws every closed B3N3 hexagon as a torus |
 | `Diamond.cif` | 1541404 | C | Fill/bank guards (32 P1 sites per cell) |
 | `Ferrocene.cif` | 1100887 | C26 H18 Fe | Organometallic finite molecule, grow after fill |
 | `Graphite.cif` | 1200017 | C | Layered carbon, oxidation numbers |
@@ -31,7 +32,7 @@ three-connected boron has an empty p orbital:
 | --- | --- | --- | --- |
 | `Arsabenzene.cif` | 1573224 | C9 H5 As S2 | As=C ring double: arsenic ring torus, two Kekulé thiophenes |
 | `Arsole.cif` | 1555319 | C22 H17 As | Five-ring As keeps its lone pair (Kekulé), three phenyl tori |
-| `Borazine.cif` | 2216154 | C3 H9 B3 Cl3 N3 | B3N3 aromatic from the N lone pairs; no B=N is drawn |
+| `Borazine.cif` | 2216154 | C3 H9 B3 Cl3 N3 | B3N3 aromatic from the N lone pairs; no B=N is drawn, so both rings keep their torus |
 | `Diazastibolene.cif` | 7111438 | C10 H20 Cl N2 Sb | Sb ring is found but its 8π electron count is not aromatic |
 | `Selenochromenylium.cif` | 7243860 | C13 H15 B F4 Se | Se=C ring double, fused bicycle drawn as two tori |
 | `Selenophene.cif` | 1553554 | C18 H15 I O Se | Five-ring Se keeps its lone pair (Kekulé), two phenyl tori |

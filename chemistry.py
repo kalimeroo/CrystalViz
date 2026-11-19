@@ -178,8 +178,12 @@ class AromaticRing(NamedTuple):
     donates; a ring that needs such a donation has only one arrangement of
     alternating single and double bonds (IUPAC GR-6.3, furan/pyrrole), so the
     depiction layer draws it Kekule instead of with a delocalisation curve.
-    ``haptic_metal`` names the metal the whole ring coordinates to, when the
-    ring is a pi ligand (eta5-Cp, eta6-arene) rather than a Kekule ring.
+    ``kekule`` says whether every ring atom that does not donate a lone pair
+    carries a drawn multiple bond, i.e. whether that Kekule depiction exists at
+    all; borazine and an h-BN sheet have none (their borons carry no B=N), so
+    they keep the curve.  ``haptic_metal`` names the metal the whole ring
+    coordinates to, when the ring is a pi ligand (eta5-Cp, eta6-arene) rather
+    than a Kekule ring.
     """
 
     nodes: frozenset
@@ -187,6 +191,7 @@ class AromaticRing(NamedTuple):
     pi_electrons: int
     lone_pair_electrons: int
     haptic_metal: str | None = None
+    kekule: bool = False
 
 
 def edge_key(first, second):
@@ -742,7 +747,7 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
 
 
 def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count):
-    """``(pi_electrons, lone_pair_electrons)`` for *ring*, or None.
+    """``(pi_electrons, lone_pair_electrons, donors)`` for *ring*, or None.
 
     *by_node* maps every atom to the edge keys around it (the shape
     :func:`_graph` yields, keyed by edges rather than neighbours).
@@ -759,10 +764,14 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
     ring may claim it as its own sextet.  Both rings are then depicted Kekulé,
     which is the honest picture of an either/or delocalisation.
 
-    The second value counts how much of the sextet comes from such a donation.
-    It is what tells the depiction layer that the ring has only one arrangement
-    of alternating single and double bonds (IUPAC GR-6.3: furan and pyrrole),
-    so a delocalisation curve is not the preferred drawing.
+    A ring containing boron is exempt from that restriction: borazine, boroxine
+    and an h-BN sheet are aromatic networks rather than a finite fused pi
+    system, so a shared nitrogen or oxygen still supplies its share of the
+    sextet (the boron itself contributes nothing).
+
+    The second value counts how much of the sextet comes from such a donation,
+    and the third names the atoms that donated it.  A ring drawn Kekulé is one
+    where every other atom carries a drawn multiple bond.
 
     A double bond to a *terminal* carbon is exempt from the exocyclic veto: a
     graphite or graphene patch that has been grown by whole shells ends in
@@ -772,8 +781,10 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
     neighbour and the veto still fires; the exemption only reaches a carbon that
     is bonded to nothing else.
     """
+    boron_ring = any(elements.get(atom) == "B" for atom in ring)
     pi_electrons = 0
     lone_pair_electrons = 0
+    donors = set()
     for node in ring:
         element = elements.get(node, "")
         if element not in RING_ELEMENTS:
@@ -814,9 +825,10 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
             return None
         if ring_double:
             pi_electrons += 1
-        elif element in LONE_PAIR_ELEMENTS and ring_count.get(node, 1) == 1:
+        elif element in LONE_PAIR_ELEMENTS and (ring_count.get(node, 1) == 1 or boron_ring):
             pi_electrons += 2
             lone_pair_electrons += 2
+            donors.add(node)
         elif any(orders.get(key, 1) > 1 for key in incident):
             # A fusion atom whose double bond sits on the shared bond of the
             # neighbouring ring (a Clar structure): still one pi electron here.
@@ -833,7 +845,7 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
             # an empty p orbital: the ring is not conjugated.
             return None
     if pi_electrons >= 2 and (pi_electrons - 2) % 4 == 0:
-        return pi_electrons, lone_pair_electrons
+        return pi_electrons, lone_pair_electrons, frozenset(donors)
     return None
 
 
@@ -890,16 +902,36 @@ def _aromatic_ring_details(elements, edges, orders):
             ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count
         )
         haptic_metal = None
+        donors = frozenset()
         if counts is None:
             haptic = _haptic_pi_electrons(
                 ring, ring_atoms, elements, ring_edges, adjacency, by_node, orders
             )
             if haptic is None:
                 continue
-            counts = (haptic, 0)
+            pi_electrons, lone_pair_electrons = haptic, 0
             haptic_metal = _haptic_metal(ring, elements, adjacency)
+        else:
+            pi_electrons, lone_pair_electrons, donors = counts
 
-        result.append(AromaticRing(frozenset(ring), ring_edges, counts[0], counts[1], haptic_metal))
+        # A Kekule depiction exists when every atom that does not donate its
+        # lone pair already carries a drawn multiple bond -- inside the ring or
+        # on a fusion bond.  Borazine and the h-BN sheet have none (their
+        # borons carry no B=N), so they keep the delocalisation curve.
+        kekule = all(
+            node in donors or any(orders.get(key, 1) > 1 for key in by_node.get(node, ()))
+            for node in ring
+        )
+        result.append(
+            AromaticRing(
+                frozenset(ring),
+                ring_edges,
+                pi_electrons,
+                lone_pair_electrons,
+                haptic_metal,
+                kekule,
+            )
+        )
     result.sort(key=lambda ring: min(repr(node) for node in ring.nodes))
     return result
 

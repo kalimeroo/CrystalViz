@@ -61,8 +61,12 @@ def ring_bonds(nodes, distance=1.39):
     ]
 
 
-def honeycomb(columns, rows, distance=1.42):
-    """A hydrogen-less graphene patch: ``(elements, edges, lengths)``."""
+def honeycomb(columns, rows, distance=1.42, sublattices=("C", "C")):
+    """A hydrogen-less honeycomb patch: ``(elements, edges, lengths)``.
+
+    *sublattices* names the element of the A and B sublattices, so
+    ``("B", "N")`` builds the isoelectronic h-BN sheet.
+    """
     first = (1.5, math.sqrt(3) / 2)
     second = (1.5, -math.sqrt(3) / 2)
     a_sites = {}
@@ -73,7 +77,8 @@ def honeycomb(columns, rows, distance=1.42):
             y = column * first[1] + row * second[1]
             a_sites[(column, row)] = (round(x, 4), round(y, 4), 0.0)
             b_sites[(column, row)] = (round(x + 1.0, 4), round(y, 4), 0.0)
-    atoms = {point: "C" for point in list(a_sites.values()) + list(b_sites.values())}
+    atoms = {point: sublattices[0] for point in a_sites.values()}
+    atoms.update({point: sublattices[1] for point in b_sites.values()})
     bonds = []
     for (column, row), point in a_sites.items():
         for other in (
@@ -275,6 +280,7 @@ class AromaticRingsTest(unittest.TestCase):
         self.assertEqual(len(rings), 1)
         self.assertEqual(rings[0].pi_electrons, 6)
         self.assertEqual(rings[0].lone_pair_electrons, 2)
+        self.assertTrue(rings[0].kekule)
 
     def test_carbocyclic_sextet_uses_no_lone_pair(self):
         # Benzene and pyridine keep the delocalisation curve: their sextet is
@@ -428,8 +434,9 @@ class AromaticRingsTest(unittest.TestCase):
 
         orders = chemistry.bond_orders(elements, edges, lengths)
         self.assertEqual(len(multiple_bonds(orders)), 4)
-        rings = chemistry.aromatic_rings(elements, edges, orders)
-        self.assertEqual({len(nodes) for nodes, _edges in rings}, {5, 6})
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual({len(ring.nodes) for ring in rings}, {5, 6})
+        self.assertTrue(all(ring.kekule for ring in rings))
 
     def test_hydrogen_less_polycyclic_sheet(self):
         # A graphene patch has no hydrogens at all: every carbon has two ring
@@ -1052,6 +1059,10 @@ class BoronRingTest(unittest.TestCase):
     lone pairs, and the ring is aromatic even though no B=N/B=O double bond is
     drawn.  A carbon in the same position is left with an unsatisfied valence
     and still rejects the ring (a saturated boracyclohexane stays non-aromatic).
+
+    Unlike an indolizine, a boron ring is an aromatic network: its heteroatom
+    donates its lone pair even when it is shared with the neighbouring rings, so
+    an h-BN sheet is aromatic exactly like the graphene sheet it mirrors.
     """
 
     def test_borazine_is_aromatic_from_the_nitrogen_lone_pairs(self):
@@ -1064,6 +1075,7 @@ class BoronRingTest(unittest.TestCase):
             [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
             [(6, 6, 6)],
         )
+        self.assertFalse(rings[0].kekule)
 
     def test_boroxine_is_aromatic_from_the_oxygen_lone_pairs(self):
         elements, edges, lengths = boroxine_ring()
@@ -1075,6 +1087,25 @@ class BoronRingTest(unittest.TestCase):
             [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
             [(6, 6, 6)],
         )
+        self.assertFalse(rings[0].kekule)
+
+    def test_shared_nitrogen_of_a_boron_sheet_still_donates(self):
+        # h-BN: every nitrogen belongs to three rings, so the indolizine rule
+        # (a lone pair goes only to a ring the heteroatom belongs to alone)
+        # would withhold every pair and leave the whole sheet non-aromatic.
+        # A ring containing boron is a network, so the shared nitrogen keeps
+        # its share of the sextet.  Without boron the same sharing still
+        # withholds it -- see test_bridgehead_nitrogen_donates_no_lone_pair.
+        elements, edges, lengths = honeycomb(3, 3, 1.45, ("B", "N"))
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertTrue(rings)
+        self.assertEqual(
+            {(len(ring.nodes), ring.pi_electrons) for ring in rings},
+            {(6, 6)},
+        )
+        self.assertTrue(all(not ring.kekule for ring in rings))
 
     def test_saturated_boracyclohexane_stays_non_aromatic(self):
         # Boron alone does not make a ring conjugated: the five carbons still

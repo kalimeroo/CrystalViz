@@ -305,12 +305,26 @@ def _in_cycle(adjacency, node, budget):
 
 
 def _terminal_oxygens(node, elements, adjacency):
-    """Terminal oxygens bonded to *node* (N-oxide/nitro O, sulfoxide/selenoxide O)."""
-    return [
-        other
-        for other in adjacency.get(node, ())
-        if elements.get(other) == "O" and len(adjacency.get(other, ())) == 1
-    ]
+    """Terminal oxidic oxygens bonded to *node* (N-oxide/nitro O, sulfoxide O,
+    sulfone S=O, ...).
+
+    An oxygen is terminal when *node* is its only *covalent* neighbour.
+    Cationic coordination contacts do not stop it being the exocyclic oxide of
+    the heteroatom: a metal salt of a sulfone coordinates every S=O oxygen
+    (Ca-O/K-O), so such an oxygen has graph degree two but still carries the
+    S=O double.  A hydroxyl, ester or ether oxygen (a second covalent
+    neighbour such as H or C) is not terminal.
+    """
+    result = []
+    for other in adjacency.get(node, ()):
+        if elements.get(other) != "O":
+            continue
+        for neighbour in adjacency.get(other, ()):
+            if neighbour != node and elements.get(neighbour) in VALENCE_LADDERS:
+                break
+        else:
+            result.append(other)
+    return result
 
 
 def _initial_deficit(element, degree, adjacency, node, budget, elements):
@@ -326,8 +340,13 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
         # Already past the highest valence (hypervalent or over-coordinated):
         # leave it alone instead of guessing.
         return None
+    oxygens = (
+        _terminal_oxygens(node, elements, adjacency)
+        if element in {"N", *_SIX_RING_CHALCOGENS}
+        else ()
+    )
+    sulfone = element in _SIX_RING_CHALCOGENS and len(oxygens) >= 2
     if element == "N" and target == 3 and degree == 3:
-        oxygens = _terminal_oxygens(node, elements, adjacency)
         if len(oxygens) >= 2:
             # Nitro (and nitrate) nitrogen: the depiction shows both N-O bonds
             # as genuine double bonds, N(=O)2, so the nitrogen is five-valent.
@@ -339,10 +358,33 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
             # no pi bond, the ring is left with an odd number of unsatisfied
             # carbons and cannot close a Kekule structure at all.
             target = 4
+    elif sulfone:
+        # A sulfone/selenone/tellurone chalcogen carries two or more terminal
+        # oxygens and is hexavalent, so it is drawn S(=O)2 (Se=O, Te=O) with
+        # two genuine chalcogen-oxygen double bonds — the chalcogen analogue
+        # of the nitro N(=O)2.  The first ladder rung at or above the degree
+        # would pick 4 for a four-connected sulfur, leaving both S-O bonds
+        # single because the terminal oxygens' own deficits then have no
+        # partner to accept them.
+        target = 6
     deficit = target - degree
-    if deficit > 1 and _in_cycle(adjacency, node, budget):
+    if element == "O":
+        # An exocyclic oxide oxygen of nitrogen or a chalcogen (nitro N=O,
+        # sulfone/sulfoxide S=O, ...) carries one extra order even when it
+        # also coordinates a cation: a metal salt of a sulfone picks up every
+        # S=O oxygen, so each has graph degree two and its ladder target is
+        # already full — but the second S-O order still needs drawing.
+        if any(
+            elements.get(other) in {"N", *_SIX_RING_CHALCOGENS}
+            and node in _terminal_oxygens(other, elements, adjacency)
+            for other in adjacency.get(node, ())
+        ):
+            deficit = 1
+    if deficit > 1 and _in_cycle(adjacency, node, budget) and not sulfone:
         # A two-connected ring atom is one substituent short (usually an
-        # implicit hydrogen): one extra order is the most it can carry.
+        # implicit hydrogen): one extra order is the most it can carry.  A
+        # sulfone is exempt: its extra orders ride on its terminal oxygens,
+        # never on a ring bond, so a cyclic sulfone keeps both S=O doubles.
         deficit = 1
     return deficit
 

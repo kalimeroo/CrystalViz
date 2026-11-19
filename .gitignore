@@ -36,3 +36,9 @@ dist/
 # is the COD-based tests/test_chemdraw_heterocycles.py.
 CIF/S1.cif
 CIF/S2.cif
+
+# Local user structure used to debug the metal-coordinated sulfone depiction
+# (a calcium sulfonate hydrate with S=O oxygens that also coordinate Ca/K).
+# Not redistributable; stays on the author's machine like the S1/S2 CSD
+# fixtures above.
+CIF/Ca.cif

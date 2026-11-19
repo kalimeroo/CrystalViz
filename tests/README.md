@@ -102,7 +102,13 @@ for a first run.
   S=O double and still counts as a conjugated ring atom, while thiophene (a
   five-ring, where an all-double-bond Kekulé has an odd number of orders) keeps
   its lone pair and a saturated thiacyclohexane stays single-bonded. A sulfone
-  sulfur (two terminal oxygens) is not walked as a ring atom. The same gates are
+  sulfur (two terminal oxygens) is not walked as a ring atom and is hexavalent:
+  its two spare orders become genuine S=O doubles. A terminal oxygen keeps its
+  oxide role even under cationic coordination — a metal salt contacts every S=O
+  oxygen (graph degree two: covalent S-O plus an ionic M-O), so the metal bond
+  must not hide the sulfone (the metal-coordinated sulfone test pins exactly
+  that: K/Ca on both S=O oxygens still yields two S=O doubles, S-C single, and
+  the M-O contacts single). The same gates are
   pinned for the heavier main-group elements: selenopyrylium/telluropyrylium
   take one ring C=Se/C=Te double, selenophene/tellurophene keep their lone pair,
   a selenoxide keeps its Se=O and still counts as a ring atom, and a saturated

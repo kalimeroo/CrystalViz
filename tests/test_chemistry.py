@@ -837,6 +837,106 @@ class SulfurRingTest(unittest.TestCase):
         self.assertEqual(rings[0].pi_electrons, 6)
         self.assertEqual(rings[0].lone_pair_electrons, 0)
 
+    def test_sulfone_draws_two_s_oxygen_double_bonds(self):
+        # A methyl phenyl sulfone: two terminal oxygens, two carbons.  The
+        # sulfur is hexavalent, so both S-O bonds are genuine doubles (the S
+        # analogue of nitro N(=O)2); the S-C bonds stay single and the phenyl
+        # ring keeps its aromaticity.
+        nodes = [f"X{index}" for index in range(6)]
+        atoms = {node: "C" for node in nodes}
+        atoms.update({"S0": "S", "O1": "O", "O2": "O", "M0": "C"})
+        bonds = ring_bonds(nodes)
+        bonds += [
+            ("X0", "S0", 1.77),
+            ("S0", "M0", 1.79),
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+        ]
+        for index in range(1, 6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"X{index}", f"H{index}", 1.08))
+        for index in range(3):
+            atoms[f"H{index + 1}m"] = "H"
+            bonds.append(("M0", f"H{index + 1}m", 1.09))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        sulfone = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            sulfone, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+        self.assertEqual(len(chemistry.aromatic_rings(elements, edges, orders)), 1)
+
+    def test_cyclic_sulfone_keeps_both_s_oxygen_doubles(self):
+        # A cyclic sulfone (sulfur on the ring, both oxygens exocyclic): the
+        # ring-walking exclusion keeps the sulfur out of the pi system, and
+        # the ring cap must not cost it one of the two S=O doubles.
+        nodes = ["S0", "C1", "C2", "C3", "C4", "C5"]
+        atoms = {node: "C" for node in nodes}
+        atoms.update({"S0": "S", "O1": "O", "O2": "O"})
+        bonds = [
+            ("S0", "C1", 1.77),
+            ("C1", "C2", 1.52),
+            ("C2", "C3", 1.52),
+            ("C3", "C4", 1.52),
+            ("C4", "C5", 1.52),
+            ("C5", "S0", 1.77),
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+        ]
+        for index in range(1, 6):
+            for slot in (1, 2):
+                atoms[f"H{index}{slot}"] = "H"
+                bonds.append((f"C{index}", f"H{index}{slot}", 1.09))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        sulfone = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            sulfone, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+
+    def test_metal_coordinated_sulfone_keeps_both_s_oxygen_doubles(self):
+        # The Ca.CIF case: a sulfone whose S=O oxygens each also coordinate a
+        # cation (the metal salt picks up every S=O oxygen, so each has graph
+        # degree two, one covalent and one ionic).  The cation bonds must not
+        # hide the sulfone: both S-O bonds still carry order two, the S-C
+        # bonds stay single, and the metal contacts keep their own singles.
+        atoms = {
+            "S0": "S",
+            "O1": "O",
+            "O2": "O",
+            "C1": "C",
+            "C2": "C",
+            "FE1": "FE",
+            "FE2": "FE",
+        }
+        bonds = [
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+            ("S0", "C1", 1.77),
+            ("S0", "C2", 1.78),
+            ("O1", "FE1", 2.0),
+            ("O2", "FE2", 2.0),
+        ]
+        for index in (1, 2):
+            for slot in (1, 2, 3):
+                atoms[f"H{index}{slot}"] = "H"
+                bonds.append((f"C{index}", f"H{index}{slot}", 1.09))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+        self.assertEqual(
+            {key: value for key, value in doubles.items() if "S0" in key},
+            {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2},
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
+        self.assertNotIn(chemistry.edge_key("O1", "FE1"), doubles)
+        self.assertNotIn(chemistry.edge_key("O2", "FE2"), doubles)
+
     def test_thiophene_keeps_its_lone_pair(self):
         nodes = ["S", "C1", "C2", "C3", "C4"]
         atoms = {"S": "S"}
@@ -999,6 +1099,34 @@ class ChalcogenRingTest(unittest.TestCase):
 
         self.assertEqual(multiple_bonds(orders), {})
         self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
+    def test_selenone_draws_two_se_oxygen_double_bonds(self):
+        # A selenone Se(=O)2 follows the sulfone: two terminal oxygens, so the
+        # selenium is hexavalent and both Se-O bonds draw genuine doubles.
+        nodes = [f"X{index}" for index in range(6)]
+        atoms = {node: "C" for node in nodes}
+        atoms.update({"S0": "SE", "O1": "O", "O2": "O", "M0": "C"})
+        bonds = ring_bonds(nodes)
+        bonds += [
+            ("X0", "S0", 1.96),
+            ("S0", "M0", 1.98),
+            ("S0", "O1", 1.62),
+            ("S0", "O2", 1.64),
+        ]
+        for index in range(1, 6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"X{index}", f"H{index}", 1.08))
+        for index in range(3):
+            atoms[f"H{index + 1}m"] = "H"
+            bonds.append(("M0", f"H{index + 1}m", 1.09))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        selenone = {key: order for key, order in multiple_bonds(orders).items() if "S0" in key}
+        self.assertEqual(
+            selenone, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
+        )
+        self.assertEqual(valences(elements, edges, orders)["S0"], 6)
 
 
 class PnictogenRingTest(unittest.TestCase):

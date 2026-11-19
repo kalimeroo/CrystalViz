@@ -12,7 +12,10 @@ A ring whose sextet needs a heteroatom lone pair therefore gets no torus: the
 triazole of ``aromatic.cif`` is drawn with its two C=N doubles.  A haptically
 coordinated ring is the opposite case (GR-1.7.2 requires the curve), so the two
 cyclopentadienyl rings of ``Ferrocene.cif`` keep their tori even though each Cp
-carbon already carries four single bonds.
+carbon already carries four single bonds.  An N-oxide is the third case: its
+nitrogen is four-valent, so the dative N-O bond is drawn single and the ring
+keeps its torus (``Pyridine_N_oxide.cif``), while a nitro group keeps one
+genuine N=O doubles, N(=O)2 (``Nitrobenzene.cif``).
 
 Run:
   blender --background --factory-startup --python test_chemdraw_azole.py
@@ -149,6 +152,66 @@ if os.path.exists(AROMATIC_CIF):
     check_triazole_fixture()
 else:
     print("[SKIP] CIF/aromatic.cif is missing; the triazole checks did not run")
+
+
+# ------------------------------------------------- pyridine N-oxide / nitro
+# The complementary heteroatom case: a three-connected N carrying one terminal
+# oxygen is four-valent, its N-O bond is dative (drawn single) and its fourth
+# bond is a real ring double bond, so the ring keeps its torus.  A nitro
+# nitrogen has two terminal oxygens and keeps two genuine N=O double bonds
+# (N(=O)2), with no dative N-O left.
+PYRIDINE_NOXIDE_CIF = _env.cif("Pyridine_N_oxide.cif")
+NITROBENZENE_CIF = _env.cif("Nitrobenzene.cif")
+
+
+def rebuild(name):
+    scene.cgn_connectivity_pairs.clear()
+    bpy.ops.cgn.import_cif(filepath=_env.cif(name))
+    bpy.ops.cgn.fill_cell()
+    root = bpy.data.collections.get(scene.cgn_active_structure)
+    CrystalViz._default_connectivity_pairs(scene, CrystalViz._structure_atoms(root))
+    CrystalViz._rebuild_bonds(scene)
+    return root
+
+
+def check_n_oxide_fixture():
+    root = rebuild("Pyridine_N_oxide.cif")
+    aromatic_objects = tori(root)
+    check(
+        "pyridine N-oxide keeps four tori (4 molecules)",
+        len(aromatic_objects) == 1 and len(aromatic_objects[0].data.edges) == 192,
+        str(len(aromatic_objects[0].data.edges)) if aromatic_objects else "no torus",
+    )
+    check(
+        "pyridine N-oxide N-O is drawn single",
+        strokes(root, "N|O", 1) == 4,
+        str(strokes(root, "N|O", 1)),
+    )
+    check("pyridine N-oxide has no N=O", strokes(root, "N|O", 2) == 0, str(strokes(root, "N|O", 2)))
+
+    root = rebuild("Nitrobenzene.cif")
+    aromatic_objects = tori(root)
+    check(
+        "nitrobenzene keeps four tori (4 molecules)",
+        len(aromatic_objects) == 1 and len(aromatic_objects[0].data.edges) == 192,
+        str(len(aromatic_objects[0].data.edges)) if aromatic_objects else "no torus",
+    )
+    check(
+        "nitrobenzene draws N(=O)2 (two doubles per molecule)",
+        strokes(root, "N|O", 2) == 16,
+        str(strokes(root, "N|O", 2)),
+    )
+    check(
+        "nitrobenzene has no single N-O left",
+        strokes(root, "N|O", 1) == 0,
+        str(strokes(root, "N|O", 1)),
+    )
+
+
+if os.path.exists(PYRIDINE_NOXIDE_CIF) and os.path.exists(NITROBENZENE_CIF):
+    check_n_oxide_fixture()
+else:
+    print("[SKIP] the N-oxide fixtures are missing; their checks did not run")
 
 
 # ------------------------------------------------------------ N-methylpyrrole

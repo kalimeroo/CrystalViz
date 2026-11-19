@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 52/52 pass.
+`pwsh tests/run_all.ps1` → 55/55 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -83,13 +83,33 @@ for a first run.
   (fusion bonds must not veto a ring, and the bounded searches must stay
   bounded), acetylene/acetonitrile triples, allene, formaldehyde, the "long
   contacts are never promoted" gate, unknown elements staying single-bonded,
-  orientation independence of the edge keys, and the ring enumerator (4-rings
+  orientation independence of the edge keys, the N-oxide rule (a three-connected
+  N carrying one terminal O is four-valent: its dative N-O bond stays single and
+  its fourth order goes into the ring, so pyridine N-oxide and pyrazine
+  N,N′-dioxide become aromatic; a nitro group is drawn N(=O)₂ with two
+  genuine doubles, a two-connected nitroso N=O is untouched, and a
+  hydroxylamine invents nothing), and the ring enumerator (4-rings
   skipped, hydrogens/metals excluded). The aromatic records also pin the
   depiction split: pyrrole reports 2 lone-pair electrons of its sextet, benzene
   and pyridine report 0, a ferrocene-shaped Cp + Fe fragment is a 6 π haptic
   ligand with no double bond, a Cp–C≡C–anthracene fragment keeps its alkyne
   triple (the Ferrocene.cif allene failure mode), and an η6-coordinated quinone
-  is still vetoed by its exocyclic C=O. It finishes on the real fixture: the
+  is still vetoed by its exocyclic C=O. The sulfur rules are pinned on synthetic
+  six-rings: a thiopyrylium sulfur takes one ring S=C double (three alternating
+  doubles, no lone-pair share), a thiabenzene 1-oxide sulfur keeps its terminal
+  S=O double and still counts as a conjugated ring atom, while thiophene (a
+  five-ring, where an all-double-bond Kekulé has an odd number of orders) keeps
+  its lone pair and a saturated thiacyclohexane stays single-bonded. A sulfone
+  sulfur (two terminal oxygens) is not walked as a ring atom. The same gates are
+  pinned for the heavier main-group elements: selenopyrylium/telluropyrylium
+  take one ring C=Se/C=Te double, selenophene/tellurophene keep their lone pair,
+  a selenoxide keeps its Se=O and still counts as a ring atom, and a saturated
+  selenane stays single-bonded; arsabenzene draws an As=C (group 15 ladder),
+  arsole/stibole keep their lone pair, and a B3N3H6 borazine / B3O3R3 boroxine is
+  aromatic from the N/O lone pairs even though a three-connected boron has no
+  double bond and contributes 0 π electrons (a saturated boracyclohexane is
+  still rejected, so boron alone does not make a ring conjugated). It finishes on
+  the real fixture: the
   `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly the reference
   Kekulé structure (7 C=C + 3 C=O, no triple) and exactly one aromatic ring (the
   benzene; the annulated-indolizine five-ring is a bridgehead case), with every
@@ -117,7 +137,50 @@ for a first run.
   C|C triple (3 strokes) and no C|C double at all: the Cp carbon that carries
   the alkyne is four-coordinate, so the alkyne takes both spare orders itself
   instead of borrowing one from the arene (the old allene depiction drew
-  C11=C12=C13 and cost two of the three rings).
+  C11=C12=C13 and cost two of the three rings). Two COD fixtures close the
+  heteroatom case: `Pyridine_N_oxide.cif` (2105865) must keep four tori (four
+  molecules, 192 segments) with its dative N-O drawn single and no N=O at all,
+  and `Nitrobenzene.cif` (5000155) must keep its four tori while drawing both
+  N-O bonds as genuine doubles, N(=O)₂ (16 strokes, no single N-O left): the
+  delocalised O-N-O is depicted as two localised double bonds.
+
+- `test_chemdraw_sulfur.py` is the end-to-end counterpart for the two CSD
+  fixtures. `S1.cif` (ATBOXM, thiabenzene 1-oxide) must draw the S=O as a
+  genuine double (2 strokes, no single S-O left), the ring S=C double and its
+  two C=C doubles; its sulfur ring is a boat (out-of-plane deviation above the
+  `_AROMATIC_PLANARITY_MAX` gate), so it keeps the localized Kekulé depiction
+  instead of a torus. `S2.cif` (BIZTAF, thiopyrylium) must draw one aromatic
+  object holding four tori (the sulfur ring + three phenyls, 192 segments),
+  with the S=C suppressed inside the torus and both S-C bonds demoted to
+  singles.
+
+- `test_chemdraw_heterocycles.py` is the end-to-end counterpart for the heavy
+  main-group fixtures. The two chalcogenylium salts (`Selenochromenylium.cif`,
+  COD 7243860, and `Tellurochromenylium.cif`, COD 7243859) must draw their flat
+  fused bicycle as two tori (96 segments) with both ring C-Se/C-Te bonds demoted
+  to singles; `Selenophene.cif` (1553554) and `Tellurophene.cif` (1558536) must
+  keep the five-ring chalcogen single (its lone pair, so Kekulé) with its two
+  C=C doubles, and still give the two phenyls their tori. `Arsabenzene.cif`
+  (1573224, arsabenzene fused to two thiophenes) must draw the arsenic ring as
+  a torus (48 segments) with both As-C bonds single and one localized double in
+  each thiophene, while `Arsole.cif` (1555319, 1,2,5-triphenylarsole) keeps the
+  arsenic lone pair (three As-C singles, two C=C strokes) and its three phenyl
+  tori (144 segments). `Diazastibolene.cif` (7111438) pins the negative case:
+  the antimony ring is found but its 8 π count is not aromatic, so there is no
+  torus and the single C=C and both Sb-N bonds are drawn as they are.
+  `Borazine.cif` (2216154) pins the boron rule: the two B3N3 rings are aromatic
+  in the chemistry API but draw all twelve B-N bonds single and no torus, since
+  the sextet is the three nitrogen lone pairs (the furan/pyrrole picture).
+
+- `test_gemmi_worker.py` (bpy-free, plain gemmi) pins the P1 site and ASU
+  instance counts of the example CIFs, the grow shell, the ADP conversion, and
+  the dummy-site skip: `Cyanoferrocene.cif` (2005233) carries two `Cg` ring
+  centroids with `_atom_site_calc_flag` = `dum` and no `_atom_site_type_symbol`,
+  so the label fallback used to turn them into carbon and bond them to every Cp
+  carbon. The loader now reads the calc flag from the CIF block (gemmi exposes
+  no `calc_flag` on its sites) and drops those sites plus any explicit zero
+  occupancy: 88 P1 sites / 22 ASU atoms, 44 C + 4 Fe + 4 N + 36 H, no `Cg`
+  label. A CIF without the tag (Nitrobenzene) skips nothing.
 
 - `test_grow_fill_noadd_bonds.py` pins that Fill ASU → Grow bonds the initial
   atoms even when grow adds no shell — small finite molecules (Ferrocene.cif,
@@ -125,6 +188,17 @@ for a first run.
   return early at "no additional atoms matched" without calling the bond
   builder. It now builds the full set when starting bond-less after a fill; a
   second atom-less grow preserves those bonds.
+
+- `test_bond_grow_chemdraw_union.py` pins the grow-append chemdraw fix: when
+  bonds already exist, every grow must *append*, and the bond-order/aromatic
+  perception now runs over the union of the bonds on screen plus the new ones
+  instead of the freshly grown shell alone. With Pyrazine_dioxide.cif (half a
+  molecule per asymmetric unit on an inversion centre) the append draw no
+  longer promotes the lone half-molecule C-C to a spurious triple, and the
+  first grow that closes the ring renders the aromatic torus (one object, 48
+  edges) with the ring C-C bonds demoted to single strokes and the N-O bond
+  kept single — no duplicate groups, no `.00x` names. A final full rebuild
+  with the same windows needs no bond pair the appended grows lacked.
 
 - `test_reset_default_pairs.py` pins that **Reset Default** restores the exact
   import-time connectivity windows. The reset recomputed defaults from covalent

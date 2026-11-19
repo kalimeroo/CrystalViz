@@ -18,7 +18,19 @@ import chemistry  # noqa: E402  (the add-on root is the package directory)
 CIF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CIF")
 
 # Covalent radii (Angstrom) used to normalise the fixture's bond lengths.
-RADII = {"H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "FE": 1.32}
+RADII = {
+    "H": 0.31,
+    "B": 0.84,
+    "C": 0.76,
+    "N": 0.71,
+    "O": 0.66,
+    "S": 1.05,
+    "SE": 1.20,
+    "AS": 1.19,
+    "TE": 1.38,
+    "SB": 1.39,
+    "FE": 1.32,
+}
 
 
 def molecule(atoms, bonds):
@@ -71,6 +83,98 @@ def honeycomb(columns, rows, distance=1.42):
         ):
             if other is not None:
                 bonds.append((point, other, distance))
+    return molecule(atoms, bonds)
+
+
+def azine_ring(nitrogens, oxide=False):
+    """A pyridine-like six-ring with nitrogens at the given ring positions."""
+    nodes = [f"X{index}" for index in range(6)]
+    atoms = {node: ("N" if index in nitrogens else "C") for index, node in enumerate(nodes)}
+    bonds = ring_bonds(nodes)
+    for index, node in enumerate(nodes):
+        if index in nitrogens:
+            if oxide:
+                atoms[f"O{index}"] = "O"
+                bonds.append((node, f"O{index}", 1.31))
+        else:
+            atoms[f"H{index}"] = "H"
+            bonds.append((node, f"H{index}", 1.08))
+    return molecule(atoms, bonds)
+
+
+def sulfur_ring(oxide=False, methyl=False):
+    """A thiopyrylium-like six-ring (sulfur + five carbons).
+
+    The S-C distances come from the two COD entries that drove the rule:
+    BIZTAF (thiopyrylium, no oxygen) and ATBOXM (thiabenzene 1-oxide, S=O plus
+    a methyl on the sulfur).
+    """
+    nodes = ["S", "C1", "C2", "C3", "C4", "C5"]
+    atoms = {node: ("S" if node == "S" else "C") for node in nodes}
+    bonds = [
+        ("S", "C1", 1.692 if oxide else 1.672),
+        ("C1", "C2", 1.39),
+        ("C2", "C3", 1.39),
+        ("C3", "C4", 1.39),
+        ("C4", "C5", 1.39),
+        ("C5", "S", 1.689 if oxide else 1.702),
+    ]
+    for node in nodes[1:]:
+        atoms[node + "H"] = "H"
+        bonds.append((node, node + "H", 1.08))
+    if oxide:
+        atoms["O1"] = "O"
+        bonds.append(("S", "O1", 1.466))
+    if methyl:
+        atoms["C6"] = "C"
+        bonds.append(("S", "C6", 1.771))
+        for suffix in ("a", "b", "c"):
+            atoms["H6" + suffix] = "H"
+            bonds.append(("C6", "H6" + suffix, 1.08))
+    return molecule(atoms, bonds)
+
+
+def hetero_ring(element, size, first, second, carbon_carbon=1.39):
+    """A conjugated ring of *size* with one heteroatom and one H per carbon.
+
+    *first* and *second* are the two heteroatom-ring distances, taken from the
+    COD entry named in each test; *carbon_carbon* is the ring C-C distance.
+    """
+    carbons = [f"C{index}" for index in range(1, size)]
+    atoms = {element: element}
+    bonds = [(element, carbons[0], first)]
+    for index in range(len(carbons) - 1):
+        bonds.append((carbons[index], carbons[index + 1], carbon_carbon))
+    bonds.append((carbons[-1], element, second))
+    for node in carbons:
+        atoms[node] = "C"
+        atoms[node + "H"] = "H"
+        bonds.append((node, node + "H", 1.08))
+    return atoms, bonds
+
+
+def borazine_ring():
+    """B3N3H6: every boron and nitrogen is three-connected (COD 2216154)."""
+    nodes = ["B1", "N1", "B2", "N2", "B3", "N3"]
+    atoms = {node: node[0] for node in nodes}
+    bonds = ring_bonds(nodes, 1.43)
+    for node in nodes:
+        atoms[node + "H"] = "H"
+        bonds.append((node, node + "H", 1.19 if node.startswith("B") else 1.01))
+    return molecule(atoms, bonds)
+
+
+def boroxine_ring():
+    """B3O3 with a methyl on every boron (COD 1548569 has aryl groups)."""
+    nodes = ["B1", "O1", "B2", "O2", "B3", "O3"]
+    atoms = {node: node[0] for node in nodes}
+    bonds = ring_bonds(nodes, 1.37)
+    for node in ("B1", "B2", "B3"):
+        atoms[node + "C"] = "C"
+        bonds.append((node, node + "C", 1.55))
+        for suffix in ("a", "b", "c"):
+            atoms[node + "C" + suffix] = "H"
+            bonds.append((node + "C", node + "C" + suffix, 1.08))
     return molecule(atoms, bonds)
 
 
@@ -515,6 +619,90 @@ class MultipleBondTest(unittest.TestCase):
         )
 
 
+class NOxideValenceTest(unittest.TestCase):
+    """Dative N-O bonds (N-oxides) and the genuine N=O of a nitro group.
+
+    A three-connected nitrogen carrying one terminal oxygen is four-valent:
+    its fourth bond is a real multiple bond into the ring, while the N-O bond
+    itself stays single.  Without that the ring has an odd number of
+    unsaturated carbons and no Kekule structure exists at all.
+    """
+
+    def test_pyridine_n_oxide_ring_is_aromatic(self):
+        elements, edges, lengths = azine_ring({5}, oxide=True)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertNotIn(chemistry.edge_key("X5", "O5"), multiple_bonds(orders))
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual([len(nodes) for nodes, _ in rings], [6])
+        totals = valences(elements, edges, orders)
+        for node in ("X0", "X1", "X2", "X3", "X4", "X5"):
+            self.assertEqual(totals[node], 4, node)
+
+    def test_pyrazine_dioxide_ring_is_aromatic(self):
+        elements, edges, lengths = azine_ring({2, 5}, oxide=True)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        for key in (chemistry.edge_key("X2", "O2"), chemistry.edge_key("X5", "O5")):
+            self.assertNotIn(key, multiple_bonds(orders))
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual([len(nodes) for nodes, _ in rings], [6])
+        totals = valences(elements, edges, orders)
+        for node in ("X0", "X1", "X2", "X3", "X4", "X5"):
+            self.assertEqual(totals[node], 4, node)
+
+    def test_nitro_group_draws_two_n_oxygen_double_bonds(self):
+        # Nitrobenzene: two terminal oxygens, so neither N-O bond is dative and
+        # the group is drawn N(=O)2, the delocalised O-N-O as two doubles.
+        nodes = [f"X{index}" for index in range(6)]
+        atoms = {node: "C" for node in nodes}
+        atoms.update({"N0": "N", "O1": "O", "O2": "O"})
+        bonds = ring_bonds(nodes)
+        bonds += [("X0", "N0", 1.47), ("N0", "O1", 1.22), ("N0", "O2", 1.24)]
+        for index in range(1, 6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"X{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        nitro = {key: order for key, order in multiple_bonds(orders).items() if "N0" in key}
+        self.assertEqual(
+            nitro, {chemistry.edge_key("N0", "O1"): 2, chemistry.edge_key("N0", "O2"): 2}
+        )
+        self.assertEqual(len(chemistry.aromatic_rings(elements, edges, orders)), 1)
+
+    def test_pyridine_without_oxygen_is_unchanged(self):
+        elements, edges, lengths = azine_ring({5})
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(len(multiple_bonds(orders)), 3)
+        self.assertEqual(len(chemistry.aromatic_rings(elements, edges, orders)), 1)
+
+    def test_nitroso_double_bond_is_kept(self):
+        # A two-connected N=O is a genuine double bond, not a dative one.
+        elements, edges, lengths = molecule(
+            {"N0": "N", "O0": "O", "C0": "C"},
+            [("C0", "N0", 1.45), ("N0", "O0", 1.21)],
+        )
+        self.assertEqual(
+            chemistry.bond_orders(elements, edges, lengths),
+            {chemistry.edge_key("N0", "O0"): 2},
+        )
+
+    def test_hydroxylamine_stays_single_bonded(self):
+        # The N-oxide promotion must not invent a multiple bond where the
+        # extra valence has nowhere to go.
+        elements, edges, lengths = molecule(
+            {"N0": "N", "O0": "O", "H1": "H", "H2": "H", "H3": "H"},
+            [
+                ("N0", "O0", 1.45),
+                ("N0", "H1", 1.02),
+                ("N0", "H2", 1.02),
+                ("O0", "H3", 0.97),
+            ],
+        )
+        self.assertEqual(chemistry.bond_orders(elements, edges, lengths), {})
+
+
 class FindRingsTest(unittest.TestCase):
     def test_four_membered_ring_is_not_reported(self):
         atoms, bonds = cycle("C", 4, distance=1.55)
@@ -557,6 +745,300 @@ class FindRingsTest(unittest.TestCase):
         ]
         elements, edges, _lengths = molecule(atoms, bonds)
         self.assertEqual(chemistry.find_rings(elements, edges), [])
+
+
+class SulfurRingTest(unittest.TestCase):
+    """Six-membered sulfur rings: thiopyrylium and thiabenzene 1-oxide.
+
+    A conjugated six-ring sulfur draws a genuine S=C bond, exactly as pyridine
+    draws N=C, so the ring has three alternating doubles and no lone-pair share
+    of its sextet.  A sulfoxide sulfur also carries a terminal S=O, which does
+    not break that conjugation.  The rule stays limited to six-membered rings
+    and to sulfur bonds already shortened towards a double bond: thiophene and
+    a saturated thiacyclohexane keep their previous behaviour.
+    """
+
+    def test_thiopyrylium_sulfur_takes_one_ring_double_bond(self):
+        elements, edges, lengths = sulfur_ring()
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        s_doubles = [key for key in multiple_bonds(orders) if "S" in key]
+        self.assertEqual(len(s_doubles), 1)
+        self.assertEqual(valences(elements, edges, orders)["S"], 3)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual([len(ring.nodes) for ring in rings], [6])
+        self.assertEqual(rings[0].pi_electrons, 6)
+        self.assertEqual(rings[0].lone_pair_electrons, 0)
+
+    def test_thiabenzene_oxide_keeps_its_s_oxygen_double(self):
+        elements, edges, lengths = sulfur_ring(oxide=True, methyl=True)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders).get(chemistry.edge_key("S", "O1")), 2)
+        self.assertEqual(len([key for key in multiple_bonds(orders) if "S" in key]), 2)
+        self.assertEqual(valences(elements, edges, orders)["S"], 6)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual([len(ring.nodes) for ring in rings], [6])
+        self.assertEqual(rings[0].pi_electrons, 6)
+        self.assertEqual(rings[0].lone_pair_electrons, 0)
+
+    def test_thiophene_keeps_its_lone_pair(self):
+        nodes = ["S", "C1", "C2", "C3", "C4"]
+        atoms = {"S": "S"}
+        bonds = [
+            ("S", "C1", 1.714),
+            ("C1", "C2", 1.37),
+            ("C2", "C3", 1.42),
+            ("C3", "C4", 1.37),
+            ("C4", "S", 1.714),
+        ]
+        for node in nodes[1:]:
+            atoms[node] = "C"
+            atoms[node + "H"] = "H"
+            bonds.append((node, node + "H", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2)
+        self.assertFalse(any("S" in key for key in doubles))
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
+        )
+
+    def test_saturated_thiacyclohexane_has_no_multiple_bonds(self):
+        nodes = ["S", "C1", "C2", "C3", "C4", "C5"]
+        atoms = {"S": "S"}
+        bonds = []
+        for index in range(6):
+            first = nodes[index]
+            second = nodes[(index + 1) % 6]
+            distance = 1.82 if "S" in (first, second) else 1.54
+            bonds.append((first, second, distance))
+        for node in nodes[1:]:
+            atoms[node] = "C"
+            for suffix in ("a", "b"):
+                atoms[node + suffix] = "H"
+                bonds.append((node, node + suffix, 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders), {})
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
+    def test_sulfone_sulfur_is_not_a_ring_atom(self):
+        # A sulfone sulfur (two terminal oxygens) is not part of the ring pi
+        # system: it must not make the ring walkable.
+        nodes = ["S", "C1", "C2", "C3", "C4", "C5"]
+        atoms = {"S": "S", "O1": "O", "O2": "O"}
+        bonds = [("S", "O1", 1.44), ("S", "O2", 1.44)]
+        for index in range(6):
+            first = nodes[index]
+            second = nodes[(index + 1) % 6]
+            distance = 1.78 if "S" in (first, second) else 1.39
+            bonds.append((first, second, distance))
+        for node in nodes[1:]:
+            atoms[node] = "C"
+            atoms[node + "H"] = "H"
+            bonds.append((node, node + "H", 1.08))
+        elements, edges, _lengths = molecule(atoms, bonds)
+
+        self.assertEqual(chemistry.find_rings(elements, edges), [])
+
+
+class ChalcogenRingTest(unittest.TestCase):
+    """Selenium and tellurium follow the sulfur rule (COD 7243860 / 7243859).
+
+    A conjugated six-membered ring takes a genuine C=Se/C=Te double bond, so the
+    ring is a 6 pi ring with no lone-pair share (selenopyrylium,
+    telluropyrylium).  The five-membered selenophene/tellurophene cannot hold an
+    all-double-bond Kekule structure, so the chalcogen keeps its lone pair, and
+    a saturated selenane stays single-bonded.  A selenoxide selenium is
+    four-coordinate, keeps its terminal Se=O double and still counts as a ring
+    atom, exactly like a sulfoxide sulfur.
+    """
+
+    def test_selenopyrylium_takes_one_ring_double_bond(self):
+        atoms, bonds = hetero_ring("SE", 6, 1.806, 1.853)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        se_doubles = [key for key in multiple_bonds(orders) if "SE" in key]
+        self.assertEqual(len(se_doubles), 1)
+        self.assertEqual(valences(elements, edges, orders)["SE"], 3)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 0)],
+        )
+
+    def test_telluropyrylium_takes_one_ring_double_bond(self):
+        atoms, bonds = hetero_ring("TE", 6, 2.003, 2.041)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        te_doubles = [key for key in multiple_bonds(orders) if "TE" in key]
+        self.assertEqual(len(te_doubles), 1)
+        self.assertEqual(valences(elements, edges, orders)["TE"], 3)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 0)],
+        )
+
+    def test_selenophene_keeps_its_lone_pair(self):
+        atoms, bonds = hetero_ring("SE", 5, 1.872, 1.884)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2)
+        self.assertFalse(any("SE" in key for key in doubles))
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
+        )
+
+    def test_tellurophene_keeps_its_lone_pair(self):
+        atoms, bonds = hetero_ring("TE", 5, 2.071, 2.078)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2)
+        self.assertFalse(any("TE" in key for key in doubles))
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
+        )
+
+    def test_selenoxide_keeps_its_se_oxygen_double(self):
+        atoms, bonds = hetero_ring("SE", 6, 1.806, 1.853)
+        atoms["O1"] = "O"
+        bonds.append(("SE", "O1", 1.646))
+        atoms["C6"] = "C"
+        bonds.append(("SE", "C6", 1.98))
+        for suffix in ("a", "b", "c"):
+            atoms["C6" + suffix] = "H"
+            bonds.append(("C6", "C6" + suffix, 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders).get(chemistry.edge_key("SE", "O1")), 2)
+        self.assertEqual(len([key for key in multiple_bonds(orders) if "SE" in key]), 2)
+        self.assertEqual(valences(elements, edges, orders)["SE"], 6)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 0)],
+        )
+
+    def test_saturated_selenane_has_no_multiple_bonds(self):
+        atoms, bonds = hetero_ring("SE", 6, 1.96, 1.96, carbon_carbon=1.54)
+        for node in [f"C{index}" for index in range(1, 6)]:
+            atoms[node + "H2"] = "H"
+            bonds.append((node, node + "H2", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders), {})
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
+
+class PnictogenRingTest(unittest.TestCase):
+    """Arsenic and antimony mirror phosphorus (COD 1573224 / 1555319 / 7111438).
+
+    The group 15 ladder (3, 5) already gives a two-connected ring atom its extra
+    order, so arsabenzene draws an As=C ring double (three alternating doubles,
+    no lone-pair share).  A five-membered arsole/stibole has an odd number of
+    unsatisfied orders, so the heteroatom keeps its lone pair instead.
+    """
+
+    def test_arsabenzene_takes_one_ring_double_bond(self):
+        atoms, bonds = hetero_ring("AS", 6, 1.859, 1.860)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        as_doubles = [key for key in multiple_bonds(orders) if "AS" in key]
+        self.assertEqual(len(as_doubles), 1)
+        self.assertEqual(valences(elements, edges, orders)["AS"], 3)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 0)],
+        )
+
+    def test_arsole_keeps_its_lone_pair(self):
+        atoms, bonds = hetero_ring("AS", 5, 1.943, 1.953)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2)
+        self.assertFalse(any("AS" in key for key in doubles))
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
+        )
+
+    def test_stibole_keeps_its_lone_pair(self):
+        atoms, bonds = hetero_ring("SB", 5, 2.10, 2.11)
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2)
+        self.assertFalse(any("SB" in key for key in doubles))
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
+        )
+
+
+class BoronRingTest(unittest.TestCase):
+    """A boron with no double bond contributes 0 pi electrons, not a veto.
+
+    Borazine (B3N3H6) and boroxine (B3O3R3) have an empty p orbital on every
+    three-connected boron: the six pi electrons come from the nitrogen or oxygen
+    lone pairs, and the ring is aromatic even though no B=N/B=O double bond is
+    drawn.  A carbon in the same position is left with an unsatisfied valence
+    and still rejects the ring (a saturated boracyclohexane stays non-aromatic).
+    """
+
+    def test_borazine_is_aromatic_from_the_nitrogen_lone_pairs(self):
+        elements, edges, lengths = borazine_ring()
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders), {})
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 6)],
+        )
+
+    def test_boroxine_is_aromatic_from_the_oxygen_lone_pairs(self):
+        elements, edges, lengths = boroxine_ring()
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(multiple_bonds(orders), {})
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(
+            [(len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons) for ring in rings],
+            [(6, 6, 6)],
+        )
+
+    def test_saturated_boracyclohexane_stays_non_aromatic(self):
+        # Boron alone does not make a ring conjugated: the five carbons still
+        # have no double bond, so the ring must stay rejected.
+        atoms, bonds = hetero_ring("B", 6, 1.60, 1.60, carbon_carbon=1.54)
+        for node in [f"C{index}" for index in range(1, 6)]:
+            atoms[node + "H2"] = "H"
+            bonds.append((node, node + "H2", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
 
 
 def read_geom_bonds(path):

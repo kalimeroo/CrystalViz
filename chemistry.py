@@ -41,8 +41,19 @@ VALENCE_LADDERS = {
     "O": (2,),
     "F": (1,),
     "SI": (4,),
+    # Group 15: a two-connected ring atom aims at 3, so arsabenzene and
+    # stibabenzene take their As=C/Sb=C double from the ladder alone, exactly
+    # as phosphinine does.  A five-membered arsole/stibole has an odd number of
+    # unsatisfied orders, so the heteroatom keeps its lone pair instead.
     "P": (3, 5),
+    "AS": (3, 5),
+    "SB": (3, 5),
+    # Group 16: a two-connected ring atom aims at 2, so the conjugated
+    # six-membered rings need the explicit rule below (selenopyrylium,
+    # telluropyrylium), exactly like thiopyrylium.
     "S": (2, 4, 6),
+    "SE": (2, 4, 6),
+    "TE": (2, 4, 6),
     "CL": (1,),
     "BR": (1,),
     "I": (1,),
@@ -50,14 +61,15 @@ VALENCE_LADDERS = {
 
 # Only these elements take part in multiple bonds (H and the halogens never
 # do: their single rung is already full once they are connected).
-MULTIPLE_BOND_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S", "SI"})
+MULTIPLE_BOND_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S", "SI", "AS", "SB", "SE", "TE"})
 
 # Ring perception only walks atoms that can be part of a conjugated ring.
-RING_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S"})
+RING_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S", "AS", "SB", "SE", "TE"})
 
 # Elements contributing a lone pair (2 pi electrons) when they carry no double
-# bond of their own inside the ring — pyrrole N, furan O, thiophene S.
-LONE_PAIR_ELEMENTS = frozenset({"N", "P", "O", "S"})
+# bond of their own inside the ring — pyrrole N, furan O, thiophene S, and
+# their heavier analogues (phosphole/arsole/stibole, selenophene/tellurophene).
+LONE_PAIR_ELEMENTS = frozenset({"N", "P", "O", "S", "AS", "SB", "SE", "TE"})
 
 # Metals that carry an eta5/eta6/eta7 pi ligand (metallocenes, half-sandwiches,
 # arene complexes).  A coordinated cyclopentadienyl ring is the 6 pi Huckel
@@ -128,6 +140,19 @@ HAPTIC_METALS = frozenset(
 # A candidate multiple bond may not be longer than the covalent radii predict
 # (normalised length 1.0).  Real double/triple bonds sit well below that.
 _CANDIDATE_MAX_LENGTH_SCALE = 1.0
+
+# A six-membered ring of a heavy chalcogen takes one ring double bond of its
+# own only when its ring bonds are clearly shortened towards a double bond
+# (thiopyrylium, selenopyrylium, telluropyrylium: ~0.92-0.96 of the
+# covalent-radii sum).  A saturated C-S/C-Se/C-Te bond sits at ~1.0, and a
+# five-membered thiophene/selenophene/tellurophene keeps its lone pair instead.
+# Aromaticity itself is still decided by the Huckel count on the resulting
+# Kekule structure, never by this threshold.
+_RING_CHALCOGEN_MAX_LENGTH_SCALE = 0.97
+
+# The chalcogens that take a genuine ring double bond in a six-membered ring,
+# and whose terminal oxide (S=O, Se=O, Te=O) is then outside the ring pi system.
+_SIX_RING_CHALCOGENS = frozenset({"S", "SE", "TE"})
 
 # Ring sizes ChemDraw depicts as rings.  5, 6 and 7 cover the overwhelming
 # majority of organic structures; 3- and 4-rings are handled by the ring-atom
@@ -223,12 +248,24 @@ def _ring_eligible(node, elements, adjacency):
     pi ligand also carries its metal bond (eta5-Cp: two ring carbons, one
     hydrogen and the metal), so the metal bonds are not counted: the ring
     itself only has the non-metal neighbours.
+
+    A sulfoxide/selenoxide/telluroxide chalcogen carries one terminal oxygen
+    that is not a ring atom either (thiabenzene 1-oxide: two ring carbons, a
+    methyl and the O).  Its non-oxygen neighbours are counted the same way, so
+    the six-membered ring can still be found.  A sulfone/selenone chalcogen
+    (two terminal oxygens) stays out: it is not part of the ring pi system.
     """
     if elements.get(node) not in RING_ELEMENTS:
         return False
     neighbours = adjacency.get(node, ())
     if 2 <= len(neighbours) <= 3:
         return True
+    if (
+        elements.get(node) in _SIX_RING_CHALCOGENS
+        and len(_terminal_oxygens(node, elements, adjacency)) == 1
+    ):
+        non_oxygen = sum(1 for item in neighbours if elements.get(item) != "O")
+        return 2 <= non_oxygen <= 3
     if not any(elements.get(item) in HAPTIC_METALS for item in neighbours):
         return False
     non_metal = sum(1 for item in neighbours if elements.get(item) not in HAPTIC_METALS)
@@ -262,7 +299,16 @@ def _in_cycle(adjacency, node, budget):
     return False
 
 
-def _initial_deficit(element, degree, adjacency, node, budget):
+def _terminal_oxygens(node, elements, adjacency):
+    """Terminal oxygens bonded to *node* (N-oxide/nitro O, sulfoxide/selenoxide O)."""
+    return [
+        other
+        for other in adjacency.get(node, ())
+        if elements.get(other) == "O" and len(adjacency.get(other, ())) == 1
+    ]
+
+
+def _initial_deficit(element, degree, adjacency, node, budget, elements):
     """How many extra bond orders *node* wants, or None when unconstrained."""
     ladder = VALENCE_LADDERS.get(element)
     if not ladder:
@@ -275,6 +321,19 @@ def _initial_deficit(element, degree, adjacency, node, budget):
         # Already past the highest valence (hypervalent or over-coordinated):
         # leave it alone instead of guessing.
         return None
+    if element == "N" and target == 3 and degree == 3:
+        oxygens = _terminal_oxygens(node, elements, adjacency)
+        if len(oxygens) >= 2:
+            # Nitro (and nitrate) nitrogen: the depiction shows both N-O bonds
+            # as genuine double bonds, N(=O)2, so the nitrogen is five-valent.
+            target = 5
+        elif oxygens:
+            # An N-oxide (pyridine N-oxide, pyrazine N,N'-dioxide) is
+            # four-valent: its N-O bond is dative, so the fourth bond is a real
+            # multiple bond to a carbon.  Without it the nitrogen contributes
+            # no pi bond, the ring is left with an odd number of unsatisfied
+            # carbons and cannot close a Kekule structure at all.
+            target = 4
     deficit = target - degree
     if deficit > 1 and _in_cycle(adjacency, node, budget):
         # A two-connected ring atom is one substituent short (usually an
@@ -283,11 +342,33 @@ def _initial_deficit(element, degree, adjacency, node, budget):
     return deficit
 
 
-def _candidates(elements, edge_keys, deficits, lengths):
+def _dative_bonds(elements, adjacency):
+    """N-O bonds that must stay single: the N-oxide bond.
+
+    A three-connected nitrogen carrying exactly one terminal oxygen is an
+    N-oxide nitrogen: that N-O bond is dative (N+ - O-), and its fourth valence
+    is a real multiple bond into the ring or the substituent.  A nitro or
+    nitrate nitrogen has two or three terminal oxygens: it is drawn N(=O)2, so
+    neither N-O bond is excluded here.  A two-connected N-O (nitroso) is a
+    genuine double bond as well.
+    """
+    single = set()
+    for node, element in elements.items():
+        if element != "N" or len(adjacency.get(node, ())) != 3:
+            continue
+        oxygens = _terminal_oxygens(node, elements, adjacency)
+        if len(oxygens) == 1:
+            single.add(edge_key(node, oxygens[0]))
+    return single
+
+
+def _candidates(elements, edge_keys, deficits, lengths, single_only=frozenset()):
     """Edges able to carry a multiple bond, shortest first."""
     candidates = []
     for key in edge_keys:
         first, second = key
+        if key in single_only:
+            continue
         if first not in deficits or second not in deficits:
             continue
         if deficits[first] <= 0 and deficits[second] <= 0:
@@ -504,6 +585,43 @@ def _repair(deficits, extras, by_node, budget, depth=0):
     return False
 
 
+def _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency):
+    """Extra bond orders wanted by a sulfur, selenium or tellurium ring atom.
+
+    A thiopyrylium cation (BIZTAF), a selenopyrylium/telluropyrylium cation, or
+    a thiabenzene 1-oxide (ATBOXM) draws a genuine C=S/C=Se/C=Te double bond
+    inside its six-membered ring, exactly as pyridine draws N=C: the chalcogen
+    belongs to the pi system, so one of its ring bonds carries one more order,
+    plus one more when it also carries a terminal oxygen drawn as S=O/Se=O/Te=O.
+    The rule is deliberately narrow:
+
+    * only a six-membered ring qualifies.  A five-membered thiophene,
+      selenophene or tellurophene cannot hold an all-double-bond Kekule
+      structure (chalcogen plus four carbons is an odd number of orders), so
+      its chalcogen keeps its lone pair instead;
+    * every chalcogen ring bond must already be shortened towards a double
+      bond (below ``_RING_CHALCOGEN_MAX_LENGTH_SCALE`` of the covalent-radii
+      sum).  A saturated thiacyclohexane/selenane/tellurane sits at ~1.0 and is
+      left alone.
+
+    Returns ``{node: deficit}``.
+    """
+    result = {}
+    for ring in find_rings(elements, edges, sizes=(6,)):
+        for node in ring:
+            if elements.get(node) not in _SIX_RING_CHALCOGENS:
+                continue
+            ring_lengths = [
+                lengths.get(edge_key(node, other), 1.0)
+                for other in adjacency.get(node, ())
+                if other in ring
+            ]
+            if not ring_lengths or max(ring_lengths) >= _RING_CHALCOGEN_MAX_LENGTH_SCALE:
+                continue
+            result[node] = 1 + len(_terminal_oxygens(node, elements, adjacency))
+    return result
+
+
 def bond_orders(elements, edges, lengths=None):
     """Return ``{edge_key: order}`` for every bond that is not a single bond.
 
@@ -512,7 +630,9 @@ def bond_orders(elements, edges, lengths=None):
     0. forced triples: an atom with two extra orders and only one usable bond
        (an alkyne or nitrile whose other neighbour is saturated) gets that bond
        tripled up front, so the rest of the graph can still find a clean Kekule
-       structure;
+       structure.  An N-oxide nitrogen counts as four-valent and its dative N-O
+       bond is never a candidate, so its fourth bond goes into the ring (see
+       :func:`_initial_deficit` and :func:`_dative_bonds`);
     1. greedy: give one extra order to every edge joining two atoms that both
        still want one;
     2. augmenting paths: rescue atoms the greedy pass stranded even though a
@@ -531,11 +651,18 @@ def bond_orders(elements, edges, lengths=None):
 
     deficits = {}
     for node, element in elements.items():
-        deficit = _initial_deficit(element, len(adjacency[node]), adjacency, node, budget)
+        deficit = _initial_deficit(element, len(adjacency[node]), adjacency, node, budget, elements)
         if deficit is not None:
             deficits[node] = deficit
+    if not _SIX_RING_CHALCOGENS.isdisjoint(elements.values()):
+        # Overrides the rung chosen above: a conjugated six-membered chalcogen
+        # ring needs one (or two) extra orders that the plain valence ladder
+        # does not ask for (see :func:`_six_ring_chalcogen_deficits`).
+        deficits.update(_six_ring_chalcogen_deficits(elements, edges, lengths, adjacency))
 
-    candidates, by_node = _candidates(elements, edge_keys, deficits, lengths)
+    candidates, by_node = _candidates(
+        elements, edge_keys, deficits, lengths, _dative_bonds(elements, adjacency)
+    )
     extras = {}
     _force_triples(elements, deficits, by_node, extras)
     _greedy(deficits, extras, candidates)
@@ -644,14 +771,28 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
         if element not in RING_ELEMENTS:
             return None
         incident = by_node.get(node, ())
+        ring_double = any(orders.get(key, 1) > 1 for key in incident if key in ring_edges)
         # An exocyclic multiple bond (C=O, C=CH2, ...) breaks the conjugation
         # of this ring.
         for key in incident:
             if key in ring_edges or orders.get(key, 1) <= 1:
                 continue
-            if _other(key, node) not in ring_atoms:
-                return None
-        if any(orders.get(key, 1) > 1 for key in incident if key in ring_edges):
+            other = _other(key, node)
+            if other in ring_atoms:
+                continue
+            if (
+                element in _SIX_RING_CHALCOGENS
+                and ring_double
+                and elements.get(other) == "O"
+                and len(by_node.get(other, ())) == 1
+            ):
+                # A thiopyrylium/thiabenzene (or Se/Te analogue) exocyclic
+                # oxide: the chalcogen is part of the ring pi system through
+                # its ring double bond, and the terminal oxygen is outside it,
+                # so the S=O does not break conjugation.
+                continue
+            return None
+        if ring_double:
             pi_electrons += 1
         elif element in LONE_PAIR_ELEMENTS and ring_count.get(node, 1) == 1:
             pi_electrons += 2
@@ -660,9 +801,16 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
             # A fusion atom whose double bond sits on the shared bond of the
             # neighbouring ring (a Clar structure): still one pi electron here.
             pi_electrons += 1
+        elif element == "B":
+            # A boron with no multiple bond has an empty p orbital: it
+            # contributes no pi electron but does not break conjugation
+            # (borazine, boroxine, boratabenzene).  A carbon in the same
+            # position is left with an unsatisfied valence, so it still
+            # rejects the ring.
+            pass
         else:
-            # A carbon (or boron) with no double bond at all has an empty p
-            # orbital: the ring is not conjugated.
+            # A carbon (or any other element) with no double bond at all has
+            # an empty p orbital: the ring is not conjugated.
             return None
     if pi_electrons >= 2 and (pi_electrons - 2) % 4 == 0:
         return pi_electrons, lone_pair_electrons

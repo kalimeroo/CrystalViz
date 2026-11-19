@@ -4323,6 +4323,50 @@ def _merge_into_existing_bond_object(root, pair_name, order, element, segments):
     return True
 
 
+def _drawn_segments_for(root_id):
+    """Cart-space bond segments last drawn for *root_id*, or ``[]``.
+
+    ``_bond_objects`` records the full set of drawn cart segments on the
+    spatial cache so the grow path can classify the union of what is on screen
+    with the freshly grown bonds (see ``_bond_objects``).  The cache is cleared
+    by ``_clear_bonds``, so a missing/foreign entry simply means "no reliable
+    record": the caller then falls back to the old partial-graph behaviour.
+    """
+    cached = _BOND_SPATIAL_CACHE
+    if cached is None or cached.get("root_id") != root_id:
+        return []
+    return list(cached.get("segments", []))
+
+
+def _dedupe_segments(segments):
+    """Collapse *segments* (``(first, second, element_a, element_b)``) onto one
+    entry per rounded geometric edge, keeping the first occurrence."""
+    seen = set()
+    kept = []
+    for segment in segments:
+        key = _bond_edge_key(segment[0], segment[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(segment)
+    return kept
+
+
+def _segments_by_element_pair(segments):
+    """Bucket cart-space segments by their (sorted) element pair.
+
+    The stored segments keep whichever orientation the spatial search produced,
+    so the pair key is normalised to the sorted element pair: ``C|N`` and
+    ``N|C`` segments land in the same object, exactly as the full rebuild keyed
+    them by the window's shared (element_a, element_b) entry.
+    """
+    grouped = {}
+    for first, second, element_a, element_b in segments:
+        pair = tuple(sorted((str(element_a).upper(), str(element_b).upper())))
+        grouped.setdefault(pair, []).append((first, second, element_a, element_b))
+    return grouped
+
+
 def _canonical_atom_indices(atoms):
     """Index of the representative atom for every element/position duplicate.
 
@@ -4400,6 +4444,11 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
 
     cell_width = max(max_distance, 1e-6)
     root_id = root.get("cgn_instance_id", root.name)
+    # Whatever was last drawn for this structure stays the authoritative
+    # "old membership" for the next append: grow never re-derives bonds that
+    # were built under earlier connectivity settings, so the union graph for
+    # chemdraw classification is exactly what is on screen plus the new bonds.
+    prior_segments = _drawn_segments_for(root_id)
     # Duplicate atoms (same element, same point) collapse onto their
     # representative: only it is bucketed and only it receives bonds.
     canonical = _canonical_atom_indices(atoms)
@@ -4543,6 +4592,23 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     covalent_radii = {
         _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0)) for atom in atoms
     }
+    if append_only and chemdraw and start_index > 0:
+        # The grow path adds bonds for the freshly grown atoms only.  Inferring
+        # orders and aromatic rings from that partial graph alone is wrong: a
+        # new bond whose context is missing is valence-promoted (a lone C-C
+        # becomes a spurious triple) and a ring closed by a mix of old and new
+        # bonds is never detected.  Reclassify over the union of what is on
+        # screen plus the new bonds, then redraw the whole set so existing
+        # bonds whose order changed (a Kekule shift on ring closure) are
+        # repainted too.  Membership is preserved -- the old segments are
+        # exactly the bonds on screen -- so this never tears down bonds that
+        # were built under earlier connectivity settings.
+        union = _dedupe_segments(prior_segments + all_segments)
+        by_pair = _segments_by_element_pair(union)
+        all_segments = union
+        for obj in list(root.all_objects):
+            if obj.get("cgn_role") == "bonds":
+                _remove_object(obj)
     # Centre→ligand bonds ("spokes") can be suppressed so the polyhedron faces
     # read as the coordination instead of being crossed by their own bonds.
     # The mask comes from the polyhedra that are actually displayed, so a
@@ -4789,6 +4855,16 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             )
             _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
     root["cgn_bond_settings_signature"] = settings_signature
+    if _BOND_SPATIAL_CACHE is not None and _BOND_SPATIAL_CACHE.get("root_id") == root_id:
+        # Remember the cart-space segments this call left on screen so the next
+        # append can classify the union of the old and new graphs.  On a full
+        # build (or a chemdraw redraw) ``all_segments`` is the whole drawn set;
+        # on plain appends it grows by the newly merged segments.
+        _BOND_SPATIAL_CACHE["segments"] = (
+            all_segments
+            if not append_only or chemdraw
+            else _dedupe_segments(prior_segments + all_segments)
+        )
     return bond_count
 
 

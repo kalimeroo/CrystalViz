@@ -1,11 +1,9 @@
 """ChemDraw depiction of selenium, tellurium, arsenic, antimony and boron rings.
 
-A benzo-chalcogenopyrylium (selenochromenylium, tellurochromenylium) keeps the
-localized carbocation form its geometry shows: the valence repair leaves the C8
-fusion carbon without a double bond, so the chalcogen takes no ring double and
-the fused bicycle is drawn Kekule (four C=C strokes, no torus).  A plain
-six-membered selenopyrylium/telluropyrylium still takes a genuine C=Se/C=Te
-double bond, while a five-membered selenophene/tellurophene keeps its lone pair
+The heavy chalcogens behave like sulfur: a conjugated six-membered ring takes a
+genuine C=Se/C=Te double bond (selenochromenylium, tellurochromenylium), so the
+fused bicycle is drawn as a delocalisation torus with both ring bonds demoted
+to singles, while a five-membered selenophene/tellurophene keeps its lone pair
 and is drawn Kekule.
 
 Arsenic and antimony mirror phosphorus: the group 15 valence ladder gives the
@@ -79,31 +77,30 @@ def rebuild(name):
 
 # ------------------------------------------- COD 7243860 / 7243859 (group 16)
 # Both are a seleno-/tellurochromenylium (the chalcogen analogue of
-# chromenylium, fused to a benzene ring) with a BF4 counter-ion.  The valence
-# repair leaves the C8 fusion carbon without a double bond -- the ring-system
-# carbocation -- so the chalcogen keeps its lone pair, takes no ring double and
-# the whole bicycle is drawn Kekule: four C=C doubles and no torus.
+# chromenylium, fused to a benzene ring) with a BF4 counter-ion.  The whole
+# fused bicycle is one flat aromatic system, so it is drawn as two tori; the
+# chalcogen's ring double is inside the delocalisation, leaving only singles.
 
 
 def check_chromenylium(name, chalcogen):
     root = rebuild(name)
     pair = f"C|{chalcogen}"
 
-    check(f"{name} has no aromatic torus", len(tori(root)) == 0, str(len(tori(root))))
+    check(f"{name} draws one torus object", len(tori(root)) == 1, str(len(tori(root))))
     check(
-        f"{name} keeps the chalcogen single (no C={chalcogen})",
+        f"{name} delocalises both fused rings (96 segments)",
+        torus_edges(root) == 96,
+        str(torus_edges(root)),
+    )
+    check(
+        f"{name} suppresses the C={chalcogen} inside the torus",
         strokes(root, pair, 2) == 0,
         f"{strokes(root, pair, 2)} {pair} double strokes",
     )
     check(
-        f"{name} draws both ring C-{chalcogen} bonds as singles",
+        f"{name} renders both ring C-{chalcogen} bonds as singles",
         strokes(root, pair, 1) == 2,
         f"{strokes(root, pair, 1)} {pair} single strokes",
-    )
-    check(
-        f"{name} draws the four localized C=C doubles",
-        strokes(root, "C|C", 2) == 8,
-        f"{strokes(root, 'C|C', 2)} C|C double strokes",
     )
 
 

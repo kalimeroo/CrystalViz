@@ -49,3 +49,23 @@ CIF/Ca.cif
 # like the CSD fixtures above.
 CIF/test1.cif
 CIF/test2.cif
+
+# ConQuest control exports and local CSD fixtures used to settle whether the
+# benzo-fused chalcogenopyrylium (chromenylium) rings should be drawn as
+# aromatic tori (AFAMEZ/QERJIG selenochromenylium, AFAMAV tellurochromenylium,
+# plus the Se six-ring and Te five/six-ring control sets).  Not redistributable;
+# stay on the author's machine like the CSD fixtures above.
+CIF/Se1.cif
+CIF/Se2.cif
+CIF/Se_ring6_no_aromatic/
+CIF/Te_ring5_aromatic/
+CIF/Te_ring6_aromatic/
+
+# Five-membered chalcogen ring exports from the same CSD pilot (S/Se/Te,
+# aromatic- and non-aromatic-typed), used to validate the 5-ring lone-pair
+# heuristic.  Not redistributable.
+CIF/S_ring5_aromatic/
+CIF/S_ring5_no_aromatic/
+CIF/Se_ring5_aromatic/
+CIF/Se_ring5_no_aromatic/
+CIF/Te_ring5_no_aromatic/

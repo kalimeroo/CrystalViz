@@ -171,10 +171,6 @@ def _candidate_max_length_scale(element_a, element_b):
 # (thiopyrylium, selenopyrylium, telluropyrylium: ~0.92-0.96 of the
 # covalent-radii sum).  A saturated C-S/C-Se/C-Te bond sits at ~1.0, and a
 # five-membered thiophene/selenophene/tellurophene keeps its lone pair instead.
-# A ring fused through a hydrogen-free carbon is left alone too: its
-# benzologue (a benzothio-/benzoseleno-/benzotelluropyrylium) has an
-# alternating Kekule structure with the positive charge on the fusion carbon,
-# which is the form its geometry shows and the one the CCDC tools assign.
 # Aromaticity itself is still decided by the Huckel count on the resulting
 # Kekule structure, never by this threshold.
 _RING_CHALCOGEN_MAX_LENGTH_SCALE = 0.97
@@ -217,12 +213,11 @@ class AromaticRing(NamedTuple):
     alternating single and double bonds (IUPAC GR-6.3, furan/pyrrole), so the
     depiction layer draws it Kekule instead of with a delocalisation curve.
     ``kekule`` says whether every ring atom that does not donate a lone pair
-    carries a drawn multiple bond, i.e. whether that Kekulé depiction exists at
+    carries a drawn multiple bond, i.e. whether that Kekule depiction exists at
     all; borazine and an h-BN sheet have none (their borons carry no B=N), so
-    they keep the curve, while a carbocation ring centre (an empty p orbital on
-    a three-connected carbon) counts as satisfied.  ``haptic_metal`` names the
-    metal the whole ring coordinates to, when the ring is a pi ligand (eta5-Cp,
-    eta6-arene) rather than a Kekule ring.
+    they keep the curve.  ``haptic_metal`` names the metal the whole ring
+    coordinates to, when the ring is a pi ligand (eta5-Cp, eta6-arene) rather
+    than a Kekule ring.
     """
 
     nodes: frozenset
@@ -659,20 +654,6 @@ def _repair(deficits, extras, by_node, budget, depth=0):
     return False
 
 
-def _hydrogen_free_carbon(node, elements, neighbours):
-    """True for a carbon with exactly three neighbours, none of them hydrogen.
-
-    That is the shape of a carbocation centre (or of an unsaturated fusion
-    carbon): three sigma bonds and an empty p orbital.  A saturated CH or CH2
-    has a hydrogen, so it never matches.
-    """
-    return (
-        elements.get(node) == "C"
-        and len(neighbours) == 3
-        and all(elements.get(neighbour) != "H" for neighbour in neighbours)
-    )
-
-
 def _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency):
     """Extra bond orders wanted by a sulfur, selenium or tellurium ring atom.
 
@@ -687,15 +668,6 @@ def _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency):
       selenophene or tellurophene cannot hold an all-double-bond Kekule
       structure (chalcogen plus four carbons is an odd number of orders), so
       its chalcogen keeps its lone pair instead;
-    * the ring must not be fused through a hydrogen-free carbon.  A
-      benzothio-/benzoseleno-/benzotelluropyrylium has an alternating Kekule
-      structure that leaves that fusion carbon without a double bond, i.e. as
-      the ring-system carbocation (tellurochromenylium: ``C1=C9, C2=C3, C4=C5,
-      C6=C7`` with C8 positive).  That localized form is what the
-      crystallographic geometry shows -- the chalcogen ring bonds stay long --
-      and it is what the CCDC tools assign, so the chalcogen does not take the
-      ring double there.  A fusion through a saturated (hydrogen-carrying)
-      carbon keeps the rule: that ring system is no pyrylium;
     * every chalcogen ring bond must already be shortened towards a double
       bond (below ``_RING_CHALCOGEN_MAX_LENGTH_SCALE`` of the covalent-radii
       sum).  A saturated thiacyclohexane/selenane/tellurane sits at ~1.0 and is
@@ -703,23 +675,8 @@ def _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency):
 
     Returns ``{node: deficit}``.
     """
-    rings = find_rings(elements, edges)
     result = {}
-    for ring in rings:
-        if len(ring) != 6:
-            continue
-        if not any(elements.get(node) in _SIX_RING_CHALCOGENS for node in ring):
-            continue
-        if any(
-            other is not ring
-            and len(ring & other) >= 2
-            and any(
-                _hydrogen_free_carbon(node, elements, adjacency.get(node, ()))
-                for node in ring & other
-            )
-            for other in rings
-        ):
-            continue
+    for ring in find_rings(elements, edges, sizes=(6,)):
         for node in ring:
             if elements.get(node) not in _SIX_RING_CHALCOGENS:
                 continue
@@ -907,23 +864,6 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     return rings
 
 
-def _carbocation(node, elements, by_node):
-    """True when *node* is the carbocation centre of a ring system.
-
-    A benzopyrylium fusion carbon (tellurochromenylium C8) is bonded to three
-    atoms, carries no hydrogen, and has no valence left for a double bond: the
-    ring system is a cation and that carbon is its positive centre.  Its empty
-    p orbital contributes no pi electron but does not interrupt the conjugation,
-    exactly like a three-connected boron.
-
-    Three neighbours and no hydrogen is what keeps a saturated ring carbon out:
-    a CH or CH2 that merely failed to find a double bond still rejects the ring.
-    """
-    return _hydrogen_free_carbon(
-        node, elements, [_other(key, node) for key in by_node.get(node, ())]
-    )
-
-
 def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count):
     """``(pi_electrons, lone_pair_electrons, donors)`` for *ring*, or None.
 
@@ -946,11 +886,6 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
     and an h-BN sheet are aromatic networks rather than a finite fused pi
     system, so a shared nitrogen or oxygen still supplies its share of the
     sextet (the boron itself contributes nothing).
-
-    A three-connected ring carbon with no multiple bond and no hydrogen is the
-    ring-system carbocation (the fusion carbon of a benzopyrylium): its empty p
-    orbital contributes nothing either, so the localized Kekulé structure the
-    valence repair produced stays aromatic.
 
     The second value counts how much of the sextet comes from such a donation,
     and the third names the atoms that donated it.  A ring drawn Kekulé is one
@@ -1022,13 +957,6 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
             # (borazine, boroxine, boratabenzene).  A carbon in the same
             # position is left with an unsatisfied valence, so it still
             # rejects the ring.
-            pass
-        elif _carbocation(node, elements, by_node):
-            # A three-connected ring carbon with no multiple bond and no
-            # hydrogen is the carbocation centre of a benzopyrylium (or a
-            # related fused ring cation): its empty p orbital carries no
-            # electron but leaves the ring conjugated, so the localized
-            # Kekule structure the valence repair produced stays aromatic.
             pass
         else:
             # A carbon (or any other element) with no double bond at all has
@@ -1106,14 +1034,10 @@ def _aromatic_ring_details(elements, edges, orders):
 
         # A Kekule depiction exists when every atom that does not donate its
         # lone pair already carries a drawn multiple bond -- inside the ring or
-        # on a fusion bond -- or holds an empty p orbital instead (the
-        # carbocation centre of a benzopyrylium).  Borazine and the h-BN sheet
-        # have none (their borons carry no B=N), so they keep the
-        # delocalisation curve.
+        # on a fusion bond.  Borazine and the h-BN sheet have none (their
+        # borons carry no B=N), so they keep the delocalisation curve.
         kekule = all(
-            node in donors
-            or any(orders.get(key, 1) > 1 for key in by_node.get(node, ()))
-            or _carbocation(node, elements, by_node)
+            node in donors or any(orders.get(key, 1) > 1 for key in by_node.get(node, ()))
             for node in ring
         )
         result.append(

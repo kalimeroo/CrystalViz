@@ -142,61 +142,6 @@ def sulfur_ring(oxide=False, methyl=False):
     return molecule(atoms, bonds)
 
 
-# The chromenylium (benzo-chalcogenopyrylium) skeleton of COD 7243860 (Se) and
-# 7243859 (Te): a chalcogen six-ring fused to a benzene ring on C8-C9, with a
-# methyl on C2 so that C2 carries no hydrogen.  Distances are the CIF's.
-_CHROMENYLIUM_BONDS = {
-    "SE": (
-        ("Se1", "C1", 1.806),
-        ("Se1", "C2", 1.853),
-        ("C1", "C9", 1.394),
-        ("C2", "C3", 1.363),
-        ("C3", "C8", 1.425),
-        ("C4", "C5", 1.382),
-        ("C4", "C8", 1.411),
-        ("C5", "C6", 1.393),
-        ("C6", "C7", 1.375),
-        ("C7", "C9", 1.438),
-        ("C8", "C9", 1.418),
-    ),
-    "TE": (
-        ("Te1", "C1", 2.003),
-        ("Te1", "C2", 2.042),
-        ("C1", "C9", 1.392),
-        ("C2", "C3", 1.374),
-        ("C3", "C8", 1.429),
-        ("C4", "C5", 1.360),
-        ("C4", "C8", 1.418),
-        ("C5", "C6", 1.434),
-        ("C6", "C7", 1.357),
-        ("C7", "C9", 1.436),
-        ("C8", "C9", 1.439),
-    ),
-}
-
-
-def chromenylium_ring(chalcogen):
-    """A benzo-<chalcogen>pyrylium cation: a chalcogen ring fused to benzene.
-
-    C8 is the fusion carbon with three ring neighbours and no hydrogen, so it is
-    the ring-system carbocation; C2 carries a methyl instead of a hydrogen, as
-    in the COD entries.  Both rings are six-membered and share C8 and C9.
-    """
-    centre = chalcogen.title() + "1"
-    atoms = {centre: chalcogen, "C10": "C"}
-    bonds = list(_CHROMENYLIUM_BONDS[chalcogen])
-    for index in range(1, 10):
-        atoms[f"C{index}"] = "C"
-    bonds.append(("C2", "C10", 1.50))
-    for node in ("C1", "C3", "C4", "C5", "C6", "C7"):
-        atoms[node + "H"] = "H"
-        bonds.append((node, node + "H", 1.08))
-    for suffix in ("a", "b", "c"):
-        atoms["C10" + suffix] = "H"
-        bonds.append(("C10", "C10" + suffix, 1.09))
-    return atoms, bonds
-
-
 def hetero_ring(element, size, first, second, carbon_carbon=1.39):
     """A conjugated ring of *size* with one heteroatom and one H per carbon.
 
@@ -1185,62 +1130,6 @@ class ChalcogenRingTest(unittest.TestCase):
             selenone, {chemistry.edge_key("S0", "O1"): 2, chemistry.edge_key("S0", "O2"): 2}
         )
         self.assertEqual(valences(elements, edges, orders)["S0"], 6)
-
-
-class ChromenyliumTest(unittest.TestCase):
-    """A benzo-chalcogenopyrylium keeps its localized carbocation form.
-
-    COD 7243860 (Se) and 7243859 (Te) are 2-benzoseleno-/2-benzotelluropyrylium
-    salts: a chalcogen six-ring fused to a benzene ring.  The valence repair
-    leaves the C8 fusion carbon without a double bond -- the ring-system
-    carbocation -- so the chalcogen takes no ring double and the bicycle is
-    ``C1=C9, C2=C3, C4=C5, C6=C7``.  The chalcogen ring is still a 6 pi ring
-    (chalcogen lone pair plus two ring doubles) but is drawn Kekule, while the
-    benzene ring is a 5 pi cyclohexadienyl and not aromatic on its own.
-    """
-
-    def check_chromenylium(self, chalcogen, centre):
-        elements, edges, lengths = molecule(*chromenylium_ring(chalcogen))
-        orders = chemistry.bond_orders(elements, edges, lengths)
-
-        doubles = multiple_bonds(orders)
-        self.assertEqual(
-            doubles,
-            {
-                chemistry.edge_key("C1", "C9"): 2,
-                chemistry.edge_key("C2", "C3"): 2,
-                chemistry.edge_key("C4", "C5"): 2,
-                chemistry.edge_key("C6", "C7"): 2,
-            },
-        )
-        self.assertFalse(any(centre in key for key in doubles))
-        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
-        self.assertEqual(
-            [
-                (len(ring.nodes), ring.pi_electrons, ring.lone_pair_electrons, ring.kekule)
-                for ring in rings
-            ],
-            [(6, 6, 2, True)],
-        )
-
-    def test_tellurochromenylium_keeps_the_carbocation_form(self):
-        self.check_chromenylium("TE", "Te1")
-
-    def test_selenochromenylium_keeps_the_carbocation_form(self):
-        self.check_chromenylium("SE", "Se1")
-
-    def test_a_hydrogen_on_the_fusion_carbon_breaks_the_ring(self):
-        # The same skeleton with a hydrogen on C8 is an ordinary sp3 carbon: the
-        # carbocation rule must not rescue the ring, so neither ring is
-        # aromatic and the four doubles stay exactly where they were.
-        atoms, bonds = chromenylium_ring("TE")
-        atoms["H8"] = "H"
-        bonds.append(("C8", "H8", 1.08))
-        elements, edges, lengths = molecule(atoms, bonds)
-        orders = chemistry.bond_orders(elements, edges, lengths)
-
-        self.assertEqual(len(multiple_bonds(orders)), 4)
-        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
 
 
 class OxoPatternTest(unittest.TestCase):

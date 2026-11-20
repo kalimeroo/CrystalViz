@@ -166,9 +166,11 @@ for a first run.
 
 - `test_chemdraw_heterocycles.py` is the end-to-end counterpart for the heavy
   main-group fixtures. The two chalcogenylium salts (`Selenochromenylium.cif`,
-  COD 7243860, and `Tellurochromenylium.cif`, COD 7243859) must draw their flat
-  fused bicycle as two tori (96 segments) with both ring C-Se/C-Te bonds demoted
-  to singles; `Selenophene.cif` (1553554) and `Tellurophene.cif` (1558536) must
+  COD 7243860, and `Tellurochromenylium.cif`, COD 7243859) keep the localized
+  carbocation form their crystal geometry shows: the C8 fusion carbon carries no
+  double bond, so the chalcogen takes no ring double, both ring C-Se/C-Te bonds
+  stay single and the fused bicycle is drawn Kekulé (four C=C doubles, no torus);
+  `Selenophene.cif` (1553554) and `Tellurophene.cif` (1558536) must
   keep the five-ring chalcogen single (its lone pair, so Kekulé) with its two
   C=C doubles, and still give the two phenyls their tori. `Arsabenzene.cif`
   (1573224, arsabenzene fused to two thiophenes) must draw the arsenic ring as

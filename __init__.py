@@ -180,8 +180,12 @@ _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
 _AROMATIC_TORUS_SIZE_DEFAULT = 0.55
 _AROMATIC_TORUS_WIDTH_DEFAULT = 0.5
 # Maximum out-of-plane deviation (Angstrom per ring atom) still drawn as an
-# aromatic torus: a puckered ring is not aromatic in the depiction sense.
-_AROMATIC_PLANARITY_MAX = 0.12
+# aromatic torus: a puckered ring is not aromatic in the depiction sense.  A
+# ring up to ~0.15 A RMS out of plane is visually flat (the thiabenzene 1-oxide
+# boat of ATBOXM sits at 0.127 A and draws its torus like the planar
+# thiopyrylium); a genuine boat reads as non-planar and keeps the localized
+# Kekule strokes.
+_AROMATIC_PLANARITY_MAX = 0.15
 _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE = {2: 0.9, 3: 0.85}
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377

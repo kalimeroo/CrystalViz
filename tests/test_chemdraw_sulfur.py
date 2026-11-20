@@ -8,9 +8,11 @@ double bond that does not break the ring conjugation.
 
 ``S2.cif`` is the thiopyrylium cation: all four rings (the sulfur ring and its
 three phenyls) are flat, so they are drawn as tori.  ``S1.cif`` is the
-sulfoxide: its sulfur ring is puckered (a boat, out-of-plane deviation above
-the ``_AROMATIC_PLANARITY_MAX`` gate), so it keeps the localized Kekule
-depiction with the S=C and S=O doubles visible instead of a torus.
+sulfoxide: its sulfur ring is a shallow boat whose out-of-plane deviation
+(0.127 A RMS) stays under the ``_AROMATIC_PLANARITY_MAX`` gate, so the ring
+keeps its aromatic torus too -- the S=C and ring C=C doubles are suppressed
+inside it, exactly as in the thiopyrylium.  Only a ring that reads as a genuine
+boat (above the gate) falls back to the localized Kekule strokes.
 
 Run:
   blender --background --factory-startup --python test_chemdraw_sulfur.py
@@ -69,8 +71,10 @@ def rebuild(name):
 # ------------------------------------------------ ATBOXM: thiabenzene 1-oxide
 # S1 is four-coordinate (two ring carbons, a methyl and the terminal O).  The
 # sulfur takes two extra orders: S=O and the ring S=C, leaving the ring with
-# three alternating doubles (S=C, C1=C2, C3=C4).  The ring is a boat, so it is
-# drawn Kekule rather than as a torus.
+# three alternating doubles (S=C, C1=C2, C3=C4).  The ring is a shallow boat
+# (0.127 A RMS out of plane), under the planarity gate, so it is drawn as an
+# aromatic torus and the ring doubles are suppressed inside it -- exactly as
+# the thiopyrylium ring below.
 S1_CIF = _env.cif("S1.cif")
 
 
@@ -88,24 +92,34 @@ def check_sulfoxide():
         f"{strokes(root, 'O|S', 1)} O|S single strokes",
     )
     check(
-        "S1 draws the ring S=C double bond",
-        strokes(root, "C|S", 2) == 2,
+        "S1 draws one aromatic object",
+        len(tori(root)) == 1,
+        str(len(tori(root))),
+    )
+    check(
+        "S1 draws the sulfur ring as one torus (48 segments)",
+        len(tori(root)[0].data.edges) == 48 if tori(root) else False,
+        str(len(tori(root)[0].data.edges)) if tori(root) else "no torus",
+    )
+    check(
+        "S1 suppresses the ring S=C inside the torus",
+        strokes(root, "C|S", 2) == 0,
         f"{strokes(root, 'C|S', 2)} C|S double strokes",
     )
     check(
-        "S1 draws the two ring C=C doubles",
-        strokes(root, "C|C", 2) == 4,
+        "S1 draws the ring S-C bonds (and S-methyl) as singles",
+        strokes(root, "C|S", 1) == 3,
+        f"{strokes(root, 'C|S', 1)} C|S single strokes",
+    )
+    check(
+        "S1 suppresses every ring C=C inside the torus",
+        strokes(root, "C|C", 2) == 0,
         f"{strokes(root, 'C|C', 2)} C|C double strokes",
     )
     check(
         "S1 keeps the ketone C=O",
         strokes(root, "C|O", 2) == 2,
         f"{strokes(root, 'C|O', 2)} C|O double strokes",
-    )
-    check(
-        "S1 puckered ring is not given a torus",
-        len(tori(root)) == 0,
-        f"{len(tori(root))} tori",
     )
 
 

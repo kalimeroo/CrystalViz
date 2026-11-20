@@ -44,7 +44,7 @@ The two sulfur fixtures are Cambridge Structural Database entries instead
 
 | File | CSD refcode | CCDC | Formula | Used for |
 | --- | --- | --- | --- | --- |
-| `S1.cif` | ATBOXM | 1103749 | C9 H14 O3 S | Thiabenzene 1-oxide: S=O double, puckered S ring drawn Kekulé |
+| `S1.cif` | ATBOXM | 1103749 | C9 H14 O3 S | Thiabenzene 1-oxide: S=O double, shallow-boat S ring drawn as an aromatic torus |
 | `S2.cif` | BIZTAF | 1112440 | C23 H17 Cu2 I3 S | Thiopyrylium: S=C ring double, four aromatic tori |
 
 `tests/test_gemmi_worker.py` pins the atom/site counts of `multiple_bonds.cif`,

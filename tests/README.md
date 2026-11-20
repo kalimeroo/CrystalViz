@@ -156,13 +156,14 @@ for a first run.
 
 - `test_chemdraw_sulfur.py` is the end-to-end counterpart for the two CSD
   fixtures. `S1.cif` (ATBOXM, thiabenzene 1-oxide) must draw the S=O as a
-  genuine double (2 strokes, no single S-O left), the ring S=C double and its
-  two C=C doubles; its sulfur ring is a boat (out-of-plane deviation above the
-  `_AROMATIC_PLANARITY_MAX` gate), so it keeps the localized Kekulé depiction
-  instead of a torus. `S2.cif` (BIZTAF, thiopyrylium) must draw one aromatic
-  object holding four tori (the sulfur ring + three phenyls, 192 segments),
-  with the S=C suppressed inside the torus and both S-C bonds demoted to
-  singles.
+  genuine double (2 strokes, no single S-O left) and the sulfur ring as one
+  aromatic torus (48 segments): its boat is 0.127 Å RMS out of plane, under the
+  `_AROMATIC_PLANARITY_MAX` gate, so it reads as flat and keeps the torus, and
+  the ring S=C and both ring C=C doubles are suppressed inside it (only the
+  S=O and the exocyclic ketone C=O stay drawn). `S2.cif` (BIZTAF,
+  thiopyrylium) must draw one aromatic object holding four tori (the sulfur
+  ring + three phenyls, 192 segments), with the S=C suppressed inside the torus
+  and both S-C bonds demoted to singles.
 
 - `test_chemdraw_heterocycles.py` is the end-to-end counterpart for the heavy
   main-group fixtures. The two chalcogenylium salts (`Selenochromenylium.cif`,

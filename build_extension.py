@@ -71,6 +71,7 @@ _DIST = "gemmi"
 _PACKAGE_FILES = [
     "blender_manifest.toml",
     "__init__.py",
+    "chemistry.py",
     "gemmi_worker.py",
     "README.md",
 ]

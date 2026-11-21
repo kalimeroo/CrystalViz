@@ -21,9 +21,72 @@ opencode.json
 tests/tools/
 tests/external_cctbx/
 tests/legacy_baked_polyhedra/
+CIF/olex2/
+cap.png
 
 # Windows Explorer folder metadata
 desktop.ini
 
 # Built extension archives are attached to GitHub Releases, not committed.
 dist/
+
+# Cambridge Structural Database fixtures are not redistributable (their CIFs
+# carry _database_code_CSD and the CCDC header).  They stay on the machine of
+# whoever runs tests/test_chemdraw_sulfur.py; the committed chalcogen evidence
+# is the COD-based tests/test_chemdraw_heterocycles.py.
+CIF/S1.cif
+CIF/S2.cif
+
+# Local user structure used to debug the metal-coordinated sulfone depiction
+# (a calcium sulfonate hydrate with S=O oxygens that also coordinate Ca/K).
+# Not redistributable; stays on the author's machine like the S1/S2 CSD
+# fixtures above.
+CIF/Ca.cif
+
+# Local user structures used to debug the sulfonate/triflate S=O depiction
+# (ABEFUL: terbium tetrakis-sulfonatoporphyrin, ABOLIP: titanium triflate;
+# CCDC 993277 / 1517523).  Not redistributable; stay on the author's machine
+# like the CSD fixtures above.
+CIF/test1.cif
+CIF/test2.cif
+
+# ConQuest control exports and local CSD fixtures used to settle whether the
+# benzo-fused chalcogenopyrylium (chromenylium) rings should be drawn as
+# aromatic tori (AFAMEZ/QERJIG selenochromenylium, AFAMAV tellurochromenylium,
+# plus the Se six-ring and Te five/six-ring control sets).  Not redistributable;
+# stay on the author's machine like the CSD fixtures above.
+CIF/Se1.cif
+CIF/Se2.cif
+CIF/Se_ring6_no_aromatic/
+CIF/Te_ring5_aromatic/
+CIF/Te_ring6_aromatic/
+
+# Five-membered chalcogen ring exports from the same CSD pilot (S/Se/Te,
+# aromatic- and non-aromatic-typed), used to validate the 5-ring lone-pair
+# heuristic.  Not redistributable.
+CIF/S_ring5_aromatic/
+CIF/S_ring5_no_aromatic/
+CIF/Se_ring5_aromatic/
+CIF/Se_ring5_no_aromatic/
+CIF/Te_ring5_no_aromatic/
+
+# Pnictogen ring exports from the CSD N/P/As/Sb pilot (5- and 6-membered,
+# aromatic- and non-aromatic-typed), used to ground the N-oxide/N-OH length
+# gate, the dative-bond handling and the group-15 ring heuristics on CSD
+# statistics.  Not redistributable.
+CIF/N_ring5_aromatic/
+CIF/N_ring5_no_aromatic/
+CIF/N_ring6_aromatic/
+CIF/N_ring6_no_aromatic/
+CIF/P_ring5_aromatic/
+CIF/P_ring5_no_aromatic/
+CIF/P_ring6_aromatic/
+CIF/P_ring6_no_aromatic/
+CIF/As_ring5_aromatic/
+CIF/As_ring5_no_aromatic/
+CIF/As_ring6_aromatic/
+CIF/As_ring6_no_aromatic/
+CIF/Sb_ring5_aromatic/
+CIF/Sb_ring5_no_aromatic/
+CIF/Sb_ring6_aromatic/
+CIF/Sb_ring6_no_aromatic/

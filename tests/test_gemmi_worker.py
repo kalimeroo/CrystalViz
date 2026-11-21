@@ -21,6 +21,8 @@ CIFS = {
     "Brookite.cif": (24, 3),
     # 2048 P1 sites = the 256-atom ASU expanded in C 1 2/c 1.
     "Nano.cif": (2048, 256),
+    # The two Cg ring centroids (calc_flag=dum) are skipped, not parsed as C.
+    "Cyanoferrocene.cif": (88, 22),
 }
 
 
@@ -44,6 +46,33 @@ class TestLoadStructure(unittest.TestCase):
         # Blender side; here we just ensure load_structure returns sites.
         result = gw.load_structure(os.path.join(EXAMPLES, "multiple_bonds.cif"))
         self.assertTrue(result["sites"])
+
+
+class TestDummySiteSkipping(unittest.TestCase):
+    def test_cyanoferrocene_ring_centroids_are_skipped(self):
+        result = gw.load_structure(os.path.join(EXAMPLES, "Cyanoferrocene.cif"))
+        labels = {site["label"] for site in result["sites"]}
+        self.assertFalse([label for label in labels if label.startswith("Cg")])
+
+        counts = {}
+        for site in result["sites"]:
+            counts[site["element"]] = counts.get(site["element"], 0) + 1
+        # A dummy site has no type_symbol, so it used to fall back to its label
+        # and become carbon ("Cg1" -> "Cg" -> "C").
+        self.assertEqual(counts, {"C": 44, "FE": 4, "H": 36, "N": 4})
+        self.assertEqual(len(result["instances"]) // 4, 22)
+
+    def test_dummy_labels_read_the_calc_flag(self):
+        import gemmi
+
+        block = gemmi.cif.read(os.path.join(EXAMPLES, "Cyanoferrocene.cif")).sole_block()
+        self.assertEqual(gw._dummy_labels(block), frozenset({"Cg1", "Cg2"}))
+
+    def test_missing_calc_flag_skips_nothing(self):
+        import gemmi
+
+        block = gemmi.cif.read(os.path.join(EXAMPLES, "Brookite.cif")).sole_block()
+        self.assertEqual(gw._dummy_labels(block), frozenset())
 
 
 class TestGrowConnectivityShell(unittest.TestCase):

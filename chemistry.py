@@ -198,6 +198,19 @@ _OXO_MAX_DOUBLES = 2
 # (which real CIF graphs commonly do).
 _N_OXIDE_MAX_LENGTH_SCALE = 1.0
 
+# The terminal N-N chain of a diazo (R2C=N+=N-) or azide (R-N=N+=N-) group is
+# a cumulene: the terminal N- is two-valent (one double bond) and the middle
+# N+ is four-valent (two double bonds), so both the C=N and the N=N are drawn
+# double.  The terminal N-N bond is very short (~1.10-1.20 A, 0.78-0.85 of the
+# covalent-radii sum) -- far below a single N-N (~1.45 A, 1.02) -- which
+# separates the chain from an ordinary hydrazine/hydrazone N-N even when the
+# hydrogens are missing from the graph.  The middle nitrogen must also reach
+# its other neighbour (the diazo carbon, or the outer azide nitrogen) through
+# a bond short enough to be a genuine double; a diazonium R-N+=N has a long
+# C-N single bond there and keeps its current depiction.
+_DIAZO_MAX_LENGTH_SCALE = 0.90
+_DIAZO_PARTNER_MAX_LENGTH_SCALE = 0.92
+
 # Ring sizes ChemDraw depicts as rings.  5, 6 and 7 cover the overwhelming
 # majority of organic structures; 3- and 4-rings are handled by the ring-atom
 # valence cap below instead of being drawn as aromatic.
@@ -385,6 +398,45 @@ def _terminal_oxygens(node, elements, adjacency, lengths=None):
     return result
 
 
+def _diazo_terminal(node, elements, adjacency, lengths):
+    """True when *node* is the terminal N- of a diazo or azide group.
+
+    A degree-one nitrogen bonded to another nitrogen through a very short N-N
+    bond is the anionic end of ``R2C=N+=N-`` (diazo) or ``R-N=N+=N-`` (azide),
+    which is two-valent -- not the three-valent N of a nitrile.  The geometry
+    is required: without it the group cannot be told from an ordinary terminal
+    N-H whose hydrogens are missing from the graph.
+    """
+    if lengths is None or elements.get(node) != "N":
+        return False
+    neighbours = adjacency.get(node, ())
+    if len(neighbours) != 1 or elements.get(neighbours[0]) != "N":
+        return False
+    return lengths.get(edge_key(node, neighbours[0]), 1.0) <= _DIAZO_MAX_LENGTH_SCALE
+
+
+def _diazo_middle(node, elements, adjacency, lengths):
+    """True when *node* is the four-valent N+ of a diazo or azide chain.
+
+    The middle nitrogen bonds the terminal N- through the short N-N bond and a
+    carbon (diazo) or the outer nitrogen (azide) through a bond short enough to
+    be a genuine double.  A diazonium ``R-N+=N`` has a long C-N single bond
+    there, so it is not promoted and keeps its current depiction.
+    """
+    if lengths is None or elements.get(node) != "N":
+        return False
+    neighbours = adjacency.get(node, ())
+    if len(neighbours) != 2:
+        return False
+    terminal = [
+        other for other in neighbours if _diazo_terminal(other, elements, adjacency, lengths)
+    ]
+    if len(terminal) != 1:
+        return False
+    partner = next(other for other in neighbours if other != terminal[0])
+    return lengths.get(edge_key(node, partner), 1.0) <= _DIAZO_PARTNER_MAX_LENGTH_SCALE
+
+
 def _initial_deficit(element, degree, adjacency, node, budget, elements, lengths=None):
     """How many extra bond orders *node* wants, or None when unconstrained."""
     ladder = VALENCE_LADDERS.get(element)
@@ -403,21 +455,34 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements, lengths
         if element in {"N", *_SIX_RING_CHALCOGENS}
         else ()
     )
-    if element == "N" and target == 3 and degree == 3:
-        if len(oxygens) >= 2:
-            # Nitro (and nitrate) nitrogen: the depiction shows both N-O bonds
-            # as genuine double bonds, N(=O)2, so the nitrogen is five-valent.
-            target = 5
-        elif oxygens:
-            # An N-oxide (pyridine N-oxide, pyrazine N,N'-dioxide) is
-            # four-valent: its N-O bond is dative, so the fourth bond is a real
-            # multiple bond to a carbon.  Without it the nitrogen contributes
-            # no pi bond, the ring is left with an odd number of unsatisfied
-            # carbons and cannot close a Kekule structure at all.  Only a short
-            # N-O qualifies: an N-OH whose hydrogen is missing from the graph
-            # has a long N-O (see _N_OXIDE_MAX_LENGTH_SCALE in
-            # :func:`_terminal_oxygens`) and stays three-valent, non-aromatic.
+    if element == "N":
+        if _diazo_terminal(node, elements, adjacency, lengths):
+            # The anionic end of a diazo (R2C=N+=N-) or azide (R-N=N+=N-)
+            # group is two-valent: one double bond, not the three-valent N of
+            # a nitrile.
+            target = 2
+        elif _diazo_middle(node, elements, adjacency, lengths):
+            # The central N+ of the same chain is four-valent: one double bond
+            # to the terminal N- and one to its other neighbour.  That is what
+            # lets the adjacent diazo carbon reach its own four bonds.
             target = 4
+        elif target == 3 and degree == 3:
+            if len(oxygens) >= 2:
+                # Nitro (and nitrate) nitrogen: the depiction shows both N-O
+                # bonds as genuine double bonds, N(=O)2, so the nitrogen is
+                # five-valent.
+                target = 5
+            elif oxygens:
+                # An N-oxide (pyridine N-oxide, pyrazine N,N'-dioxide) is
+                # four-valent: its N-O bond is dative, so the fourth bond is a
+                # real multiple bond to a carbon.  Without it the nitrogen
+                # contributes no pi bond, the ring is left with an odd number
+                # of unsatisfied carbons and cannot close a Kekule structure at
+                # all.  Only a short N-O qualifies: an N-OH whose hydrogen is
+                # missing from the graph has a long N-O (see
+                # _N_OXIDE_MAX_LENGTH_SCALE in :func:`_terminal_oxygens`) and
+                # stays three-valent, non-aromatic.
+                target = 4
     deficit = target - degree
     if element == "O":
         # An exocyclic oxide oxygen of nitrogen or a chalcogen (nitro N=O,
@@ -785,7 +850,10 @@ def bond_orders(elements, edges, lengths=None):
        bond is never a candidate, so its fourth bond goes into the ring (see
        :func:`_initial_deficit` and :func:`_dative_bonds`).  Only a short N-O
        is an oxide bond (:func:`_terminal_oxygens`); an N-OH ring is left
-       non-aromatic even when its hydroxyl hydrogen is absent from the graph;
+       non-aromatic even when its hydroxyl hydrogen is absent from the graph.
+       A diazo or azide terminal N-N chain books its terminal N as two-valent
+       and its middle N as four-valent, so R2C=N+=N- is drawn with both bonds
+       double and the diazo carbon reaches four (:func:`_diazo_terminal`);
     2. greedy: give one extra order to every edge joining two atoms that both
        still want one;
     3. augmenting paths: rescue atoms the greedy pass stranded even though a

@@ -794,6 +794,96 @@ class NOxideValenceTest(unittest.TestCase):
         self.assertEqual(valences(elements, edges, orders)["X5"], 3)
 
 
+class DiazoValenceTest(unittest.TestCase):
+    """The terminal N-N chain of a diazo or azide group.
+
+    The diazo group R2C=N+=N- is a cumulene: the terminal N- is two-valent
+    and the middle N+ four-valent, so both the C=N and the N=N are drawn
+    double and the diazo carbon reaches its four bonds.  EABXIO (succinimidyl
+    diazoacetate) is the CSD entry that exposed the gap: the CSD types C6=N2
+    (1.313 A) and N2=N3 (1.109 A) as Double.
+    """
+
+    def test_diazo_carbon_reaches_four_bonds(self):
+        # EABXIO's diazoacetate end: the diazo carbon bonds the ester carbonyl
+        # carbon, its hydrogen and the middle nitrogen.
+        elements, edges, lengths = molecule(
+            {
+                "C0": "C",
+                "C1": "C",
+                "C2": "C",
+                "O1": "O",
+                "H0": "H",
+                "N1": "N",
+                "N2": "N",
+                "Ha": "H",
+                "Hb": "H",
+                "Hc": "H",
+            },
+            [
+                ("C0", "C1", 1.46),
+                ("C0", "H0", 1.08),
+                ("C0", "N1", 1.31),
+                ("N1", "N2", 1.11),
+                ("C1", "O1", 1.20),
+                ("C1", "C2", 1.51),
+                ("C2", "Ha", 1.08),
+                ("C2", "Hb", 1.08),
+                ("C2", "Hc", 1.08),
+            ],
+        )
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(orders.get(chemistry.edge_key("C0", "N1")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("N1", "N2")), 2)
+        totals = valences(elements, edges, orders)
+        self.assertEqual(totals["C0"], 4)
+        self.assertEqual((totals["N1"], totals["N2"]), (4, 2))
+
+    def test_azide_draws_both_nitrogen_double_bonds(self):
+        elements, edges, lengths = molecule(
+            {
+                "C0": "C",
+                "N1": "N",
+                "N2": "N",
+                "N3": "N",
+                "Ha": "H",
+                "Hb": "H",
+                "Hc": "H",
+            },
+            [
+                ("C0", "N1", 1.47),
+                ("N1", "N2", 1.24),
+                ("N2", "N3", 1.13),
+                ("C0", "Ha", 1.08),
+                ("C0", "Hb", 1.08),
+                ("C0", "Hc", 1.08),
+            ],
+        )
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(orders.get(chemistry.edge_key("N1", "N2")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("N2", "N3")), 2)
+        totals = valences(elements, edges, orders)
+        self.assertEqual((totals["N1"], totals["N2"], totals["N3"]), (3, 4, 2))
+
+    def test_diazonium_keeps_its_single_carbon_nitrogen_bond(self):
+        # R-N+=N has a long C-N bond: the middle nitrogen must not be promoted
+        # to four-valent, or the aromatic ring carbon would take a double bond.
+        atoms, bonds = cycle("C", 6)
+        for index in range(1, 6):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        atoms.update({"N1": "N", "N2": "N"})
+        bonds += [("C0", "N1", 1.42), ("N1", "N2", 1.10)]
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertNotIn(chemistry.edge_key("C0", "N1"), multiple_bonds(orders))
+        self.assertEqual(orders.get(chemistry.edge_key("N1", "N2")), 2)
+        self.assertEqual(valences(elements, edges, orders)["C0"], 4)
+
+
 class FindRingsTest(unittest.TestCase):
     def test_four_membered_ring_is_not_reported(self):
         atoms, bonds = cycle("C", 4, distance=1.55)

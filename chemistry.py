@@ -188,6 +188,16 @@ _OXO_TARGET_VALENCE = {"S": 6, "SE": 6, "TE": 6, "N": 5, "P": 5}
 _OXO_MIN_TERMINAL_OXYGENS = {"S": 2, "SE": 2, "TE": 2, "N": 2, "P": 1}
 _OXO_MAX_DOUBLES = 2
 
+# An N-O bond is recognised as an N-oxide bond only when it is short enough to
+# be the charge-separated N+(O-) bond: in the CSD the (formally single) N-O of
+# a pyridine N-oxide clusters at 0.975 of the covalent-radii sum (up to about
+# 1.0), while the N-O(H) of a hydroxylamine sits at about 1.03 and an aliphatic
+# amine N-oxide (whose ring is not aromatic) at ~1.02-1.04.  The length tells
+# an N-oxide, whose fourth valence goes into the ring, from an N-OH, whose ring
+# must stay non-aromatic even when the graph drops the hydroxyl hydrogen
+# (which real CIF graphs commonly do).
+_N_OXIDE_MAX_LENGTH_SCALE = 1.0
+
 # Ring sizes ChemDraw depicts as rings.  5, 6 and 7 cover the overwhelming
 # majority of organic structures; 3- and 4-rings are handled by the ring-atom
 # valence cap below instead of being drawn as aromatic.
@@ -338,7 +348,7 @@ def _in_cycle(adjacency, node, budget):
     return False
 
 
-def _terminal_oxygens(node, elements, adjacency):
+def _terminal_oxygens(node, elements, adjacency, lengths=None):
     """Terminal oxidic oxygens bonded to *node* (N-oxide/nitro O, sulfoxide O,
     sulfone S=O, ...).
 
@@ -348,10 +358,24 @@ def _terminal_oxygens(node, elements, adjacency):
     (Ca-O/K-O), so such an oxygen has graph degree two but still carries the
     S=O double.  A hydroxyl, ester or ether oxygen (a second covalent
     neighbour such as H or C) is not terminal.
+
+    For a nitrogen centre the N-O bond must also be short enough to be an
+    oxide bond (``_N_OXIDE_MAX_LENGTH_SCALE`` of the covalent-radii sum): an
+    N-OH whose hydroxyl hydrogen is missing from the graph would otherwise
+    look terminal and the ring would be promoted to a pyridine N-oxide it is
+    not.  *lengths* is the map of normalised lengths; the check is skipped
+    when it is None or when the centre is not nitrogen (a chalcogen oxide and
+    a chalcogen hydroxide are too close in length to separate this way).
     """
     result = []
     for other in adjacency.get(node, ()):
         if elements.get(other) != "O":
+            continue
+        if (
+            lengths is not None
+            and elements.get(node) == "N"
+            and lengths.get(edge_key(node, other), 1.0) > _N_OXIDE_MAX_LENGTH_SCALE
+        ):
             continue
         for neighbour in adjacency.get(other, ()):
             if neighbour != node and elements.get(neighbour) in VALENCE_LADDERS:
@@ -361,7 +385,7 @@ def _terminal_oxygens(node, elements, adjacency):
     return result
 
 
-def _initial_deficit(element, degree, adjacency, node, budget, elements):
+def _initial_deficit(element, degree, adjacency, node, budget, elements, lengths=None):
     """How many extra bond orders *node* wants, or None when unconstrained."""
     ladder = VALENCE_LADDERS.get(element)
     if not ladder:
@@ -375,7 +399,7 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
         # leave it alone instead of guessing.
         return None
     oxygens = (
-        _terminal_oxygens(node, elements, adjacency)
+        _terminal_oxygens(node, elements, adjacency, lengths)
         if element in {"N", *_SIX_RING_CHALCOGENS}
         else ()
     )
@@ -389,7 +413,10 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
             # four-valent: its N-O bond is dative, so the fourth bond is a real
             # multiple bond to a carbon.  Without it the nitrogen contributes
             # no pi bond, the ring is left with an odd number of unsatisfied
-            # carbons and cannot close a Kekule structure at all.
+            # carbons and cannot close a Kekule structure at all.  Only a short
+            # N-O qualifies: an N-OH whose hydrogen is missing from the graph
+            # has a long N-O (see _N_OXIDE_MAX_LENGTH_SCALE in
+            # :func:`_terminal_oxygens`) and stays three-valent, non-aromatic.
             target = 4
     deficit = target - degree
     if element == "O":
@@ -400,7 +427,7 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
         # already full — but the second S-O order still needs drawing.
         if any(
             elements.get(other) in {"N", *_SIX_RING_CHALCOGENS}
-            and node in _terminal_oxygens(other, elements, adjacency)
+            and node in _terminal_oxygens(other, elements, adjacency, lengths)
             for other in adjacency.get(node, ())
         ):
             deficit = 1
@@ -411,7 +438,7 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements):
     return deficit
 
 
-def _dative_bonds(elements, adjacency):
+def _dative_bonds(elements, adjacency, lengths=None):
     """N-O bonds that must stay single: the N-oxide bond.
 
     A three-connected nitrogen carrying exactly one terminal oxygen is an
@@ -419,13 +446,15 @@ def _dative_bonds(elements, adjacency):
     is a real multiple bond into the ring or the substituent.  A nitro or
     nitrate nitrogen has two or three terminal oxygens: it is drawn N(=O)2, so
     neither N-O bond is excluded here.  A two-connected N-O (nitroso) is a
-    genuine double bond as well.
+    genuine double bond as well.  Only a short N-O is an oxide bond (the
+    length gate in :func:`_terminal_oxygens`): an N-OH is never excluded, so
+    its ring stays non-aromatic.
     """
     single = set()
     for node, element in elements.items():
         if element != "N" or len(adjacency.get(node, ())) != 3:
             continue
-        oxygens = _terminal_oxygens(node, elements, adjacency)
+        oxygens = _terminal_oxygens(node, elements, adjacency, lengths)
         if len(oxygens) == 1:
             single.add(edge_key(node, oxygens[0]))
     return single
@@ -716,7 +745,7 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
         target = _OXO_TARGET_VALENCE.get(element)
         if target is None:
             continue
-        oxygens = _terminal_oxygens(node, elements, adjacency)
+        oxygens = _terminal_oxygens(node, elements, adjacency, lengths)
         if len(oxygens) < _OXO_MIN_TERMINAL_OXYGENS.get(element, 2):
             continue
         covalent_degree = sum(
@@ -754,7 +783,9 @@ def bond_orders(elements, edges, lengths=None):
        tripled up front, so the rest of the graph can still find a clean Kekule
        structure.  An N-oxide nitrogen counts as four-valent and its dative N-O
        bond is never a candidate, so its fourth bond goes into the ring (see
-       :func:`_initial_deficit` and :func:`_dative_bonds`);
+       :func:`_initial_deficit` and :func:`_dative_bonds`).  Only a short N-O
+       is an oxide bond (:func:`_terminal_oxygens`); an N-OH ring is left
+       non-aromatic even when its hydroxyl hydrogen is absent from the graph;
     2. greedy: give one extra order to every edge joining two atoms that both
        still want one;
     3. augmenting paths: rescue atoms the greedy pass stranded even though a
@@ -773,7 +804,9 @@ def bond_orders(elements, edges, lengths=None):
 
     deficits = {}
     for node, element in elements.items():
-        deficit = _initial_deficit(element, len(adjacency[node]), adjacency, node, budget, elements)
+        deficit = _initial_deficit(
+            element, len(adjacency[node]), adjacency, node, budget, elements, lengths
+        )
         if deficit is not None:
             deficits[node] = deficit
     if not _SIX_RING_CHALCOGENS.isdisjoint(elements.values()):
@@ -782,7 +815,7 @@ def bond_orders(elements, edges, lengths=None):
         # does not ask for (see :func:`_six_ring_chalcogen_deficits`).
         deficits.update(_six_ring_chalcogen_deficits(elements, edges, lengths, adjacency))
 
-    single_only = _dative_bonds(elements, adjacency)
+    single_only = _dative_bonds(elements, adjacency, lengths)
     extras = {}
     _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
 

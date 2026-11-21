@@ -683,7 +683,10 @@ class NOxideValenceTest(unittest.TestCase):
     A three-connected nitrogen carrying one terminal oxygen is four-valent:
     its fourth bond is a real multiple bond into the ring, while the N-O bond
     itself stays single.  Without that the ring has an odd number of
-    unsaturated carbons and no Kekule structure exists at all.
+    unsaturated carbons and no Kekule structure exists at all.  The oxygen is
+    only an oxide when the N-O bond is short (pyridine N-oxide ~0.975 of the
+    covalent-radii sum): an N-OH ring has a long N-O and must stay non-aromatic
+    even when the graph drops the hydroxyl hydrogen.
     """
 
     def test_pyridine_n_oxide_ring_is_aromatic(self):
@@ -759,6 +762,36 @@ class NOxideValenceTest(unittest.TestCase):
             ],
         )
         self.assertEqual(chemistry.bond_orders(elements, edges, lengths), {})
+
+    def test_ring_n_hydroxyl_without_hydrogen_stays_non_aromatic(self):
+        # An N-OH ring is keyed on the N-O bond length, not on the graph
+        # alone: a real CIF often drops the hydroxyl hydrogen, and without it
+        # the oxygen would look terminal and the ring would be promoted to a
+        # pyridine N-oxide.  The long N-O (~1.44 A, 1.05 of the radii sum)
+        # keeps the nitrogen three-valent, so the ring stays non-aromatic and
+        # the N-O bond single.
+        elements, edges, lengths = azine_ring({5}, oxide=True)
+        lengths[chemistry.edge_key("X5", "O5")] = 1.44 / (RADII["N"] + RADII["O"])
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+        self.assertNotIn(chemistry.edge_key("X5", "O5"), multiple_bonds(orders))
+        totals = valences(elements, edges, orders)
+        self.assertEqual(totals["X5"], 3)
+
+    def test_ring_n_hydroxyl_with_explicit_hydrogen_stays_non_aromatic(self):
+        # Same N-OH ring with the hydroxyl hydrogen present in the graph: the
+        # oxygen is visibly non-terminal, so the nitrogen is three-valent and
+        # the ring non-aromatic.
+        elements, edges, lengths = azine_ring({5}, oxide=True)
+        elements["HO"] = "H"
+        edges.append(("O5", "HO"))
+        lengths[chemistry.edge_key("O5", "HO")] = 0.97 / (RADII["H"] + RADII["O"])
+        orders = chemistry.bond_orders(elements, edges, lengths)
+
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+        self.assertNotIn(chemistry.edge_key("X5", "O5"), multiple_bonds(orders))
+        self.assertEqual(valences(elements, edges, orders)["X5"], 3)
 
 
 class FindRingsTest(unittest.TestCase):

@@ -834,6 +834,129 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
             deficits[oxygen] = max(0, deficits.get(oxygen, 0) - 1)
 
 
+def _ring_link_bonds(rings, adjacency):
+    """Edges joining two ring atoms without belonging to any ring.
+
+    A biaryl (or ring-to-ring) link is a single bond: the CSD types 88.8% of
+    them Single and only 1.3% Double, and the short ones sit at the same
+    normalised length as a ring double bond.  Sorting candidates by length
+    alone therefore lets a link steal the double bond that belongs inside the
+    ring: in EDOBEG the pyrrole ``C34=N2`` double was lost to the shorter
+    phenyl link ``C34-C21``, which also stranded a phenyl carbon at three
+    bonds.  The link is only forced single when a ring double is available;
+    :func:`bond_orders` relaxes it again for a ring that still has an
+    unsatisfied atom (the central C=C of a bifluorenylidene).
+    """
+    ring_atoms = frozenset(node for ring in rings for node in ring)
+    ring_edges = set()
+    for ring in rings:
+        for node in ring:
+            for other in adjacency.get(node, ()):
+                if other in ring:
+                    ring_edges.add(edge_key(node, other))
+    links = set()
+    for node in ring_atoms:
+        for other in adjacency.get(node, ()):
+            if other in ring_atoms:
+                key = edge_key(node, other)
+                if key not in ring_edges:
+                    links.add(key)
+    return links
+
+
+def _metal_bound_ring_nitrogens(elements, adjacency, rings):
+    """Ring nitrogens that also coordinate a metal.
+
+    The metal bond is dative: it does not consume a covalent valence, so the
+    pyridine nitrogen of a metal complex is still three-valent with one ring
+    double, exactly like the free ligand (the CSD types 92.7% of the N-C ring
+    bonds of a metal-bound six-ring nitrogen Aromatic).  A pyrrole/pyrrolide
+    nitrogen keeps its lone pair instead, so the metal bond alone does not say
+    which of the two is present; :func:`_promote_metal_ring_nitrogens` decides
+    from the ring's own valence needs.
+    """
+    ring_atoms = frozenset(node for ring in rings for node in ring)
+    return {
+        node
+        for node in ring_atoms
+        if elements.get(node) == "N"
+        and any(elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(node, ()))
+    }
+
+
+def _promote_metal_ring_nitrogens(elements, adjacency, rings, deficits, promoted):
+    """Metal-bound ring nitrogens that must take a ring double after all.
+
+    A pyrrole/pyrrolide nitrogen keeps its lone pair and its ring is drawn with
+    the four carbons paired among themselves; a pyridine nitrogen carries one
+    ring double.  Both are three-connected once the dative metal bond is
+    discounted, so the nitrogen is only promoted when one of the carbons of
+    its ring is still short of four bonds.  A pyrrole ring never leaves one
+    (four carbons pair up), a pyridine ring always does (five carbons cannot),
+    and so does a five-ring whose conjugation is broken by an exocyclic double
+    (the dipyrrin of EDOBEG, where C37=C19 leaves C34 without a partner).
+    """
+    result = set()
+    for node in _metal_bound_ring_nitrogens(elements, adjacency, rings) - promoted:
+        if deficits.get(node, 0) > 0:
+            continue
+        for ring in rings:
+            if node not in ring:
+                continue
+            if any(elements.get(other) == "C" and deficits.get(other, 0) > 0 for other in ring):
+                result.add(node)
+                break
+    return result
+
+
+def _link_bonds_to_relax(link_bonds, rings, deficits, relaxed):
+    """Biaryl links that may take a double bond after all.
+
+    A link is only relaxed when one of its endpoints sits in a ring that still
+    has an unsatisfied atom: the ring cannot pair its own atoms, so the link
+    has to carry the order (the central C=C of a bifluorenylidene).  A link
+    next to a ring that is already satisfied stays single.
+    """
+    result = set()
+    for key in link_bonds - relaxed:
+        for node in key:
+            if any(
+                node in ring and any(deficits.get(other, 0) > 0 for other in ring) for ring in rings
+            ):
+                result.add(key)
+                break
+    return result
+
+
+def _solve_bond_orders(
+    elements, edge_keys, adjacency, base_deficits, lengths, link_bonds, relaxed_links, promoted
+):
+    """Run the valence repair once with the current relaxations.
+
+    Returns ``(extras, remaining)``: the extra orders placed on each edge, and
+    the deficits still unsatisfied afterwards.
+    """
+    deficits = dict(base_deficits)
+    for node in promoted:
+        deficits[node] = max(deficits.get(node, 0), 1)
+    single_only = _dative_bonds(elements, adjacency, lengths)
+    single_only |= link_bonds - relaxed_links
+    extras = {}
+    _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
+
+    candidates, by_node = _candidates(elements, edge_keys, deficits, lengths, single_only)
+    _force_triples(elements, deficits, by_node, extras)
+    _greedy(deficits, extras, candidates)
+    _augment(deficits, extras, by_node)
+    _escalate(deficits, extras, by_node)
+
+    unsatisfied = sum(1 for value in deficits.values() if value > 0)
+    if unsatisfied and unsatisfied <= _REPAIR_NODE_LIMIT:
+        if sum(value for value in deficits.values() if value > 0) <= _REPAIR_DEFICIT_LIMIT:
+            _repair(deficits, extras, by_node, [_REPAIR_STEP_BUDGET])
+    return extras, deficits
+
+
 def bond_orders(elements, edges, lengths=None):
     """Return ``{edge_key: order}`` for every bond that is not a single bond.
 
@@ -862,12 +985,28 @@ def bond_orders(elements, edges, lengths=None):
        one possible partner left (alkynes, nitriles);
     5. bounded backtracking for whatever is still unsatisfied.
 
+    Two structural rules feed the deficits and the candidate set:
+
+    * a metal bond is dative, so a ring nitrogen that coordinates a metal may
+      still take the ring double of a pyridine (or of a pyrrole whose
+      conjugation an exocyclic double has broken).  It is only promoted when a
+      carbon of its ring is otherwise left with three bonds, which is what
+      tells a pyridine (five carbons cannot pair up) from a pyrrole (four
+      carbons can) -- see :func:`_promote_metal_ring_nitrogens`;
+    * a bond between two ring atoms that belongs to no ring is a biaryl link
+      and stays single while a ring double is available, so it cannot steal
+      the double bond of the ring (see :func:`_ring_link_bonds`).  It is
+      relaxed for a ring that still has an unsatisfied atom, which keeps a
+      genuine inter-ring C=C (bifluorenylidene) double.
+
     Atoms whose element is unknown, or whose degree already exceeds its highest
     valence, are left unconstrained rather than guessed at.
     """
     elements = _normalise_elements(elements)
     lengths = {edge_key(*key): float(value) for key, value in (lengths or {}).items()}
     adjacency, edge_keys = _graph(elements, edges)
+    rings = find_rings(elements, edges)
+    link_bonds = _ring_link_bonds(rings, adjacency)
     budget = [_CYCLE_STEP_BUDGET]
 
     deficits = {}
@@ -883,20 +1022,28 @@ def bond_orders(elements, edges, lengths=None):
         # does not ask for (see :func:`_six_ring_chalcogen_deficits`).
         deficits.update(_six_ring_chalcogen_deficits(elements, edges, lengths, adjacency))
 
-    single_only = _dative_bonds(elements, adjacency, lengths)
-    extras = {}
-    _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
-
-    candidates, by_node = _candidates(elements, edge_keys, deficits, lengths, single_only)
-    _force_triples(elements, deficits, by_node, extras)
-    _greedy(deficits, extras, candidates)
-    _augment(deficits, extras, by_node)
-    _escalate(deficits, extras, by_node)
-
-    unsatisfied = sum(1 for value in deficits.values() if value > 0)
-    if unsatisfied and unsatisfied <= _REPAIR_NODE_LIMIT:
-        if sum(value for value in deficits.values() if value > 0) <= _REPAIR_DEFICIT_LIMIT:
-            _repair(deficits, extras, by_node, [_REPAIR_STEP_BUDGET])
+    promoted = set()
+    relaxed_links = set()
+    extras, remaining = _solve_bond_orders(
+        elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
+    )
+    # A metal-bound ring nitrogen is promoted before a biaryl link is relaxed:
+    # the ring double is the chemically correct answer, the link double the
+    # fallback for an atom that has nothing else.  Each round is bounded.
+    for _ in range(3):
+        new_promoted = _promote_metal_ring_nitrogens(
+            elements, adjacency, rings, remaining, promoted
+        )
+        if new_promoted:
+            promoted |= new_promoted
+        else:
+            new_links = _link_bonds_to_relax(link_bonds, rings, remaining, relaxed_links)
+            if not new_links:
+                break
+            relaxed_links |= new_links
+        extras, remaining = _solve_bond_orders(
+            elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
+        )
 
     return {key: extra + 1 for key, extra in extras.items() if extra > 0}
 

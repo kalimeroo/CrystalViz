@@ -884,6 +884,177 @@ class DiazoValenceTest(unittest.TestCase):
         self.assertEqual(valences(elements, edges, orders)["C0"], 4)
 
 
+class MetalRingNitrogenTest(unittest.TestCase):
+    """A metal bond is dative: it does not consume the ring N's valence.
+
+    The CSD types the N-C ring bonds of a metal-bound six-ring nitrogen
+    Aromatic in 92.7% of the hits, and the five-ring nitrogen is split between
+    the pyrrole (lone pair), pyrrolide (single) and dipyrrin (N=C) forms.  The
+    nitrogen is therefore promoted only when a carbon of its ring is otherwise
+    left with three bonds.
+    """
+
+    def test_metal_bound_pyridine_keeps_its_ring_double(self):
+        nodes = ["N0", "C0", "C1", "C2", "C3", "C4"]
+        atoms = {node: ("N" if node == "N0" else "C") for node in nodes}
+        atoms["FE0"] = "FE"
+        bonds = ring_bonds(nodes, 1.39)
+        bonds.append(("N0", "FE0", 2.0))
+        for index in range(5):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 3, doubles)
+        self.assertTrue(any("N0" in key for key in doubles), doubles)
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual(len(rings), 1)
+        self.assertIn("N0", rings[0][0])
+
+    def test_metal_bound_pyrrole_keeps_its_lone_pair(self):
+        # Four carbons pair up among themselves, so the nitrogen is not needed:
+        # it stays three-valent and donates its lone pair.
+        nodes = ["N0", "C0", "C1", "C2", "C3"]
+        atoms = {node: ("N" if node == "N0" else "C") for node in nodes}
+        atoms["FE0"] = "FE"
+        bonds = ring_bonds(nodes, 1.39)
+        bonds.append(("N0", "FE0", 2.0))
+        for index in range(4):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 2, doubles)
+        self.assertFalse(any("N0" in key for key in doubles), doubles)
+        rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(len(rings), 1)
+        self.assertEqual(rings[0].lone_pair_electrons, 2)
+
+    def _dipyrrin_like(self):
+        """EDOBEG's core (CSD EDOBEG): a metal-bound dipyrrin.
+
+        Ring B (N2, C34-C37) carries an exocyclic C19=C37 double to the meso
+        carbon, so its four carbons cannot pair up and N2 must take the double.
+        Ring A (N1, C15-C18) pairs its own carbons and keeps its lone pair.
+        """
+        atoms = {
+            "N1": "N",
+            "N2": "N",
+            "C15": "C",
+            "C16": "C",
+            "C17": "C",
+            "C18": "C",
+            "C19": "C",
+            "C34": "C",
+            "C35": "C",
+            "C36": "C",
+            "C37": "C",
+            "FE1": "FE",
+        }
+        bonds = [
+            ("N2", "C34", 1.383),
+            ("C34", "C35", 1.439),
+            ("C35", "C36", 1.337),
+            ("C36", "C37", 1.458),
+            ("C37", "N2", 1.374),
+            ("C19", "C37", 1.391),
+            ("C19", "C18", 1.395),
+            ("N1", "C18", 1.364),
+            ("C17", "C18", 1.434),
+            ("C17", "C16", 1.338),
+            ("C16", "C15", 1.449),
+            ("C15", "N1", 1.392),
+            ("N1", "FE1", 2.0),
+            ("N2", "FE1", 2.0),
+        ]
+        for node in ("C15", "C16", "C17", "C35", "C36"):
+            atoms[node + "H"] = "H"
+            bonds.append((node, node + "H", 1.08))
+        # Two phenyls: one on the meso carbon (C19-C38) and one on C34 through
+        # the short biaryl link C34-C20 of EDOBEG.
+        for base, anchor, distance in (
+            ("C38", "C19", 1.49),
+            ("C20", "C34", 1.392),
+        ):
+            phenyl = [base, base + "a", base + "b", base + "c", base + "d", base + "e"]
+            atoms.update({node: "C" for node in phenyl})
+            bonds.extend(ring_bonds(phenyl, 1.39))
+            bonds.append((anchor, base, distance))
+            for node in phenyl[1:]:
+                atoms[node + "H"] = "H"
+                bonds.append((node, node + "H", 1.08))
+        return molecule(atoms, bonds)
+
+    def test_dipyrrin_ring_takes_the_nitrogen_double(self):
+        elements, edges, lengths = self._dipyrrin_like()
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+
+        self.assertEqual(orders.get(chemistry.edge_key("N2", "C34")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("C35", "C36")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("C19", "C37")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("C15", "C16")), 2)
+        self.assertEqual(orders.get(chemistry.edge_key("C17", "C18")), 2)
+        self.assertNotIn(chemistry.edge_key("C34", "C20"), doubles)
+        for node, element in elements.items():
+            if element == "C":
+                self.assertEqual(valences(elements, edges, orders)[node], 4, node)
+        # The broken five-ring is not aromatic; the intact five-ring and the
+        # two phenyls are.
+        ring_sizes = sorted(
+            len(ring.nodes)
+            for ring in chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        )
+        self.assertEqual(ring_sizes, [5, 6, 6], ring_sizes)
+
+    def test_biaryl_link_stays_single(self):
+        atoms = {}
+        bonds = []
+        for prefix in ("A", "B"):
+            nodes = [f"{prefix}{index}" for index in range(6)]
+            atoms.update({node: "C" for node in nodes})
+            bonds.extend(ring_bonds(nodes, 1.39))
+            for index in range(1, 6):
+                atoms[f"{prefix}H{index}"] = "H"
+                bonds.append((nodes[index], f"{prefix}H{index}", 1.08))
+        bonds.append(("A0", "B0", 1.392))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertNotIn(chemistry.edge_key("A0", "B0"), multiple_bonds(orders))
+        self.assertEqual(len(multiple_bonds(orders)), 6)
+        self.assertEqual(len(chemistry.aromatic_rings(elements, edges, orders)), 2)
+        for node, element in elements.items():
+            if element == "C":
+                self.assertEqual(valences(elements, edges, orders)[node], 4, node)
+
+    def test_inter_ring_double_bond_is_kept_without_another_partner(self):
+        # Bifluorenylidene-like: each link carbon is bonded to two ring carbons
+        # that are already paired, so the inter-ring bond is the only way left
+        # to reach four bonds.
+        atoms = {}
+        bonds = []
+        for prefix in ("A", "B"):
+            nodes = [f"{prefix}{index}" for index in range(5)]
+            atoms.update({node: "C" for node in nodes})
+            bonds.extend(ring_bonds(nodes, 1.39))
+            for index in range(1, 5):
+                atoms[f"{prefix}H{index}"] = "H"
+                bonds.append((nodes[index], f"{prefix}H{index}", 1.08))
+        bonds.append(("A0", "B0", 1.35))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders.get(chemistry.edge_key("A0", "B0")), 2)
+        for node, element in elements.items():
+            if element == "C":
+                self.assertEqual(valences(elements, edges, orders)[node], 4, node)
+
+
 class FindRingsTest(unittest.TestCase):
     def test_four_membered_ring_is_not_reported(self):
         atoms, bonds = cycle("C", 4, distance=1.55)

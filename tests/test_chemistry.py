@@ -33,6 +33,7 @@ RADII = {
     "TE": 1.38,
     "SB": 1.39,
     "FE": 1.32,
+    "NA": 1.66,
 }
 
 
@@ -382,6 +383,117 @@ class AromaticRingsTest(unittest.TestCase):
         self.assertEqual(len(rings), 2)
         self.assertEqual({len(nodes) for nodes, _edges in rings}, {6})
 
+    def test_fused_pyridine_thiophene_pyridine_recovers_both_pyridines(self):
+        # AHUCIT: a thiophene fused to two N-alkylpyridinium rings.  A
+        # shortest-edge-first valence repair spends the fusion bonds on the
+        # thiophene, leaving each pyridine one electron over the sextet (7 pi,
+        # not 4n+2).  The three-connected nitrogen already fills the third rung
+        # of its (3, 4) ladder, so the repair gives it no double; the Clar
+        # re-placement may promote it (it belongs to a single ring) and gives
+        # each terminal pyridine its own Kekule sextet, which is the
+        # arrangement with the most aromatic rings.
+        atoms = {
+            "S1": "S",
+            "C5": "C",
+            "C6": "C",
+            "C7": "C",
+            "C8": "C",
+            "C9": "C",
+            "C10": "C",
+            "C11": "C",
+            "C12": "C",
+            "C13": "C",
+            "C14": "C",
+            "N1": "N",
+            "N2": "N",
+            "C15": "C",
+            "C16": "C",
+            "H5": "H",
+            "H8": "H",
+            "H9": "H",
+            "H10": "H",
+            "H13": "H",
+            "H14": "H",
+            "H15A": "H",
+            "H15B": "H",
+            "H15C": "H",
+            "H16A": "H",
+            "H16B": "H",
+            "H16C": "H",
+        }
+        bonds = [
+            # thiophene (fused to pyridine 2 on C6-C12, to pyridine 1 on C7-C11)
+            ("S1", "C6", 1.70),
+            ("C6", "C12", 1.39),
+            ("C12", "C11", 1.39),
+            ("C11", "C7", 1.39),
+            ("C7", "S1", 1.70),
+            # pyridine 2
+            ("C6", "C5", 1.39),
+            ("C5", "N1", 1.34),
+            ("N1", "C14", 1.34),
+            ("C14", "C13", 1.39),
+            ("C13", "C12", 1.39),
+            # pyridine 1
+            ("C7", "C8", 1.39),
+            ("C8", "N2", 1.34),
+            ("N2", "C9", 1.34),
+            ("C9", "C10", 1.39),
+            ("C10", "C11", 1.39),
+            # N-methyl groups (the pyridinium substituent)
+            ("N1", "C15", 1.47),
+            ("C15", "H15A", 1.09),
+            ("C15", "H15B", 1.09),
+            ("C15", "H15C", 1.09),
+            ("N2", "C16", 1.47),
+            ("C16", "H16A", 1.09),
+            ("C16", "H16B", 1.09),
+            ("C16", "H16C", 1.09),
+            # hydrogens on the non-fusion carbons
+            ("C5", "H5", 1.08),
+            ("C8", "H8", 1.08),
+            ("C9", "H9", 1.08),
+            ("C10", "H10", 1.08),
+            ("C13", "H13", 1.08),
+            ("C14", "H14", 1.08),
+        ]
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        sizes = sorted(len(nodes) for nodes, _edges in rings)
+        self.assertEqual(sizes, [5, 6, 6], rings)
+        pyridines = [nodes for nodes, _edges in rings if len(nodes) == 6]
+        self.assertTrue(all("N1" in nodes or "N2" in nodes for nodes in pyridines))
+
+    def test_saturated_fused_ring_stays_non_aromatic(self):
+        # Decalin: every carbon already carries four single bonds, so the Clar
+        # search has no valence left to place a double bond.
+        atoms = {f"C{index}": "C" for index in range(10)}
+        bonds = [
+            ("C0", "C1", 1.54),
+            ("C1", "C2", 1.54),
+            ("C2", "C3", 1.54),
+            ("C3", "C4", 1.54),
+            ("C4", "C5", 1.54),
+            ("C5", "C0", 1.54),
+            ("C4", "C6", 1.54),
+            ("C6", "C7", 1.54),
+            ("C7", "C8", 1.54),
+            ("C8", "C9", 1.54),
+            ("C9", "C5", 1.54),
+        ]
+        for index in range(10):
+            hydrogens = 1 if index in (4, 5) else 2
+            for suffix in range(hydrogens):
+                atoms[f"H{index}_{suffix}"] = "H"
+                bonds.append((f"C{index}", f"H{index}_{suffix}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(multiple_bonds(orders), {})
+        self.assertEqual(chemistry.aromatic_rings(elements, edges, orders), [])
+
     def test_bridgehead_nitrogen_donates_no_lone_pair(self):
         # Indolizine: a five-ring and a six-ring fused on their N-C bond.  The
         # lone pair of the bridgehead nitrogen belongs to the fused ten-pi
@@ -440,6 +552,37 @@ class AromaticRingsTest(unittest.TestCase):
         rings = chemistry.aromatic_rings(elements, edges, orders, detail=True)
         self.assertEqual({len(ring.nodes) for ring in rings}, {5, 6})
         self.assertTrue(all(ring.kekule for ring in rings))
+
+    def test_indole_without_the_nh_hydrogen_keeps_both_rings(self):
+        # The same indole, but the CIF omits the N-H hydrogen (GEXRAC): the
+        # repair sees a two-connected nitrogen and gives it a double to reach
+        # the third rung.  That double steals the lone pair the five-ring needs,
+        # so the Clar re-placement must be free to flatten it -- a lone-pair
+        # heteroatom's double is not mandatory the way a carbon's is.
+        atoms = {"N0": "N", "C1": "C", "C2": "C"}
+        bonds = [
+            ("N0", "C1", 1.37),
+            ("N0", "C4", 1.38),
+            ("C1", "C2", 1.42),
+            ("C2", "C3", 1.39),
+            ("C3", "C4", 1.38),
+            ("C1", "C8", 1.40),
+            ("C2", "C5", 1.40),
+            ("C5", "C6", 1.39),
+            ("C6", "C7", 1.39),
+            ("C7", "C8", 1.39),
+        ]
+        for index in range(3, 9):
+            atoms[f"C{index}"] = "C"
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertNotIn(chemistry.edge_key("N0", "C1"), orders)
+        self.assertNotIn(chemistry.edge_key("N0", "C4"), orders)
+        rings = chemistry.aromatic_rings(elements, edges, orders)
+        self.assertEqual({len(nodes) for nodes, _edges in rings}, {5, 6})
 
     def test_hydrogen_less_polycyclic_sheet(self):
         # A graphene patch has no hydrogens at all: every carbon has two ring
@@ -675,6 +818,36 @@ class MultipleBondTest(unittest.TestCase):
             chemistry.bond_orders(*forward),
             chemistry.bond_orders(*backward),
         )
+
+    def test_metal_carbonyl_draws_c_oxygen_triple(self):
+        # An M-C#O metal carbonyl: the carbon bonds only the dative metal and
+        # a short oxygen, so the C-O bond carries both spare orders while the
+        # charge sits on the metal -- the plain C=O seed is skipped for such a
+        # centre, and the (4,) ladder alone cannot ask for a triple.
+        elements, edges, lengths = molecule(
+            {"C0": "C", "O0": "O", "FE0": "FE"},
+            [("C0", "O0", 1.13), ("C0", "FE0", 1.85)],
+        )
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {chemistry.edge_key("C0", "O0"): 3})
+
+    def test_metal_acyl_keeps_c_oxygen_double(self):
+        # A metal acyl M-C(=O)R: the metal neighbour takes it out of the
+        # tier-1 C=O seed, but its carbon still has one spare order and the
+        # short C-O is its only usable candidate, so C=O is drawn anyway.
+        elements, edges, lengths = molecule(
+            {"C0": "C", "O0": "O", "FE0": "FE", "C1": "C", "H1a": "H", "H1b": "H", "H1c": "H"},
+            [
+                ("C0", "C1", 1.50),
+                ("C1", "H1a", 1.09),
+                ("C1", "H1b", 1.09),
+                ("C1", "H1c", 1.09),
+                ("C0", "O0", 1.21),
+                ("C0", "FE0", 1.85),
+            ],
+        )
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {chemistry.edge_key("C0", "O0"): 2})
 
 
 class NOxideValenceTest(unittest.TestCase):
@@ -1053,6 +1226,103 @@ class MetalRingNitrogenTest(unittest.TestCase):
         for node, element in elements.items():
             if element == "C":
                 self.assertEqual(valences(elements, edges, orders)[node], 4, node)
+
+    def test_nitrogen_bridging_two_alkali_cations_stays_a_ring_atom(self):
+        # CEMGAD's C1 family: a phenanthroline nitrogen coordinates two sodium
+        # cations, giving it four neighbours.  Sodium is not a HAPTIC_METALS
+        # member (it never forms an eta5/6/7 pi ligand), but its contact is a
+        # dative one: the ring must still be enumerated and the nitrogen still
+        # promoted, exactly as when it carries a transition-metal bond.
+        nodes = ["N0", "C0", "C1", "C2", "C3", "C4"]
+        atoms = {node: ("N" if node == "N0" else "C") for node in nodes}
+        atoms["NA0"] = "NA"
+        atoms["NA1"] = "NA"
+        bonds = ring_bonds(nodes, 1.39)
+        bonds.append(("N0", "NA0", 2.0))
+        bonds.append(("N0", "NA1", 2.0))
+        for index in range(5):
+            atoms[f"H{index}"] = "H"
+            bonds.append((f"C{index}", f"H{index}", 1.08))
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        rings = chemistry.find_rings(elements, edges)
+        self.assertIn(frozenset(nodes), rings)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        doubles = multiple_bonds(orders)
+        self.assertEqual(len(doubles), 3, doubles)
+        self.assertTrue(any("N0" in key for key in doubles), doubles)
+        details = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0].lone_pair_electrons, 0)
+
+    def test_alkali_bridged_phenanthroline_keeps_all_three_rings(self):
+        # CEMGAD: a phenanthroline whose two pyridine nitrogens each bridge
+        # alkali cations.  Before the NONMETALS eligibility rule the N2-type
+        # rings were never enumerated, the fusion edges read as exocyclic
+        # doubles, and none of the three rings came out aromatic.
+        ring_a = ["N1", "C1", "C2", "C3", "C4", "C5"]
+        central = ["C1", "C2", "C6", "C12", "C8", "C7"]
+        ring_c = ["N2", "C7", "C8", "C9", "C10", "C11"]
+        atoms = {
+            "N1": "N",
+            "N2": "N",
+            "NA0": "NA",
+            "NA1": "NA",
+        }
+        atoms.update(
+            {
+                node: "C"
+                for node in (
+                    "C1",
+                    "C2",
+                    "C3",
+                    "C4",
+                    "C5",
+                    "C6",
+                    "C7",
+                    "C8",
+                    "C9",
+                    "C10",
+                    "C11",
+                    "C12",
+                )
+            }
+        )
+        bonds = []
+        for nodes, distance in (
+            (ring_a, 1.35),
+            (central, 1.39),
+            (ring_c, 1.35),
+        ):
+            bonds.extend(ring_bonds(nodes, distance))
+        # N1 chelates NA0 and bridges NA1; N2 chelates NA1 (CEMGAD bridges a
+        # second cation as well, both nitrogens of the ligand are then
+        # 4-coordinate).
+        bonds.append(("N1", "NA0", 2.0))
+        bonds.append(("N1", "NA1", 2.0))
+        bonds.append(("N2", "NA1", 2.0))
+        for node in ("C3", "C4", "C6", "C10", "C12"):
+            atoms[node + "H"] = "H"
+            bonds.append((node, node + "H", 1.08))
+        bonds.append(("C9", "C9H", 1.08))
+        atoms["C9H"] = "H"
+        bonds.append(("C11", "C11H", 1.08))
+        atoms["C11H"] = "H"
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        rings = chemistry.find_rings(elements, edges)
+        for nodes in (ring_a, central, ring_c):
+            self.assertIn(frozenset(nodes), rings)
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        details = chemistry.aromatic_rings(elements, edges, orders, detail=True)
+        by_nodes = {frozenset(detail.nodes): detail for detail in details}
+        for nodes in (ring_a, central, ring_c):
+            self.assertIn(frozenset(nodes), by_nodes, nodes)
+        self.assertEqual(len(details), 3)
+        # the alkalis stay off the pi system: neither ring leans on a lone pair
+        # to make its sextet (each pyridine N takes a ring double instead).
+        for detail in details:
+            self.assertEqual(detail.lone_pair_electrons, 0, detail.nodes)
 
 
 class FindRingsTest(unittest.TestCase):
@@ -1593,6 +1863,165 @@ class PnictogenRingTest(unittest.TestCase):
         self.assertEqual(
             [(ring.pi_electrons, ring.lone_pair_electrons) for ring in rings], [(6, 2)]
         )
+
+
+class PhosphoniumValenceTest(unittest.TestCase):
+    """The rung-5 cap on a four-connected group-15 centre.
+
+    A 4-connected P/As/Sb centre either is P(=X)R3 (drawn double through the
+    5th rung), a genuine ylide P=C, or a saturated cation/complex.  The (3, 5)
+    ladder cannot tell them apart, so the geometry does: a metal neighbour
+    means a phosphine/arsine complex (Ar3P.M) whose every P-C the CSD types
+    Single even when short (ADAKIB's 0.965 gold-bound ylide), and an
+    all-carbon substituent set whose bonds are all too long for a P=C double
+    is a true phosphonium (Ph4P+) that stays four-valent.  Only a short P-C
+    (<= _P_YLIDE_MAX_LENGTH_SCALE) keeps the ylide's 5th rung.
+    """
+
+    @staticmethod
+    def _methyl(centre, tag, elements, bonds):
+        """A 4-connected methyl stub on *centre* that wants no extra order."""
+        carbon = f"C{tag}"
+        elements[carbon] = "C"
+        # Normalised 0.98: safely inside the candidate gate, safely above the
+        # 0.97 ylide threshold, so a P-C stub never looks like a double bond.
+        bonds.append((centre, carbon, 0.98 * (RADII[elements[centre]] + RADII["C"])))
+        for suffix in ("a", "b", "c"):
+            hydrogen = f"{carbon}{suffix}"
+            elements[hydrogen] = "H"
+            bonds.append((carbon, hydrogen, 1.09))
+        return carbon
+
+    def test_true_phosphonium_draws_all_p_c_single(self):
+        # Ph4P+: no metal, no H adjacent, and every P-C too long to be a
+        # ylide, so the rung-5 order is withheld and all four bonds are single.
+        atoms = {"P1": "P"}
+        bonds = []
+        for index in range(4):
+            self._methyl("P1", str(index), atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {})
+
+    def test_ylide_keeps_its_p_c_double(self):
+        # A genuine phosphonium ylide R3P=CH2: its short P-C (0.93 of the
+        # radii sum) clears the ylide gate and keeps the 5th rung, so the
+        # P=C double is drawn.
+        atoms = {"P1": "P", "CY": "C", "HYa": "H", "HYb": "H"}
+        bonds = [("P1", "CY", 1.70), ("CY", "HYa", 1.08), ("CY", "HYb", 1.08)]
+        for index in range(3):
+            self._methyl("P1", str(index), atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {chemistry.edge_key("P1", "CY"): 2})
+
+    def test_metal_bound_ylide_draws_all_single(self):
+        # ADAKIB: a 0.965 gold-bound ylide still draws P-C single -- the
+        # dative metal bond consumes the rung-5 order, so even a short P-C is
+        # kept single by the CSD.
+        atoms = {"P1": "P", "FE0": "FE", "CY": "C", "HYa": "H", "HYb": "H"}
+        bonds = [
+            ("P1", "FE0", 2.30),
+            ("P1", "CY", 1.70),
+            ("CY", "HYa", 1.08),
+            ("CY", "HYb", 1.08),
+        ]
+        for index in range(2):
+            self._methyl("P1", str(index), atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertNotIn(chemistry.edge_key("P1", "CY"), orders)
+
+
+class MetalPnictogenChalcogenTest(unittest.TestCase):
+    """P=X doubles whose chalcogen/N partner also coordinates a metal.
+
+    The CSD types a phosphine sulfide, selenide or phosphinimine P=S/P=Se/P=N
+    Double even when the chalcogen or nitrogen also bonds a cation: the S/N
+    then has graph degree two or three, the valence ladder is full, and the
+    double must be granted from the geometry instead (LEVQUZ's cerium
+    thiophosphoryl complex, AVEYAE/BEFNUW's metal-bound phosphinimines).  The
+    double sits on the phosphorus side, so the promotion is keyed on the
+    partner's *sole* ladder neighbour being a group-15 pnictogen:
+
+    * a two-coordinate chalcogen (one pnictogen + one metal) is promoted;
+    * a three-coordinate phosphinimine nitrogen (pnictogen + carbon + metal)
+      is promoted, but only while the pnictogen itself is a plain R3P= centre
+      -- a P that already coordinates a metal (UJITAI's Zr-bound phosphine)
+      keeps its P-N single, exactly as the CSD types it;
+    * a bridge with two ladder neighbours (a thiolate R-S-P-M) is never
+      promoted; its P-S bond stays single.
+    """
+
+    def _methyl(self, centre, tag, elements, bonds):
+        return PhosphoniumValenceTest._methyl(centre, tag, elements, bonds)
+
+    def test_metal_coordinated_phosphine_sulfide_keeps_its_double(self):
+        # LEVQUZ: every P=S sulfur also coordinates the cerium cation.  The S
+        # has graph degree two (P + metal) so its (2, 4, 6) ladder is full --
+        # the P=S double only survives because the sulfur's sole ladder
+        # neighbour is the phosphorus itself.
+        atoms = {"P1": "P", "S1": "S", "FE1": "FE"}
+        bonds = [("P1", "S1", 1.99), ("S1", "FE1", 2.50)]
+        for index in range(3):
+            self._methyl("P1", str(index), atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {chemistry.edge_key("P1", "S1"): 2})
+
+    def test_three_connected_phosphinimine_nitrogen_keeps_its_double(self):
+        # BEFNUW: an iminophosphorane R3P=N-R'-M whose degree-three nitrogen
+        # (P + C + metal) bridges the metal still draws P=N: the nitrogen is
+        # promoted because its pnictogen partner is a plain R3P= centre with
+        # no metal of its own.
+        atoms = {"P1": "P", "N1": "N", "FE1": "FE"}
+        bonds = [("P1", "N1", 1.61), ("N1", "FE1", 2.10)]
+        for index in range(3):
+            self._methyl("P1", str(index), atoms, bonds)
+        self._methyl("N1", "3", atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {chemistry.edge_key("P1", "N1"): 2})
+
+    def test_metal_phosphine_keeps_its_p_n_bond_single(self):
+        # UJITAI: the phosphorus is itself coordinated to a metal (Zr here
+        # replaced by FE), so the rung-5 cap zeroes its deficit and its P=N
+        # bond stays single even though the nitrogen also bridges a metal.
+        atoms = {"P1": "P", "N1": "N", "FE1": "FE", "FE2": "FE"}
+        bonds = [
+            ("P1", "FE1", 2.50),
+            ("P1", "N1", 1.61),
+            ("N1", "FE2", 2.10),
+        ]
+        for index in range(2):
+            self._methyl("P1", str(index), atoms, bonds)
+        self._methyl("N1", "2", atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertNotIn(chemistry.edge_key("P1", "N1"), orders)
+        self.assertNotIn(chemistry.edge_key("N1", "C2"), orders)
+
+    def test_thiolate_phosphine_sulfur_stays_single(self):
+        # A P-S-C thiolate/thiophosphate ester: the sulfur's ladder holds the
+        # phosphorus *and* the carbon, so it is not a phosphine sulfide.  R1
+        # only promotes a partner whose sole ladder neighbour is a pnictogen,
+        # and a two-connected S gets no deficit from the (2, 4, 6) ladder
+        # either -- the P-S bond stays single (the ESOFEY/FOSBAS CSD class).
+        atoms = {"P1": "P", "S1": "S"}
+        bonds = [("P1", "S1", 2.03)]
+        for index in range(3):
+            self._methyl("P1", str(index), atoms, bonds)
+        self._methyl("S1", "3", atoms, bonds)
+        elements, edges, lengths = molecule(atoms, bonds)
+
+        orders = chemistry.bond_orders(elements, edges, lengths)
+        self.assertEqual(orders, {})
 
 
 class BoronRingTest(unittest.TestCase):

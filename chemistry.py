@@ -78,6 +78,16 @@ LONE_PAIR_ELEMENTS = frozenset({"N", "P", "O", "S", "AS", "SB", "SE", "TE"})
 # alternating single/double bond arrangement describes it.
 HAPTIC_METALS = frozenset(
     {
+        # Group 1: the alkali pi salts (NaCp, K pyrrolide/indolide) where the
+        # cation contacts every atom of the ring with a short Pi bond.  The
+        # haptic path only fires when the Kekule count has already failed, so
+        # an alkali cation that merely bridges a ring nitrogen (CEMGAD's Na)
+        # never triggers it -- the common-metal test needs the whole ring.
+        "LI",
+        "NA",
+        "K",
+        "RB",
+        "CS",
         # Group 2 (Cp2Mg, Cp2Ca) and group 12 (Cp2Zn, Cp2Hg).
         "MG",
         "CA",
@@ -137,6 +147,37 @@ HAPTIC_METALS = frozenset(
     }
 )
 
+# Elements that bond covalently in these graphs: ring pi participants, the
+# hydrogens that ride on them, and the halogens.  A ring atom with more than
+# three neighbours is still walkable when the extra neighbours are *metal
+# contacts* — a pyridine nitrogen bridging two sodium cations still donates
+# its lone pair — so only the non-metal neighbours count toward the 2-3
+# limit that decides whether an atom is ring material.  Unlike HAPTIC_METALS
+# this tests the element itself, so alkali and alkaline-earth cations
+# (Na/K/Li/Ca...) that never form an eta5/6/7 pi ligand still let their
+# coordinated ring atom be enumerated; HAPTIC_METALS keeps its separate job
+# of recognising genuine pi ligands in :func:`_haptic_pi_electrons`.
+NONMETALS = frozenset(
+    {
+        "H",
+        "D",
+        "B",
+        "C",
+        "N",
+        "O",
+        "F",
+        "SI",
+        "P",
+        "S",
+        "CL",
+        "AS",
+        "SE",
+        "BR",
+        "TE",
+        "I",
+    }
+)
+
 # A candidate multiple bond may not be longer than the covalent radii predict
 # (normalised length 1.0).  Real double/triple bonds sit well below that, but
 # pairs differ: the gap between a stretched C=C and a single C-C is smaller
@@ -181,12 +222,29 @@ _SIX_RING_CHALCOGENS = frozenset({"S", "SE", "TE"})
 
 # Tier 1 oxo-pattern centers (see :func:`_oxo_double_bonds`): an element whose
 # terminal oxide oxygens are drawn as genuine X=O doubles — sulfone/sulfonate/
-# sulfate S(=O)2 (and Se/Te analogues), nitro/nitrate N(=O)2, phosphate P=O.
-# The spares come from the valence ladder (hexavalent chalcogen, pentavalent
-# N/P); the actual double-bond count never exceeds _OXO_MAX_DOUBLES.
-_OXO_TARGET_VALENCE = {"S": 6, "SE": 6, "TE": 6, "N": 5, "P": 5}
-_OXO_MIN_TERMINAL_OXYGENS = {"S": 2, "SE": 2, "TE": 2, "N": 2, "P": 1}
+# sulfate S(=O)2 (and Se/Te analogues), nitro/nitrate N(=O)2, phosphate P=O,
+# and a terminal C=O carbonyl (ketone/aldehyde/carboxylate/ester/amide).  The
+# spares come from the valence ladder (hexavalent chalcogen, pentavalent N/P,
+# tetravalent carbon); the actual double-bond count never exceeds
+# _OXO_MAX_DOUBLES.
+_OXO_TARGET_VALENCE = {"C": 4, "S": 6, "SE": 6, "TE": 6, "N": 5, "P": 5}
+_OXO_MIN_TERMINAL_OXYGENS = {"S": 2, "SE": 2, "TE": 2, "N": 2, "P": 1, "C": 1}
 _OXO_MAX_DOUBLES = 2
+
+# A carbonyl C=O is recognised as such only when it is short enough: in the CSD
+# the genuine C=O of ketones, aldehydes, carboxylates, esters and amides
+# clusters at 0.85-0.90 of the covalent-radii sum, while a real C-O single
+# whose proton is missing from the graph (enol C-OH, phenoxide Ar-O-, ester
+# C-OR) sits at 0.92-1.00.  The length separates the oxide, whose double must
+# be reserved in the tier-1 pass so a shorter ring/chain C-C cannot steal it,
+# from the single bond of a deprotonated or protonated oxygen.
+_C_CARBONYL_MAX_LENGTH_SCALE = 0.90
+
+# The shortest P-C bond a four-coordinate group-15 centre may take while still
+# being a saturated phosphonium: a genuine ylide P=C sits at 0.93-0.96 of the
+# covalent-radii sum, a phosphonium P-C single at 0.98-1.00, so the threshold
+# lets the ladder keep its 5th rung for a real double and drop it for the salt.
+_P_YLIDE_MAX_LENGTH_SCALE = 0.97
 
 # An N-O bond is recognised as an N-oxide bond only when it is short enough to
 # be the charge-separated N+(O-) bond: in the CSD the (formally single) N-O of
@@ -226,6 +284,16 @@ _REPAIR_NODE_LIMIT = 12
 _REPAIR_DEFICIT_LIMIT = 12
 _CYCLE_STEP_BUDGET = 40_000
 _AUGMENT_STEP_BUDGET = 200_000
+
+# Clar re-placement: a fused ring system is re-Kekule-ed so that as many rings
+# as possible get a full sextet, preferring terminal rings (Clar's rule).  The
+# matching search is bounded by cluster size and a step budget so a large fused
+# system cannot stall an import; a molecule with more rings than the cap (a
+# grown graphite/graphene patch) is left alone.
+_CLAR_MAX_RINGS = 8
+_CLAR_MAX_ATOMS = 24
+_CLAR_MAX_TOTAL_RINGS = 400
+_CLAR_STEP_BUDGET = 120_000
 
 
 class AromaticRing(NamedTuple):
@@ -316,6 +384,13 @@ def _ring_eligible(node, elements, adjacency):
     methyl and the O).  Its non-oxygen neighbours are counted the same way, so
     the six-membered ring can still be found.  A sulfone/selenone chalcogen
     (two terminal oxygens) stays out: it is not part of the ring pi system.
+
+    Any atom with more than three neighbours is walked only when the excess
+    neighbours are metal contacts: a coordinated pi ligand carbon (eta5-Cp:
+    two ring carbons, one hydrogen and the metal) and equally a pyridine
+    nitrogen bridging one or two cations (Na/K/Mg... are not HAPTIC_METALS but
+    their contact does not consume the lone pair).  Only the non-metal
+    neighbours (``NONMETALS``) are counted toward the 2-3 limit.
     """
     if elements.get(node) not in RING_ELEMENTS:
         return False
@@ -328,9 +403,7 @@ def _ring_eligible(node, elements, adjacency):
     ):
         non_oxygen = sum(1 for item in neighbours if elements.get(item) != "O")
         return 2 <= non_oxygen <= 3
-    if not any(elements.get(item) in HAPTIC_METALS for item in neighbours):
-        return False
-    non_metal = sum(1 for item in neighbours if elements.get(item) not in HAPTIC_METALS)
+    non_metal = sum(1 for item in neighbours if elements.get(item) in NONMETALS)
     return 2 <= non_metal <= 3
 
 
@@ -452,9 +525,32 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements, lengths
         return None
     oxygens = (
         _terminal_oxygens(node, elements, adjacency, lengths)
-        if element in {"N", *_SIX_RING_CHALCOGENS}
+        if element in {"N", "P", "AS", "SB", *_SIX_RING_CHALCOGENS}
         else ()
     )
+    if element in {"P", "AS", "SB"} and degree == 4:
+        # A four-connected group-15 centre is either P(=X)R3 (X a terminal
+        # chalcogen or imine nitrogen, drawn double through the 5th rung), a
+        # genuine ylide P=C, or a saturated cation/complex.  The (3, 5) ladder
+        # cannot tell them apart, so the geometry does:
+        #  * a metal neighbour means a phosphine/arsine complex (Ar3P.M or an
+        #    ylide-metalolate): the CSD types every P-C of such a centre
+        #    Single -- the dative metal bond consumes the 5th rung, so even a
+        #    short P-C (ADAKIB 0.965, a gold-bound ylide) stays single;
+        #  * otherwise (all sigma) an all-carbon substituent set whose bonds
+        #    are all too long to be a P=C ylide double stays at rung 4 and
+        #    draws single bonds, exactly as the CSD types a phosphonium (P-C
+        #    at 0.98-1.00 of the radii sum).  A short P-C (BEDLON 0.95,
+        #    HINVAB 0.93) is a genuine ylide and keeps the 5th rung.
+        metal = any(elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(node, ()))
+        if metal or (
+            all(elements.get(other) in {"C", "H"} for other in adjacency.get(node, ()))
+            and not any(
+                lengths.get(edge_key(node, other), 1.0) <= _P_YLIDE_MAX_LENGTH_SCALE
+                for other in adjacency.get(node, ())
+            )
+        ):
+            target = 4
     if element == "N":
         if _diazo_terminal(node, elements, adjacency, lengths):
             # The anionic end of a diazo (R2C=N+=N-) or azide (R-N=N+=N-)
@@ -496,6 +592,37 @@ def _initial_deficit(element, degree, adjacency, node, budget, elements, lengths
             for other in adjacency.get(node, ())
         ):
             deficit = 1
+    if element in {"S", "SE", "TE", "N"} and deficit <= 0:
+        # A phosphine sulfide/selenide or iminophosphorane whose chalcogen or
+        # nitrogen also coordinates a metal has graph degree two (or three)
+        # but still carries its genuine P=X double: the CSD types the P-S bond
+        # of a Ce thiophosphoryl complex (LEVQUZ) or the P=N of a
+        # metal-bound phosphinimine (AVEYAE, BEFNUW) Double even though the
+        # S/N hosts the cation.  The double sits on the phosphorus side, so
+        # only a partner whose ladder neighbour(s) are group-15 pnictogens
+        # counts -- a thiolate R-S-P or thiocyanate S-C bridging a metal
+        # stays single.
+        ladder = [o for o in adjacency.get(node, ()) if elements.get(o) in VALENCE_LADDERS]
+        metal = [o for o in adjacency.get(node, ()) if elements.get(o) not in VALENCE_LADDERS]
+        if metal and len(ladder) == 1 and elements.get(ladder[0]) in {"P", "AS", "SB"}:
+            deficit = 1
+        elif (
+            element == "N"
+            and metal
+            and any(
+                elements.get(other) in {"P", "AS", "SB"}
+                and not any(
+                    elements.get(m) not in VALENCE_LADDERS for m in adjacency.get(other, ())
+                )
+                for other in ladder
+            )
+        ):
+            # A three-connected phosphinimine nitrogen (R3P=N-R'-M, degree
+            # three: the (3, 4) ladder is full) still draws P=N when it
+            # bridges a metal -- BEFNUW.  Only while the pnictogen is a plain
+            # R3P= centre itself: a P that already holds a metal (UJITAI's
+            # Zr-bound phosphine) keeps its P-N single.
+            deficit = 1
     if deficit > 1 and _in_cycle(adjacency, node, budget):
         # A two-connected ring atom is one substituent short (usually an
         # implicit hydrogen): one extra order is the most it can carry.
@@ -514,14 +641,26 @@ def _dative_bonds(elements, adjacency, lengths=None):
     genuine double bond as well.  Only a short N-O is an oxide bond (the
     length gate in :func:`_terminal_oxygens`): an N-OH is never excluded, so
     its ring stays non-aromatic.
+
+    A two-connected nitrogen whose other neighbour is a metal is the anionic
+    end of a metal-bound nitroxide or the ``N-O-`` of a hydroxylamido ligand:
+    its one terminal oxygen is the dative ``N-O`` single of the anion, not the
+    double of a nitroso (a nitroso nitrogen bonds a carbon, never a cation).
+    The metal bond is dative either way, so the N-O stays single and the
+    nitrogen does not reach its ladder valence -- which is what the CSD types.
     """
     single = set()
     for node, element in elements.items():
-        if element != "N" or len(adjacency.get(node, ())) != 3:
+        if element != "N":
             continue
+        neighbours = adjacency.get(node, ())
         oxygens = _terminal_oxygens(node, elements, adjacency, lengths)
-        if len(oxygens) == 1:
+        if len(neighbours) == 3 and len(oxygens) == 1:
             single.add(edge_key(node, oxygens[0]))
+        elif len(neighbours) == 2 and len(oxygens) == 1:
+            other = next(neighbour for neighbour in neighbours if neighbour != oxygens[0])
+            if elements.get(other) not in VALENCE_LADDERS:
+                single.add(edge_key(node, oxygens[0]))
     return single
 
 
@@ -554,8 +693,8 @@ def _candidates(elements, edge_keys, deficits, lengths, single_only=frozenset())
     return [key for _length, key in candidates], by_node
 
 
-def _force_triples(elements, deficits, by_node, extras):
-    """Triple the only usable bond of an atom that has nowhere else to go.
+def _force_triples(elements, deficits, by_node, extras, adjacency=None, lengths=None):
+    """Triple the only bond able to carry an atom's two spare orders.
 
     A two-connected alkyne carbon carries no hydrogen, so it needs a triple
     bond to reach its valence.  When one of its two neighbours is already
@@ -566,6 +705,22 @@ def _force_triples(elements, deficits, by_node, extras):
     the greedy pass cannot: the partner is by then satisfied by another double
     bond, and moving that order away would strand a ring atom that the bounded
     repair is not allowed to reopen.
+
+    Two relaxations on the "only usable bond" rule, both rooted in CSD typing:
+
+    * the partner is selected among atoms that want *two* spare orders, not
+      one.  An alkyne carbon whose other neighbour is a ring carbon with a
+      deficit of its own (an enyne: ring C-C#C-C) still triples its C#C bond:
+      the ring carbon can pair inside its ring, the chain carbon cannot, so
+      preferring the tripled partner keeps the double out of the exocyclic
+      bond.  Before this the ring carbon's deficit counted as a second usable
+      bond and the greedy pass drew C=C=C instead;
+    * a metal carbonyl (M-C#O, the carbon bonded only to a dative metal and a
+      terminal oxygen) triples its C-O bond even though the oxygen only wants
+      one spare order: the oxygen is short (``_C_CARBONYL_MAX_LENGTH_SCALE``)
+      and the positive charge lands on the metal.  The valence ladder alone
+      cannot ask for this -- it gives the oxygen a deficit of one -- so the
+      geometry and the all-metal neighbourhood make the decision.
     """
     changed = True
     while changed:
@@ -573,19 +728,38 @@ def _force_triples(elements, deficits, by_node, extras):
         for node in sorted(deficits, key=repr):
             if deficits[node] != 2 or elements.get(node) not in {"C", "N"}:
                 continue
-            useful = [
-                key for key in by_node.get(node, ()) if deficits.get(_other(key, node), 0) > 0
+            strong = [
+                key for key in by_node.get(node, ()) if deficits.get(_other(key, node), 0) >= 2
             ]
-            if len(useful) != 1:
+            if len(strong) == 1:
+                key = strong[0]
+                other = _other(key, node)
+                extras[key] = 2
+                deficits[node] -= 2
+                deficits[other] -= 2
+                changed = True
                 continue
-            key = useful[0]
+            # Metal carbonyl C#O: the oxygen wants only one extra order, but
+            # the carbon's every other neighbour is a dative metal, so the C-O
+            # bond carries both spares while the charge sits on the metal.
+            edges = by_node.get(node, ())
+            if len(edges) != 1 or adjacency is None:
+                continue
+            key = edges[0]
             other = _other(key, node)
-            if deficits.get(other, 0) < 2:
-                continue
-            extras[key] = 2
-            deficits[node] -= 2
-            deficits[other] -= 2
-            changed = True
+            if (
+                elements.get(other) == "O"
+                and deficits.get(other, 0) == 1
+                and lengths.get(key, 1.0) <= _C_CARBONYL_MAX_LENGTH_SCALE
+            ):
+                others = [neighbour for neighbour in adjacency.get(node, ()) if neighbour != other]
+                if others and all(
+                    elements.get(neighbour) not in VALENCE_LADDERS for neighbour in others
+                ):
+                    extras[key] = 2
+                    deficits[node] -= 2
+                    deficits[other] -= 2
+                    changed = True
 
 
 def _greedy(deficits, extras, candidates):
@@ -791,8 +965,9 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
     A centre with enough terminal (oxide) oxygens is drawn with its chalcogen/
     group-15 ``X=O`` doubles decided by the oxo pattern itself instead of by
     deficit bookkeeping: a sulfone/sulfonate/triflate draws ``S(=O)2``, a
-    selenone/tellurone likewise, a nitro or nitrate nitrogen ``N(=O)2``, and a
-    phosphate/phosphonate phosphorus one ``P=O``.  The count is
+    selenone/tellurone likewise, a nitro or nitrate nitrogen ``N(=O)2``, a
+    phosphate/phosphonate phosphorus one ``P=O``, and a carbon one ``C=O``
+    (ketone, aldehyde, carboxylate, ester, amide).  The count is
     ``min(target valence - covalent degree, terminal oxygens, _OXO_MAX_DOUBLES)``
     drawn shortest-oxygen-first, and the centre's degree counts only ladder
     neighbours (``VALENCE_LADDERS``), so the cation contacts of a salt cannot
@@ -800,6 +975,13 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
     two S=O bonds.  ``B/Cl/Br/I`` never qualify, and a chalcogen already in
     the ring pi system (``_six_ring_chalcogen_deficits``) never has two
     terminal oxygens, so the two tiers cannot collide.
+
+    A carbon centre bonded to a metal is left to :func:`_force_triples` instead
+    (a metal carbonyl needs its C#O triple, which a plain C=O seed would block
+    by eating the carbon's second spare order).  A carbonyl C=O must also be
+    short enough to be an oxide (``_C_CARBONYL_MAX_LENGTH_SCALE``): a phenoxide
+    or enol whose proton is missing from the graph looks terminal but keeps its
+    single bond, so the ring keeps its aromaticity.
 
     Each seeded edge is written into *extras*, its endpoints' deficits are
     decremented (never below zero) and the edge is added to *single_only*, so
@@ -813,13 +995,23 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
         oxygens = _terminal_oxygens(node, elements, adjacency, lengths)
         if len(oxygens) < _OXO_MIN_TERMINAL_OXYGENS.get(element, 2):
             continue
+        if element == "C" and any(
+            elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(node, ())
+        ):
+            # Metal carbonyl/acyl: the C=O/C#O is decided by the forced-triple
+            # pass (for M-C#O) or the greedy pass (for acyl M-C(=O)R).
+            continue
         covalent_degree = sum(
             1 for other in adjacency.get(node, ()) if elements.get(other) in VALENCE_LADDERS
         )
         budget = min(target - covalent_degree, len(oxygens), _OXO_MAX_DOUBLES)
         if budget <= 0:
             continue
-        gate = _candidate_max_length_scale(element, "O")
+        gate = (
+            _C_CARBONYL_MAX_LENGTH_SCALE
+            if element == "C"
+            else _candidate_max_length_scale(element, "O")
+        )
         ordered = sorted(
             oxygens,
             key=lambda oxygen: (lengths.get(edge_key(node, oxygen), 1.0), repr(oxygen)),
@@ -864,28 +1056,32 @@ def _ring_link_bonds(rings, adjacency):
     return links
 
 
-def _metal_bound_ring_nitrogens(elements, adjacency, rings):
-    """Ring nitrogens that also coordinate a metal.
+def _metal_bound_ring_pnictogens(elements, adjacency, rings):
+    """Ring group-15 atoms (N, P, As, Sb) that also coordinate a metal.
 
     The metal bond is dative: it does not consume a covalent valence, so the
     pyridine nitrogen of a metal complex is still three-valent with one ring
     double, exactly like the free ligand (the CSD types 92.7% of the N-C ring
-    bonds of a metal-bound six-ring nitrogen Aromatic).  A pyrrole/pyrrolide
-    nitrogen keeps its lone pair instead, so the metal bond alone does not say
-    which of the two is present; :func:`_promote_metal_ring_nitrogens` decides
-    from the ring's own valence needs.
+    bonds of a metal-bound six-ring nitrogen Aromatic), and a metal-bound
+    phosphabenzene/arsabenzene ring takes its P=C/As=C double the same way.  A
+    pyrrole/pyrrolide nitrogen (or a phosphole/arsole/stibole) keeps its lone
+    pair instead, so the metal bond alone does not say which of the two is
+    present; :func:`_promote_metal_ring_pnictogens` decides from the ring's own
+    valence needs.  Although the group-15 (3, 5) ladder leaves a degree-three
+    P/As/Sb with no deficit of its own, the ring carbon left over by five
+    carbons that cannot pair up is what the promotion responds to.
     """
     ring_atoms = frozenset(node for ring in rings for node in ring)
     return {
         node
         for node in ring_atoms
-        if elements.get(node) == "N"
+        if elements.get(node) in {"N", "P", "AS", "SB"}
         and any(elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(node, ()))
     }
 
 
-def _promote_metal_ring_nitrogens(elements, adjacency, rings, deficits, promoted):
-    """Metal-bound ring nitrogens that must take a ring double after all.
+def _promote_metal_ring_pnictogens(elements, adjacency, rings, deficits, promoted):
+    """Metal-bound ring group-15 atoms that must take a ring double after all.
 
     A pyrrole/pyrrolide nitrogen keeps its lone pair and its ring is drawn with
     the four carbons paired among themselves; a pyridine nitrogen carries one
@@ -895,9 +1091,14 @@ def _promote_metal_ring_nitrogens(elements, adjacency, rings, deficits, promoted
     (four carbons pair up), a pyridine ring always does (five carbons cannot),
     and so does a five-ring whose conjugation is broken by an exocyclic double
     (the dipyrrin of EDOBEG, where C37=C19 leaves C34 without a partner).
+    The group-15 ring pnictogens follow the same two cases: a phosphinine/
+    arsabenzene/stibabenzene ring has five carbons that cannot pair up, while a
+    phosphole/arsole/stibole has four that can -- so the promotion turns a
+    metal-coordinated six-membered ring aromatic and leaves a five-membered one
+    with its lone pair.
     """
     result = set()
-    for node in _metal_bound_ring_nitrogens(elements, adjacency, rings) - promoted:
+    for node in _metal_bound_ring_pnictogens(elements, adjacency, rings) - promoted:
         if deficits.get(node, 0) > 0:
             continue
         for ring in rings:
@@ -945,7 +1146,7 @@ def _solve_bond_orders(
     _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
 
     candidates, by_node = _candidates(elements, edge_keys, deficits, lengths, single_only)
-    _force_triples(elements, deficits, by_node, extras)
+    _force_triples(elements, deficits, by_node, extras, adjacency, lengths)
     _greedy(deficits, extras, candidates)
     _augment(deficits, extras, by_node)
     _escalate(deficits, extras, by_node)
@@ -964,15 +1165,18 @@ def bond_orders(elements, edges, lengths=None):
 
     0. oxo seeding: a centre whose terminal oxidic oxygens call for a genuine
        ``X=O`` double (sulfone, sulfonate, triflate, selenone/tellurone, nitro/
-       nitrate, phosphate) gets those doubles seeded up front and reserved, so
-       no later stage can overturn them (see :func:`_oxo_double_bonds`);
+       nitrate, phosphate, carbonyl C=O) gets those doubles seeded up front and
+       reserved, so no later stage can overturn them (see
+       :func:`_oxo_double_bonds`);
     1. forced triples: an atom with two extra orders and only one usable bond
-       (an alkyne or nitrile whose other neighbour is saturated) gets that bond
-       tripled up front, so the rest of the graph can still find a clean Kekule
-       structure.  An N-oxide nitrogen counts as four-valent and its dative N-O
-       bond is never a candidate, so its fourth bond goes into the ring (see
-       :func:`_initial_deficit` and :func:`_dative_bonds`).  Only a short N-O
-       is an oxide bond (:func:`_terminal_oxygens`); an N-OH ring is left
+       (an alkyne or nitrile whose other neighbour is saturated, or a ring
+       carbon whose own deficit must stay in its ring; a metal carbonyl whose
+       only other neighbours are dative metals) gets that bond tripled up
+       front, so the rest of the graph can still find a clean Kekule
+       structure.  An N-oxide nitrogen counts as four-valent and its dative
+       N-O bond is never a candidate, so its fourth bond goes into the ring
+       (see :func:`_initial_deficit` and :func:`_dative_bonds`).  Only a short
+       N-O is an oxide bond (:func:`_terminal_oxygens`); an N-OH ring is left
        non-aromatic even when its hydroxyl hydrogen is absent from the graph.
        A diazo or azide terminal N-N chain books its terminal N as two-valent
        and its middle N as four-valent, so R2C=N+=N- is drawn with both bonds
@@ -983,16 +1187,21 @@ def bond_orders(elements, edges, lengths=None):
        valid assignment exists;
     4. escalation: promote a double bond to a triple when an atom has exactly
        one possible partner left (alkynes, nitriles);
-    5. bounded backtracking for whatever is still unsatisfied.
+    5. bounded backtracking for whatever is still unsatisfied;
+    6. Clar re-placement: a fused ring system whose Kekule structure leaves a
+       ring without a sextet is re-Kekule-ed so that as many rings as possible
+       become aromatic, preferring terminal rings (see
+       :func:`_clar_ring_placement`).
 
     Two structural rules feed the deficits and the candidate set:
 
-    * a metal bond is dative, so a ring nitrogen that coordinates a metal may
-      still take the ring double of a pyridine (or of a pyrrole whose
-      conjugation an exocyclic double has broken).  It is only promoted when a
-      carbon of its ring is otherwise left with three bonds, which is what
-      tells a pyridine (five carbons cannot pair up) from a pyrrole (four
-      carbons can) -- see :func:`_promote_metal_ring_nitrogens`;
+    * a metal bond is dative, so a ring group-15 atom (N, P, As, Sb) that
+      coordinates a metal may still take the ring double of a pyridine or
+      phosphabenzene (or of a pyrrole/phosphole whose conjugation an exocyclic
+      double has broken).  It is only promoted when a carbon of its ring is
+      otherwise left with three bonds, which is what tells a pyridine (five
+      carbons cannot pair up) from a pyrrole (four carbons can) -- see
+      :func:`_promote_metal_ring_pnictogens`;
     * a bond between two ring atoms that belongs to no ring is a biaryl link
       and stays single while a ring double is available, so it cannot steal
       the double bond of the ring (see :func:`_ring_link_bonds`).  It is
@@ -1027,11 +1236,12 @@ def bond_orders(elements, edges, lengths=None):
     extras, remaining = _solve_bond_orders(
         elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
     )
-    # A metal-bound ring nitrogen is promoted before a biaryl link is relaxed:
-    # the ring double is the chemically correct answer, the link double the
-    # fallback for an atom that has nothing else.  Each round is bounded.
+    # A metal-bound ring pnictogen (pyridine/phosphinine N/P/As/Sb) is promoted
+    # before a biaryl link is relaxed: the ring double is the chemically
+    # correct answer, the link double the fallback for an atom that has nothing
+    # else.  Each round is bounded.
     for _ in range(3):
-        new_promoted = _promote_metal_ring_nitrogens(
+        new_promoted = _promote_metal_ring_pnictogens(
             elements, adjacency, rings, remaining, promoted
         )
         if new_promoted:
@@ -1045,6 +1255,7 @@ def bond_orders(elements, edges, lengths=None):
             elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
         )
 
+    extras = _clar_ring_placement(elements, edge_keys, adjacency, rings, extras, remaining, lengths)
     return {key: extra + 1 for key, extra in extras.items() if extra > 0}
 
 
@@ -1238,6 +1449,333 @@ def _haptic_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, by_n
             if _other(key, node) not in ring_atoms:
                 return None
     return 6
+
+
+def _fused_ring_clusters(rings):
+    """Group rings that share a fusion bond (two or more atoms)."""
+    parent = {ring: ring for ring in rings}
+    size = {ring: 1 for ring in rings}
+
+    def find(ring):
+        while parent[ring] != ring:
+            parent[ring] = parent[parent[ring]]
+            ring = parent[ring]
+        return ring
+
+    ring_list = list(rings)
+    for index, first in enumerate(ring_list):
+        for second in ring_list[index + 1 :]:
+            if len(first & second) < 2:
+                continue
+            root_a, root_b = find(first), find(second)
+            if root_a == root_b:
+                continue
+            if size[root_a] < size[root_b]:
+                root_a, root_b = root_b, root_a
+            parent[root_b] = root_a
+            size[root_a] += size[root_b]
+
+    clusters = {}
+    for ring in rings:
+        clusters.setdefault(find(ring), []).append(ring)
+    return list(clusters.values())
+
+
+def _clar_hydroxyl_nitrogen(node, elements, adjacency, lengths):
+    """True when *node* (a ring nitrogen) binds a hydroxyl-like oxygen.
+
+    ``_terminal_oxygens`` refuses an N-oxide in two ways: an N-O bond too
+    long to be an oxide (``_N_OXIDE_MAX_LENGTH_SCALE``) -- an N-OH whose
+    hydroxyl hydrogen is missing from the graph looks terminal but leaves the
+    nitrogen three-valent -- or an oxygen carrying a second covalent
+    neighbour (the hydroxyl hydrogen present).  The Clar re-placement's fresh
+    promotion of a required-zero single-ring heteroatom must honour the same
+    gate, otherwise an N-OH ring would be promoted to a pyridinium-type
+    double it is not and become a bogus aromatic sextet (the N-oxide length
+    tests rely on this).  The check is nitrogen-only, exactly like
+    ``_terminal_oxygens``: ring nitrogen is promoted only while every oxygen
+    it binds is a genuine terminal oxide.
+    """
+    if elements.get(node) != "N" or not adjacency.get(node):
+        return False
+    oxides = set(_terminal_oxygens(node, elements, adjacency, lengths))
+    return any(
+        elements.get(other) == "O" and other not in oxides for other in adjacency.get(node, ())
+    )
+
+
+def _clar_cluster_placement(
+    cluster,
+    elements,
+    adjacency,
+    ring_atoms,
+    ring_count,
+    ring_edges,
+    by_node,
+    orders,
+    remaining,
+    single_only,
+    lengths,
+    budget,
+):
+    """Best set of ring doubles for one fused *cluster*, or None.
+
+    None means the cluster is too large, holds a haptic-metal ring, or has a
+    cumulated atom; the caller then leaves the drawn orders untouched.
+    """
+    atoms = frozenset(node for ring in cluster for node in ring)
+    if len(cluster) > _CLAR_MAX_RINGS or len(atoms) > _CLAR_MAX_ATOMS:
+        return None
+    if any(
+        _haptic_pi_electrons(
+            ring, ring_atoms, elements, ring_edges[ring], adjacency, by_node, orders
+        )
+        is not None
+        for ring in cluster
+    ):
+        return None
+    movable = frozenset(key for ring in cluster for key in ring_edges[ring])
+    current_doubles = {
+        node: sum(1 for key in by_node.get(node, ()) if key in movable and orders.get(key, 1) > 1)
+        for node in atoms
+    }
+    if any(count > 1 for count in current_doubles.values()):
+        # A cumulated atom: flattening it would change its valence.
+        return None
+    # The valence repair already placed one double on each atom that needs one,
+    # and left a residual deficit on the atoms it could not satisfy.  A carbon
+    # with either is mandatory: the re-placement must cover it, otherwise it
+    # would strand the atom at three bonds.  A lone-pair heteroatom is not: its
+    # double may be the repair's way of reaching the third rung of a (3, 4)
+    # ladder when the CIF omits the N-H, and the pyrrole/phosphole depiction is
+    # the heteroatom single with its lone pair (GEXRAC's N-H five-ring).  The
+    # Huckel count then decides: a 5-ring's four carbons pair among themselves,
+    # so the lone pair is preferred, while a 6-ring's five cannot and keeps the
+    # heteroatom double.  A heteroatom that belongs to a single ring may also
+    # take a double the repair did not ask for -- a pyridinium or N-oxide
+    # nitrogen is four-valent even when its three sigma bonds already fill the
+    # third rung.  A bridgehead heteroatom keeps its lone pair for the fused
+    # system (indolizine) unless the repair already asked for a double, and a
+    # saturated carbon (four sigma orders: sp3 ring carbon, exocyclic C=O) has
+    # no room for one.
+    required = {node: current_doubles[node] + remaining.get(node, 0) for node in atoms}
+    mandatory = frozenset(
+        node
+        for node in atoms
+        if required[node] >= 1 and elements.get(node) not in LONE_PAIR_ELEMENTS
+    )
+    capacity = {}
+    for node in atoms:
+        if required[node] >= 1:
+            capacity[node] = 1
+        elif elements.get(node) == "C" or ring_count.get(node, 0) > 1:
+            capacity[node] = 0
+        elif _clar_hydroxyl_nitrogen(node, elements, adjacency, lengths):
+            # A long N-O means N-OH, not a pyridinium the Clar pass may
+            # promote: the fresh double would fabricate an aromatic sextet
+            # where the N-oxide length gate says there is none.
+            capacity[node] = 0
+        else:
+            capacity[node] = 1
+    double_capable = set()
+    for key in movable:
+        first, second = key
+        if key in single_only:
+            continue
+        if capacity.get(first, 0) < 1 or capacity.get(second, 0) < 1:
+            continue
+        length = lengths.get(key)
+        length = 1.0 if length is None else float(length)
+        if length > _candidate_max_length_scale(elements[first], elements[second]):
+            continue
+        double_capable.add(key)
+    if not double_capable:
+        return None
+
+    current_moves = frozenset(key for key in movable if orders.get(key, 1) > 1)
+    atom_edges = {node: [] for node in atoms}
+    for key in double_capable:
+        atom_edges[key[0]].append(key)
+        atom_edges[key[1]].append(key)
+    # Most-constrained atom first (fewest usable edges), so a fruitless branch
+    # is pruned before it can waste the shared budget; and within an atom try
+    # the already-drawn doubles before the fresh ones, so the first all-valid
+    # arrangement found is the one closest to the current depiction.
+    for node in atom_edges:
+        atom_edges[node].sort(
+            key=lambda key: (
+                0 if key in current_moves else 1,
+                lengths.get(key, 1.0),
+            )
+        )
+    nodes = sorted(atoms, key=lambda node: (len(atom_edges.get(node, ())), repr(node)))
+    best = {"score": None, "moves": current_moves}
+    # Every aromatic ring of an all-valid cluster is a terminal ring that
+    # shares a fusion bond with exactly one other ring of the cluster -- a
+    # property of the cluster's topology, not of the chosen placement -- so
+    # once every ring is aromatic no later matching can score higher and the
+    # search stops, leaving the shared budget for the remaining clusters.
+    done = [False]
+
+    def evaluate(moves):
+        covered = set()
+        for key in moves:
+            covered.update(key)
+        if not mandatory <= covered:
+            # The re-placement may not strand an atom the repair had satisfied.
+            return
+        candidate = dict(orders)
+        for key in moves:
+            candidate[key] = 2
+        for key in movable - moves:
+            candidate[key] = 1
+        valid = 0
+        terminal = 0
+        for ring in cluster:
+            if (
+                _ring_pi_electrons(
+                    ring,
+                    ring_atoms,
+                    elements,
+                    ring_edges[ring],
+                    by_node,
+                    candidate,
+                    ring_count,
+                )
+                is None
+            ):
+                continue
+            valid += 1
+            if sum(1 for other in cluster if other != ring and len(other & ring) >= 2) == 1:
+                terminal += 1
+        changes = len(moves ^ current_moves)
+        score = (valid, terminal, -changes)
+        if best["score"] is None or score > best["score"]:
+            best["score"] = score
+            best["moves"] = frozenset(moves)
+            if valid == len(cluster):
+                done[0] = True
+
+    def choose(index, moves, matched):
+        budget[0] -= 1
+        if budget[0] <= 0 or done[0]:
+            return
+        if index >= len(nodes):
+            evaluate(moves)
+            return
+        node = nodes[index]
+        if node in matched:
+            choose(index + 1, moves, matched)
+            return
+        for key in atom_edges.get(node, ()):
+            if key in matched:
+                continue
+            other = _other(key, node)
+            if other in matched:
+                continue
+            matched.add(node)
+            matched.add(other)
+            moves.add(key)
+            choose(index + 1, moves, matched)
+            if done[0]:
+                return
+            moves.discard(key)
+            matched.discard(other)
+            matched.discard(node)
+        # no double for this atom
+        choose(index + 1, moves, matched)
+
+    # Seed with the current placement so the search can never regress.
+    evaluate(current_moves)
+    choose(0, set(), set())
+    return best["moves"]
+
+
+def _clar_ring_placement(elements, edge_keys, adjacency, rings, extras, remaining, lengths):
+    """Re-Kekule ring systems so that as many rings as possible are aromatic.
+
+    The valence repair walks the candidate bonds shortest first, so in a fused
+    system it can spend a ring atom's double on the fusion bond and leave the
+    neighbouring ring with an empty p orbital (or an over-filled sextet), even
+    though another arrangement of the same cluster's double bonds closes both.
+    A lone ring can mis-place its doubles the same way without any fusion: a
+    metal-bound pyrazolide whose two metal-promoted N=C doubles strand the
+    opposite carbon at three bonds (ALIGUA) has a four-pi placement where a
+    C=C-instead-of-N=C arrangement reaches six with one nitrogen as the lone
+    pair holder, so singleton clusters are re-placed exactly like fused ones.
+    Clar's rule prefers the arrangement with the most disjoint sextets, and a
+    terminal ring's sextet over an internal one.
+
+    Only bonds that belong to the cluster's rings are rewritten.  Every atom
+    keeps at most one ring double; a bond may only carry one when it passes the
+    same length gate as the valence repair; and an atom only takes a double when
+    its valence still allows it.  The atoms the repair already satisfied or left
+    deficient must all stay covered, so no atom is stranded at three bonds.  A
+    carbon already saturated by its other bonds (an sp3 ring carbon, an
+    exocyclic C=O) is never given one; a heteroatom belonging to a single ring
+    may be promoted (pyridinium, N-oxide), while a bridgehead heteroatom keeps
+    its lone pair for the fused system unless the repair asked for a double.
+    The search is a bounded matching over the cluster atoms and stops after
+    :data:`_CLAR_STEP_BUDGET` steps.  A ring with a haptic metal is left alone
+    (its delocalised ligand must stay a circle, not a Kekule pattern).
+    """
+    if not rings or len(rings) > _CLAR_MAX_TOTAL_RINGS:
+        return extras
+    orders = {key: extra + 1 for key, extra in extras.items() if extra > 0}
+    by_node = {}
+    for key in edge_keys:
+        for node in key:
+            by_node.setdefault(node, []).append(key)
+    ring_atoms = frozenset(node for ring in rings for node in ring)
+    ring_count = {}
+    for ring in rings:
+        for node in ring:
+            ring_count[node] = ring_count.get(node, 0) + 1
+    ring_edges = {}
+    for ring in rings:
+        ring_edges[ring] = frozenset(
+            key
+            for node in ring
+            for key in by_node.get(node, ())
+            if key[0] in ring and key[1] in ring
+        )
+    single_only = _dative_bonds(elements, adjacency, lengths)
+    budget = [_CLAR_STEP_BUDGET]
+
+    clusters = _fused_ring_clusters(rings)
+    # Fused clusters first: they hold every aromatic-ring miss in the corpus,
+    # and a singleton ring is cheap to re-place afterwards (its seed evaluate
+    # closes an already-aromatic ring in one step), so the shared budget is
+    # spent where the fused search needs it most.  A metal-bound pyrazolide
+    # whose doubles strand a carbon (ALIGUA) is a singleton that only aromatic
+    # rings may fix, and the search below does exactly that.
+    clusters.sort(key=lambda cluster: len(cluster) < 2)
+    for cluster in clusters:
+        if budget[0] <= 0:
+            continue
+        chosen = _clar_cluster_placement(
+            cluster,
+            elements,
+            adjacency,
+            ring_atoms,
+            ring_count,
+            ring_edges,
+            by_node,
+            orders,
+            remaining,
+            single_only,
+            lengths,
+            budget,
+        )
+        if chosen is None:
+            continue
+        movable = frozenset(key for ring in cluster for key in ring_edges[ring])
+        for key in movable:
+            if key in chosen:
+                extras[key] = 1
+            else:
+                extras.pop(key, None)
+    return extras
 
 
 def _aromatic_ring_details(elements, edges, orders):

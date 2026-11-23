@@ -70,11 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 57/58 pass. The single failure is the pre-existing
-Diazastibolene Sb=N regression (`CIF/Diazastibolene.cif`, COD 7111438: the Sb-N
-bonds come out double) — reproduced with this feature stashed, it entered with
-the group-1-haptic/Clar pass (commit `0952a66`) and is tracked as a follow-up;
-the target is 58/58 again once the Clar pass no longer invents the Sb=N.
+`pwsh tests/run_all.ps1` → 58/58 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,

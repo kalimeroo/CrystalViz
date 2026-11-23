@@ -1611,13 +1611,21 @@ def _clar_cluster_placement(
     # the heteroatom single with its lone pair (GEXRAC's N-H five-ring).  The
     # Huckel count then decides: a 5-ring's four carbons pair among themselves,
     # so the lone pair is preferred, while a 6-ring's five cannot and keeps the
-    # heteroatom double.  A heteroatom that belongs to a single ring may also
+    # heteroatom double.  A nitrogen that belongs to a single ring may also
     # take a double the repair did not ask for -- a pyridinium or N-oxide
     # nitrogen is four-valent even when its three sigma bonds already fill the
-    # third rung.  A bridgehead heteroatom keeps its lone pair for the fused
-    # system (indolizine) unless the repair already asked for a double, and a
-    # saturated carbon (four sigma orders: sp3 ring carbon, exocyclic C=O) has
-    # no room for one.
+    # third rung.  The fresh promotion is nitrogen-only: a chalcogen or
+    # pnictogen (an S, Se, Te, As, Sb ring atom) keeps its lone pair, so a
+    # diazastibolene cannot promote its antimony into an Sb=N that would fake
+    # an aromatic sextet out of an 8-pi ring.  And it applies to at most one
+    # ring atom: a single pyridinium completes a genuine sextet, while two
+    # promoted ring nitrogens (plus a third atom's lone pair) would let a
+    # non-aromatic ring -- two N and an Sb, each with its lone pair -- re-read
+    # as 6 pi when it is really an 8-pi antiaromatic system that must stay
+    # single-bonded C=C.  A bridgehead heteroatom keeps its lone pair for the
+    # fused system (indolizine) unless the repair already asked for a double,
+    # and a saturated carbon (four sigma orders: sp3 ring carbon, exocyclic
+    # C=O) has no room for one.
     required = {node: current_doubles[node] + remaining.get(node, 0) for node in atoms}
     mandatory = frozenset(
         node
@@ -1635,8 +1643,15 @@ def _clar_cluster_placement(
             # promote: the fresh double would fabricate an aromatic sextet
             # where the N-oxide length gate says there is none.
             capacity[node] = 0
-        else:
+        elif elements.get(node) == "N":
+            # Fresh promotion is a pyridinium/N-oxide nitrogen: the only
+            # ring atom the search may give a double the repair did not ask
+            # for.  Every other lone-pair heteroatom (a ring S, Se, Te, As,
+            # Sb) keeps its lone pair, so an Sb ring atom can never be
+            # promoted into an Sb=N.
             capacity[node] = 1
+        else:
+            capacity[node] = 0
     double_capable = set()
     for key in movable:
         first, second = key
@@ -1692,6 +1707,23 @@ def _clar_cluster_placement(
         valid = 0
         terminal = 0
         for ring in cluster:
+            fresh = [
+                node
+                for node in ring
+                if required.get(node, 0) == 0
+                and elements.get(node) in LONE_PAIR_ELEMENTS
+                and any(
+                    key in ring_edges[ring] and candidate.get(key, 1) > 1
+                    for key in by_node.get(node, ())
+                )
+            ]
+            if len(fresh) > 1:
+                # Two freshly promoted ring heteroatoms (plus a third's lone
+                # pair) are how an intrinsically non-aromatic ring passes for
+                # a sextet: the diazastibolene, with two N and an Sb in the
+                # ring, would re-read as 6 pi when it is 8.  A single
+                # pyridinium completes a genuine sextet; keep that reading.
+                continue
             if (
                 _ring_pi_electrons(
                     ring,

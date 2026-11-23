@@ -140,6 +140,115 @@ class TestADPConversion(unittest.TestCase):
         self.assertTrue(all(isinstance(v, float) for v in tensor))
 
 
+class TestDisorderTwinDedup(unittest.TestCase):
+    """Growth must never materialise a pseudo-symmetry twin of a disordered CIF.
+
+    ABILIL01 (CSD, CCDC 2530362; a local fixture like S1.cif/S2.cif) deposits
+    *both* halves of an inversion-disordered molecule: the P1 expansion holds
+    848 same-element coincident site pairs, most exact (0.0 A) but some
+    differing by one unit of the 5-decimal fractional coordinates (~1.6e-4 A in
+    this cell).  `_canonical_base_indices` must merge those near-duplicates
+    (same element, positions within `_DUPLICATE_POSITION_TOLERANCE`) so growth
+    never adds an atom sitting on top of one already on screen: a duplicate
+    hydrogen twin would give a ring carbon an extra non-metal neighbour and the
+    benzo ring would stop being enumerated (drawn Kekule instead of a torus).
+    """
+
+    ABILIL = os.path.join(EXAMPLES, "ABILIL01.cif")
+
+    def setUp(self):
+        self.result = gw.load_structure(self.ABILIL)
+        self.sites = self.result["sites"]
+        self.unit_cell = gw._UnitCell(self.result["unit_cell"])
+        self.base_atoms = gw._base_atoms(self.unit_cell, self.sites)
+        self.canonical = gw._canonical_base_indices(self.base_atoms)
+
+    @staticmethod
+    def _cart_points(unit_cell, base_atoms, instances):
+        points = []
+        count = len(instances) - len(instances) % 4
+        for offset in range(0, count, 4):
+            site = int(instances[offset])
+            translation = tuple(int(instances[offset + axis]) for axis in range(1, 4))
+            frac = [base_atoms[site]["frac"][axis] + translation[axis] for axis in range(3)]
+            points.append((base_atoms[site]["element"], unit_cell.orthogonalize(frac)))
+        return points
+
+    @staticmethod
+    def _min_same_element_separation(points):
+        best = float("inf")
+        for i, (element_i, p_i) in enumerate(points):
+            for element_j, p_j in points[i + 1 :]:
+                if element_i != element_j:
+                    continue
+                distance = sum((p_i[axis] - p_j[axis]) ** 2 for axis in range(3)) ** 0.5
+                best = min(best, distance)
+        return best
+
+    def test_near_duplicates_are_merged(self):
+        self.assertEqual(len(self.sites), 1992)
+        representatives = sum(1 for index, rep in enumerate(self.canonical) if rep == index)
+        self.assertEqual(representatives, 1144)
+        self.assertEqual(len(self.sites) - representatives, 848)
+
+    def test_hydrogen_twins_share_one_representative(self):
+        # H36 and its B-twin differ by ~1.6e-4 A, i.e. one unit of the deposited
+        # 5-decimal fractionals, so the old round-to-1e-5 equality kept both.
+        labels = [atom["label"] for atom in self.base_atoms]
+        twins = []
+        for i, label_i in enumerate(labels):
+            if label_i != "H36":
+                continue
+            for j in range(i + 1, len(self.base_atoms)):
+                if labels[j] != "H36B":
+                    continue
+                distance = (
+                    sum(
+                        (self.base_atoms[i]["cart"][axis] - self.base_atoms[j]["cart"][axis]) ** 2
+                        for axis in range(3)
+                    )
+                    ** 0.5
+                )
+                if distance < 0.01:
+                    twins.append((i, j, distance))
+        self.assertTrue(twins, "expected at least one H36/H36B twin pair")
+        for i, j, distance in twins:
+            self.assertEqual(
+                self.canonical[i],
+                self.canonical[j],
+                f"twin pair {i}/{j} at {distance:.6f} A must share one representative",
+            )
+
+    def test_grow_adds_no_twin(self):
+        cov = {site["element"]: site["covalent_radius"] for site in self.sites}
+        elements = sorted(cov)
+        pairs = [
+            {
+                "element_a": element_a,
+                "element_b": element_b,
+                "enabled": True,
+                "min_distance": 0.1,
+                "max_distance": min(20.0, cov[element_a] + cov[element_b] + 0.4),
+            }
+            for i, element_a in enumerate(elements)
+            for element_b in elements[i:]
+        ]
+        asu = self.result["instances"]
+        asu_points = self._cart_points(self.unit_cell, self.base_atoms, asu)
+        self.assertGreaterEqual(
+            self._min_same_element_separation(asu_points),
+            0.05,
+            "the ASU is the clean half of the disorder (precondition)",
+        )
+        grown = gw.grow_connectivity_shell(self.result["unit_cell"], self.sites, asu, asu, pairs)
+        union = self._cart_points(self.unit_cell, self.base_atoms, asu + grown["new_instances"])
+        self.assertGreaterEqual(
+            self._min_same_element_separation(union),
+            0.05,
+            "growth must not add the twin of an atom already on screen",
+        )
+
+
 if __name__ == "__main__":
     # Blender execs --python scripts with its own argv, so feed unittest a clean
     # argument list when running inside Blender.

@@ -350,6 +350,15 @@ _IONIC_RADII = {
 _DEFAULT_VDW_RADIUS = 1.70
 _DEFAULT_COVALENT_RADIUS = 0.75
 _CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
+# Two same-element atoms closer than this are the same atom deposited twice.
+# Redeposited "full molecule + symmetry twins" CIFs (e.g. SHELX B-suffix
+# halves) can repeat a site at positions that differ only in the last deposited
+# fractional decimal -- up to a few 1e-4 A in a ~25 A cell -- which is an order
+# of magnitude beyond the 1e-5 A rounding the old equality check used, yet far
+# below any real interatomic or disorder-alternate separation (typically
+# >= 0.2 A even for adjacent hydrogen positions), so merging such atoms never
+# removes a genuine one.
+_DUPLICATE_POSITION_TOLERANCE = 0.01  # Angstrom
 _LABEL_ELEMENT = re.compile(r"([A-Za-z]{1,2})")
 
 
@@ -937,15 +946,48 @@ def _canonical_base_indices(base_atoms):
     expansion then contains exact duplicates). Growth treats those as a single
     atom, like the position based duplicate check of the original
     implementation did.
+
+    Two sites of the same element count as one atom whenever their Cartesian
+    positions coincide to within ``_DUPLICATE_POSITION_TOLERANCE`` (0.01 A).
+    The bucket scan looks at the 27 neighbouring cells of a ``tolerance``-sized
+    grid, so any two points within the tolerance land in the same or an
+    adjacent cell and share a representative; the strict distance check then
+    decides.  This merges both the exact copies of a disorder site and the
+    pseudo-symmetry twins of a redeposited full-molecule CIF (the same atom
+    listed twice with 5-decimal fractional coordinates can differ by up to a
+    few 1e-4 A), so ``grow_connectivity_shell`` never adds an atom sitting on
+    top of one already on screen -- which would otherwise give a ring carbon
+    an extra (duplicate) hydrogen and break its aromatic-ring eligibility.
     """
-    groups = {}
+    tolerance = _DUPLICATE_POSITION_TOLERANCE
+    tolerance_squared = tolerance * tolerance
+    grid = {}
     canonical = []
     for index, atom in enumerate(base_atoms):
-        key = (
-            atom["element"],
-            *(round(float(value), 5) for value in atom["cart"]),
-        )
-        canonical.append(groups.setdefault(key, index))
+        element = atom["element"]
+        cart = atom["cart"]
+        cell = tuple(int(math.floor(value / tolerance)) for value in cart)
+        rep_index = index
+        for da in (-1, 0, 1):
+            for db in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    bucket = (element, cell[0] + da, cell[1] + db, cell[2] + dc)
+                    for candidate_cart, candidate_index in grid.get(bucket, ()):
+                        if (
+                            sum((cart[axis] - candidate_cart[axis]) ** 2 for axis in range(3))
+                            <= tolerance_squared
+                        ):
+                            rep_index = candidate_index
+                            break
+                    if rep_index != index:
+                        break
+                if rep_index != index:
+                    break
+            if rep_index != index:
+                break
+        if rep_index == index:
+            grid.setdefault((element, *cell), []).append((cart, index))
+        canonical.append(rep_index)
     return canonical
 
 
@@ -1119,11 +1161,12 @@ def _periodic_neighbour_table_gemmi(
     byte-identical to the all-pairs scan on the example CIFs.
 
     Both seeds and candidates are restricted to canonical atoms.  A
-    non-canonical atom is a duplicate copy of another site (same element, same
-    position to 1e-5 A), so listing it as a candidate would let growth add an
-    atom sitting on top of its representative whenever the enabled window
-    admits the ~1e-6 A separation -- i.e. with ``min_distance`` set to 0,
-    where the ``dist <= 1e-12`` self filter no longer catches it.
+    non-canonical atom is a duplicate copy of another site (same element,
+    same position to ``_DUPLICATE_POSITION_TOLERANCE``), so listing it as a
+    candidate would let growth add an atom sitting on top of its
+    representative whenever the enabled window admits the sub-tolerance
+    separation -- i.e. with ``min_distance`` set to 0, where the
+    ``dist <= 1e-12`` self filter no longer catches it.
     """
     cell = unit_cell.cell  # gemmi.UnitCell
     cell_matrix = unit_cell._columns  # column-major, matches _cart_from_frac

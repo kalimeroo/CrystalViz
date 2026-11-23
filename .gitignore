@@ -44,6 +44,15 @@ CIF/S2.cif
 # fixtures above.
 CIF/Ca.cif
 
+# Local user structure used to debug the disorder-twin growth fix (ABILIL,
+# CCDC 2530362: both halves of an inversion-disordered molecule are deposited,
+# so the P1 expansion holds near-coincident same-element twin pairs that used
+# to be grown as duplicate atoms).  Referenced by
+# tests/test_bond_grow_disorder_twin_aromatic.py and the ABILIL01 cases of
+# tests/test_gemmi_worker.py.  Not redistributable; stays on the author's
+# machine like the CSD fixtures above.
+CIF/ABILIL01.cif
+
 # Local user structures used to debug the sulfonate/triflate S=O depiction
 # (ABEFUL: terbium tetrakis-sulfonatoporphyrin, ABOLIP: titanium triflate;
 # CCDC 993277 / 1517523).  Not redistributable; stay on the author's machine

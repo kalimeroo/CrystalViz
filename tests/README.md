@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 58/58 pass.
+`pwsh tests/run_all.ps1` → 59/59 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -339,6 +339,25 @@ for a first run.
   duplicate sites 2e-6 Å apart (above the 1e-12 self filter, below the 1e-5
   canonical grouping resolution) and asserts that growth never walks into the
   duplicate copy, with `min_distance` at both 0 and the 0.1 default.
+- `test_bond_grow_disorder_twin_aromatic.py` pins the disorder-twin growth fix.
+  `ABILIL01.cif` (CSD CCDC 2530362; a local fixture like S1.cif/S2.cif)
+  deposits *both* halves of an inversion-disordered molecule, so the P1
+  expansion holds 848 same-element twin pairs, some separated by a single unit
+  of the 5-decimal fractionals (~1.6e-4 Å, far beyond the old 1e-5 Å rounding).
+  Growth used to pull the twin hydrogen of an already-displayed ring atom into
+  the scene, the ring carbon gained a fourth non-metal neighbour, and the
+  straddling benzo rings were no longer enumerated: Fill → Asymmetric Unit then
+  Grow → ChemDraw drew two phenyl rings with Kekulé doubles instead of aromatic
+  tori. `_canonical_base_indices` now merges twins within
+  `_DUPLICATE_POSITION_TOLERANCE` (0.01 Å), grow adds only the clean atoms, and
+  both the fill and the grown structures draw their 18 C6 rings as tori (the 6
+  carbazole pyrrole rings are aromatic too — 24 aromatic rings in the chemistry
+  API — but keep a unique alternating Kekulé arrangement, so GR-6.3 shows their
+  doubles rather than a torus). `tests/test_gemmi_worker.py` carries the
+  bpy-free counterpart: the canonical merge turns the 1992 P1 sites into 1144
+  representatives (848 merged), each H36/H36B twin pair shares one
+  representative, and a grown shell never materialises a same-element pair
+  closer than 0.05 Å (the ASU being clean at ≥ 0.2 Å).
 - `test_bond_duplicate_sites.py` covers the Blender-side counterpart: the bond
   builder bonds a disordered site once (no zero-length bond, no doubled bonds
   to its neighbours) for exact and near duplicates, leaves coincident

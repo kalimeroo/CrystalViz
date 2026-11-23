@@ -1026,6 +1026,66 @@ def _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_onl
             deficits[oxygen] = max(0, deficits.get(oxygen, 0) - 1)
 
 
+def delocalised_oxo_edges(elements, edges, lengths=None):
+    """Terminal X-O bonds that carry a resonance (1.5) stroke.
+
+    A centre whose oxo budget leaves at least one terminal oxygen undoubled is
+    a resonance oxo group rather than a set of localized doubles: a
+    carboxylate or carbonate (C), nitrate (N), phosphate/phosphonate (P), or
+    sulfate/sulfonate (S, Se, Te) has more terminal oxygens than the valence
+    ladder can draw as genuine ``X=O`` doubles.  Every terminal X-O bond of
+    such a centre is returned so the depiction can draw it as a ChemDraw
+    delocalised bond -- one solid and one dashed stroke -- instead of the
+    localized ``C=O`` + ``C-O-`` pair.
+
+    The count mirrors :func:`_oxo_double_bonds`: ``min(target valence -
+    covalent degree, terminal oxygens, _OXO_MAX_DOUBLES)``.  When that budget
+    is smaller than the number of terminal oxygens the leftover oxygens are
+    the ones the oxo pass draws single, and the whole group is delocalised.
+    A nitro ``N(=O)2`` or a sulfone ``S(=O)2`` spends its entire budget, so it
+    keeps its genuine doubles; a lone carbonyl, sulfoxide or N-oxide (a single
+    terminal oxygen) is never delocalised.
+
+    The length gate is the general candidate gate
+    (:func:`_candidate_max_length_scale`), not the tight carbonyl gate: the
+    "two or more terminal oxygens" condition already separates a carboxylate
+    or carbonate from a phenoxide/enol, and a carbonate C-O sits at ~0.90 of
+    the radii sum, right at the carbonyl threshold.  A metal-bound oxygen
+    still counts (a salt of a sulfonate coordinates every S=O oxygen), but a
+    metal carbonyl carbon is skipped exactly as in the oxo pass.
+    """
+    elements = _normalise_elements(elements)
+    lengths = {edge_key(*key): float(value) for key, value in (lengths or {}).items()}
+    adjacency, _edge_keys = _graph(elements, edges)
+    delocalised = set()
+    for node, element in elements.items():
+        target = _OXO_TARGET_VALENCE.get(element)
+        if target is None:
+            continue
+        oxygens = _terminal_oxygens(node, elements, adjacency, lengths)
+        if len(oxygens) < 2:
+            continue
+        if element == "C" and any(
+            elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(node, ())
+        ):
+            # Metal carbonyl/acyl: its C=O/C#O belongs to the forced-triple or
+            # greedy pass, exactly as in _oxo_double_bonds.
+            continue
+        gate = _candidate_max_length_scale(element, "O")
+        oxygens = [oxygen for oxygen in oxygens if lengths.get(edge_key(node, oxygen), 1.0) <= gate]
+        if len(oxygens) < 2:
+            continue
+        covalent_degree = sum(
+            1 for other in adjacency.get(node, ()) if elements.get(other) in VALENCE_LADDERS
+        )
+        budget = min(target - covalent_degree, len(oxygens), _OXO_MAX_DOUBLES)
+        if budget <= 0 or len(oxygens) <= budget:
+            continue
+        for oxygen in oxygens:
+            delocalised.add(edge_key(node, oxygen))
+    return frozenset(delocalised)
+
+
 def _ring_link_bonds(rings, adjacency):
     """Edges joining two ring atoms without belonging to any ring.
 

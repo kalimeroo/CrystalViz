@@ -70,7 +70,11 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 57/57 pass.
+`pwsh tests/run_all.ps1` → 57/58 pass. The single failure is the pre-existing
+Diazastibolene Sb=N regression (`CIF/Diazastibolene.cif`, COD 7111438: the Sb-N
+bonds come out double) — reproduced with this feature stashed, it entered with
+the group-1-haptic/Clar pass (commit `0952a66`) and is tracked as a follow-up;
+the target is 58/58 again once the Clar pass no longer invents the Sb=N.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -123,7 +127,21 @@ for a first run.
   `CIF/multiple_bonds.cif` `_geom_bond` loop must yield exactly the reference
   Kekulé structure (7 C=C + 3 C=O, no triple) and exactly one aromatic ring (the
   benzene; the annulated-indolizine five-ring is a bridgehead case), with every
-  atom at a valid valence.
+  atom at a valid valence. It also pins the delocalised-oxo detection
+  (`delocalised_oxo_edges`): every terminal X-O bond of a
+  carboxylate/carbonate, nitrate, phosphate/phosphonate and sulfate/sulfonate
+  is marked — including a metal-coordinated oxygen and the Se/Te analogues —
+  while nitro, sulfone, ketone/aldehyde/ester/amide, a carboxylic or nitric acid
+  whose hydrogen is present, a phenoxide, an N-oxide and a metal carbonyl are
+  left alone.
+
+- `test_chemdraw_delocalised.py` is the end-to-end counterpart for the 1.5
+  stroke: it calls `_chemdraw_segments()` on a synthetic carboxylate and checks
+  that each C-O edge becomes one full-length order-2 stroke plus three short
+  collinear dashes on the opposite side of the bond axis (8 strokes total, all
+  order 2), that a ketone C=O is still two full-length strokes, and that the
+  `_chemdraw_delocalised_edges()` adapter marks a carboxylate and a phosphate
+  while leaving nitro, sulfone and ketone localized.
 
 - `test_chemdraw_depiction.py` is the end-to-end counterpart: it imports
   `multiple_bonds.cif`, builds the bond set with ChemDraw on and asserts the

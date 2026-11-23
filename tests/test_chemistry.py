@@ -2174,6 +2174,199 @@ class MultipleBondsCifTest(unittest.TestCase):
         self.assertEqual(shuffled, self.orders)
 
 
+class DelocalisedOxoEdgesTests(unittest.TestCase):
+    """Terminal oxo groups drawn as a ChemDraw 1.5 (solid+dashed) bond."""
+
+    def marked(self, atoms, bonds):
+        elements, edges, lengths = molecule(atoms, bonds)
+        return chemistry.delocalised_oxo_edges(elements, edges, lengths)
+
+    def test_carboxylate_marks_both_carbon_oxygen_bonds(self):
+        atoms = {"C0": "C", "C1": "C", "O1": "O", "O2": "O"}
+        bonds = [("C0", "C1", 1.50), ("C1", "O1", 1.25), ("C1", "O2", 1.26)]
+        self.assertEqual(
+            self.marked(atoms, bonds),
+            frozenset({chemistry.edge_key("C1", "O1"), chemistry.edge_key("C1", "O2")}),
+        )
+
+    def test_carboxylate_with_both_oxygens_on_metals_is_delocalised(self):
+        atoms = {"C0": "C", "C1": "C", "O1": "O", "O2": "O", "NA1": "NA", "NA2": "NA"}
+        bonds = [
+            ("C0", "C1", 1.50),
+            ("C1", "O1", 1.25),
+            ("C1", "O2", 1.26),
+            ("O1", "NA1", 2.35),
+            ("O2", "NA2", 2.35),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 2)
+
+    def test_carbonate_marks_all_three_carbon_oxygen_bonds(self):
+        atoms = {"C0": "C", "O1": "O", "O2": "O", "O3": "O"}
+        bonds = [("C0", "O1", 1.28), ("C0", "O2", 1.29), ("C0", "O3", 1.28)]
+        self.assertEqual(len(self.marked(atoms, bonds)), 3)
+
+    def test_nitrate_marks_all_three_nitrogen_oxygen_bonds(self):
+        atoms = {"N0": "N", "O1": "O", "O2": "O", "O3": "O"}
+        bonds = [("N0", "O1", 1.24), ("N0", "O2", 1.25), ("N0", "O3", 1.24)]
+        self.assertEqual(len(self.marked(atoms, bonds)), 3)
+
+    def test_phosphate_marks_all_four_phosphorus_oxygen_bonds(self):
+        atoms = {"P0": "P", "O1": "O", "O2": "O", "O3": "O", "O4": "O"}
+        bonds = [
+            ("P0", "O1", 1.52),
+            ("P0", "O2", 1.53),
+            ("P0", "O3", 1.51),
+            ("P0", "O4", 1.52),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 4)
+
+    def test_phosphonate_marks_three_of_four_bonds(self):
+        atoms = {"C0": "C", "P0": "P", "O1": "O", "O2": "O", "O3": "O"}
+        bonds = [
+            ("C0", "P0", 1.82),
+            ("P0", "O1", 1.51),
+            ("P0", "O2", 1.52),
+            ("P0", "O3", 1.53),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 3)
+
+    def test_sulfate_marks_all_four_sulfur_oxygen_bonds(self):
+        atoms = {"S0": "S", "O1": "O", "O2": "O", "O3": "O", "O4": "O"}
+        bonds = [
+            ("S0", "O1", 1.47),
+            ("S0", "O2", 1.48),
+            ("S0", "O3", 1.46),
+            ("S0", "O4", 1.47),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 4)
+
+    def test_sulfonate_marks_three_of_four_bonds(self):
+        atoms = {"C0": "C", "S0": "S", "O1": "O", "O2": "O", "O3": "O"}
+        bonds = [
+            ("C0", "S0", 1.78),
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+            ("S0", "O3", 1.46),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 3)
+
+    def test_sulfonate_keeps_a_metal_coordinated_oxygen_terminal(self):
+        atoms = {"C0": "C", "S0": "S", "O1": "O", "O2": "O", "O3": "O", "NA1": "NA"}
+        bonds = [
+            ("C0", "S0", 1.78),
+            ("S0", "O1", 1.44),
+            ("S0", "O2", 1.45),
+            ("S0", "O3", 1.46),
+            ("O1", "NA1", 2.35),
+        ]
+        self.assertEqual(len(self.marked(atoms, bonds)), 3)
+
+    def test_selenate_and_tellurate_are_delocalised(self):
+        for element, distance in (("SE", 1.64), ("TE", 1.80)):
+            with self.subTest(element):
+                atoms = {"X0": element, "O1": "O", "O2": "O", "O3": "O", "O4": "O"}
+                bonds = [("X0", f"O{index}", distance) for index in range(1, 5)]
+                self.assertEqual(len(self.marked(atoms, bonds)), 4)
+
+    def test_nitro_keeps_its_genuine_doubles(self):
+        atoms = {"C0": "C", "N0": "N", "O1": "O", "O2": "O"}
+        bonds = [("C0", "N0", 1.47), ("N0", "O1", 1.22), ("N0", "O2", 1.24)]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_sulfone_keeps_its_genuine_doubles(self):
+        atoms = {"C0": "C", "C1": "C", "S0": "S", "O1": "O", "O2": "O"}
+        bonds = [
+            ("C0", "S0", 1.78),
+            ("C1", "S0", 1.78),
+            ("S0", "O1", 1.43),
+            ("S0", "O2", 1.44),
+        ]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_ketone_aldehyde_ester_and_amide_are_not_delocalised(self):
+        cases = {
+            "ketone": (
+                {"C0": "C", "C1": "C", "C2": "C", "O1": "O"},
+                [("C0", "C1", 1.51), ("C1", "C2", 1.51), ("C1", "O1", 1.22)],
+            ),
+            "aldehyde": (
+                {"C0": "C", "C1": "C", "H1": "H", "O1": "O"},
+                [("C0", "C1", 1.51), ("C1", "H1", 1.09), ("C1", "O1", 1.21)],
+            ),
+            "ester": (
+                {"C0": "C", "C1": "C", "O1": "O", "O2": "O", "C2": "C"},
+                [
+                    ("C0", "C1", 1.51),
+                    ("C1", "O1", 1.21),
+                    ("C1", "O2", 1.34),
+                    ("O2", "C2", 1.44),
+                ],
+            ),
+            "amide": (
+                {"C0": "C", "C1": "C", "N1": "N", "O1": "O", "H1": "H"},
+                [
+                    ("C0", "C1", 1.51),
+                    ("C1", "O1", 1.23),
+                    ("C1", "N1", 1.33),
+                    ("N1", "H1", 1.01),
+                ],
+            ),
+        }
+        for name, (atoms, bonds) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.marked(atoms, bonds), frozenset(), name)
+
+    def test_carboxylic_acid_with_its_hydrogen_is_not_delocalised(self):
+        atoms = {"C0": "C", "C1": "C", "O1": "O", "O2": "O", "H1": "H"}
+        bonds = [
+            ("C0", "C1", 1.51),
+            ("C1", "O1", 1.21),
+            ("C1", "O2", 1.31),
+            ("O2", "H1", 0.98),
+        ]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_nitric_acid_with_its_hydrogen_is_not_delocalised(self):
+        atoms = {"N0": "N", "O1": "O", "O2": "O", "O3": "O", "H1": "H"}
+        bonds = [
+            ("N0", "O1", 1.21),
+            ("N0", "O2", 1.22),
+            ("N0", "O3", 1.40),
+            ("O3", "H1", 0.98),
+        ]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_phenoxide_is_not_delocalised(self):
+        nodes = [f"X{index}" for index in range(6)]
+        atoms = {node: "C" for node in nodes}
+        atoms["O1"] = "O"
+        bonds = ring_bonds(nodes) + [("X0", "O1", 1.36)]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_n_oxide_is_not_delocalised(self):
+        atoms = {"N0": "N", "C0": "C", "C1": "C", "O1": "O"}
+        bonds = [("N0", "C0", 1.40), ("N0", "C1", 1.40), ("N0", "O1", 1.31)]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_metal_carbonyl_carbon_is_skipped(self):
+        atoms = {"FE0": "FE", "C0": "C", "O1": "O", "O2": "O", "O3": "O"}
+        bonds = [
+            ("FE0", "C0", 1.80),
+            ("C0", "O1", 1.20),
+            ("C0", "O2", 1.21),
+            ("C0", "O3", 1.22),
+        ]
+        self.assertEqual(self.marked(atoms, bonds), frozenset())
+
+    def test_result_does_not_depend_on_edge_order(self):
+        atoms = {"C0": "C", "C1": "C", "O1": "O", "O2": "O"}
+        bonds = [("C0", "C1", 1.50), ("C1", "O1", 1.25), ("C1", "O2", 1.26)]
+        elements, edges, lengths = molecule(atoms, bonds)
+        forward = chemistry.delocalised_oxo_edges(elements, edges, lengths)
+        backward = chemistry.delocalised_oxo_edges(elements, list(reversed(edges)), lengths)
+        self.assertEqual(forward, backward)
+
+
 if __name__ == "__main__":
     # Blender keeps its own CLI flags in ``sys.argv``, so ``unittest.main()``
     # would try to parse ``--background``.  Drive the runner explicitly and

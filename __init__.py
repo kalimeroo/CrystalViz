@@ -176,6 +176,10 @@ _WIRE_RADIUS_DEFAULT = 0.1
 _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _MULTIPLE_BOND_RADIUS_SCALE_DEFAULT = 1.0
 _CHEMDRAW_BOND_SPACING_DEFAULT = 0.32
+# Dash pattern of the second stroke of a delocalised (1.5) bond, in Angstrom:
+# the stroke is a run of short collinear edges, each one its own tube.
+_CHEMDRAW_DASH_LENGTH = 0.30
+_CHEMDRAW_DASH_GAP = 0.20
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
 _AROMATIC_TORUS_SIZE_DEFAULT = 0.55
 _AROMATIC_TORUS_WIDTH_DEFAULT = 0.5
@@ -3995,6 +3999,17 @@ def _chemdraw_bond_orders(segments, covalent_radii):
     return _chemistry().bond_orders(elements, edges, lengths)
 
 
+def _chemdraw_delocalised_edges(segments, covalent_radii):
+    """Terminal oxo bonds to draw as resonance (1.5) bonds.
+
+    A carboxylate, carbonate, nitrate, phosphate, sulfate or sulfonate group
+    has more terminal oxygens than its valence ladder can draw as genuine
+    doubles; the chemistry module returns every X-O edge of such a group.
+    """
+    elements, edges, lengths, _points = _chemdraw_graph(segments, covalent_radii)
+    return _chemistry().delocalised_oxo_edges(elements, edges, lengths)
+
+
 def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
     """Find the aromatic rings of the Kekulé structure and their torus geometry.
 
@@ -4140,12 +4155,63 @@ def _multiple_bond_plane_directions(segments, bond_orders):
     return directions
 
 
+def _bond_perpendicular(direction, edge_key, multiple_bond_directions):
+    """Offset direction for a multiple-bond stroke, in the molecular plane.
+
+    Falls back to an arbitrary perpendicular when the edge has no neighbour
+    vectors to fit a plane to (a terminal oxygen has none of its own).
+    """
+    perpendicular = multiple_bond_directions.get(edge_key)
+    if perpendicular is not None:
+        return perpendicular
+    reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
+    reference = tuple(1.0 if index == reference_axis else 0.0 for index in range(3))
+    perpendicular = (
+        direction[1] * reference[2] - direction[2] * reference[1],
+        direction[2] * reference[0] - direction[0] * reference[2],
+        direction[0] * reference[1] - direction[1] * reference[0],
+    )
+    perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
+    return tuple(value / perpendicular_length for value in perpendicular)
+
+
+def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b):
+    """Split one offset bond line into short collinear dash segments.
+
+    The dashes are ordinary order-2 segments, so the pair bucketing, the
+    multiple-bond radius and the two-colour split all apply unchanged.
+    """
+    start = tuple(float(first[axis]) + perpendicular[axis] * offset for axis in range(3))
+    end = tuple(float(second[axis]) + perpendicular[axis] * offset for axis in range(3))
+    delta = tuple(end[axis] - start[axis] for axis in range(3))
+    length = math.sqrt(sum(value * value for value in delta))
+    if length <= 1e-8:
+        return [(start, end, element_a, element_b, 2)]
+    direction = tuple(value / length for value in delta)
+    dashes = []
+    position = 0.0
+    while position < length:
+        stop = min(position + _CHEMDRAW_DASH_LENGTH, length)
+        dashes.append(
+            (
+                tuple(start[axis] + direction[axis] * position for axis in range(3)),
+                tuple(start[axis] + direction[axis] * stop for axis in range(3)),
+                element_a,
+                element_b,
+                2,
+            )
+        )
+        position = stop + _CHEMDRAW_DASH_GAP
+    return dashes
+
+
 def _chemdraw_segments(
     segments,
     bond_orders,
     aromatic_edges,
     multiple_bond_directions=None,
     bond_spacing=_CHEMDRAW_BOND_SPACING_DEFAULT,
+    delocalised_edges=frozenset(),
 ):
     multiple_bond_directions = multiple_bond_directions or {}
     rendered = []
@@ -4161,21 +4227,29 @@ def _chemdraw_segments(
         if edge_key in aromatic_edges:
             rendered.append((first, second, element_a, element_b, 1))
             continue
+        if edge_key in delocalised_edges:
+            # ChemDraw's delocalised bond: one solid stroke and one dashed
+            # stroke, both at the multiple-bond spacing and radius.
+            perpendicular = _bond_perpendicular(direction, edge_key, multiple_bond_directions)
+            half = float(bond_spacing) / 2.0
+            rendered.append(
+                (
+                    tuple(float(first[axis]) - perpendicular[axis] * half for axis in range(3)),
+                    tuple(float(second[axis]) - perpendicular[axis] * half for axis in range(3)),
+                    element_a,
+                    element_b,
+                    2,
+                )
+            )
+            rendered.extend(
+                _dashed_stroke(first, second, perpendicular, half, element_a, element_b)
+            )
+            continue
 
         if order == 1:
             rendered.append((first, second, element_a, element_b, order))
             continue
-        perpendicular = multiple_bond_directions.get(edge_key)
-        if perpendicular is None:
-            reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
-            reference = tuple(1.0 if axis == reference_axis else 0.0 for axis in range(3))
-            perpendicular = (
-                direction[1] * reference[2] - direction[2] * reference[1],
-                direction[2] * reference[0] - direction[0] * reference[2],
-                direction[0] * reference[1] - direction[1] * reference[0],
-            )
-            perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
-            perpendicular = tuple(value / perpendicular_length for value in perpendicular)
+        perpendicular = _bond_perpendicular(direction, edge_key, multiple_bond_directions)
         spacing = float(bond_spacing)
         offsets = (-spacing / 2.0, spacing / 2.0) if order == 2 else (-spacing, 0.0, spacing)
         for offset in offsets:
@@ -4625,6 +4699,11 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     # rings are still inferred from the complete bond set.
     centre_keys = _polyhedron_centre_keys(root, atoms) if _hide_polyhedron_bonds(scene) else set()
     bond_orders = _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
+    delocalised_edges = (
+        _chemdraw_delocalised_edges(all_segments, covalent_radii)
+        if chemdraw and getattr(scene, "cgn_delocalised_bonds", True)
+        else frozenset()
+    )
     aromatic_edges, aromatic_rings = (
         _classify_aromatic_rings(all_segments, covalent_radii, bond_orders)
         if chemdraw
@@ -4655,6 +4734,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     "cgn_bond_spacing",
                     _CHEMDRAW_BOND_SPACING_DEFAULT,
                 ),
+                delocalised_edges,
             )
             if chemdraw
             else segments
@@ -7405,6 +7485,7 @@ class CGN_PT_bond_style(Panel):
                 text="Bond Spacing",
                 slider=True,
             )
+            layout.prop(scene, "cgn_delocalised_bonds", text="Delocalised Bonds")
             layout.prop(scene, "cgn_aromatic_torus_size", slider=True)
             layout.prop(scene, "cgn_aromatic_torus_width", slider=True)
             layout.prop(scene, "cgn_aromatic_torus_color", text="Torus Color")
@@ -7667,6 +7748,16 @@ def register():
         default=False,
         update=_update_bond_style,
     )
+    bpy.types.Scene.cgn_delocalised_bonds = BoolProperty(
+        name="Delocalised Bonds",
+        description=(
+            "Draw resonance oxo groups (carboxylate, carbonate, nitrate, "
+            "phosphate, sulfate, sulfonate) as a 1.5 bond: one solid and one "
+            "dashed stroke"
+        ),
+        default=True,
+        update=_update_bond_style,
+    )
     bpy.types.Scene.cgn_aromatic_torus_size = FloatProperty(
         name="Torus Size",
         description="Inner torus radius relative to the ring atom radius",
@@ -7830,6 +7921,7 @@ def unregister():
     del bpy.types.Scene.cgn_aromatic_torus_width
     del bpy.types.Scene.cgn_aromatic_torus_size
     del bpy.types.Scene.cgn_chemdraw
+    del bpy.types.Scene.cgn_delocalised_bonds
     del bpy.types.Scene.cgn_bond_style
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness

@@ -27,8 +27,9 @@ cap.png
 # Windows Explorer folder metadata
 desktop.ini
 
-# Built extension archives are attached to GitHub Releases, not committed.
-dist/
+# Built extension archives are committed (one zip per target platform), so a
+# release can be installed straight from the repo; rebuild with
+# `python build_extension.py build` and commit dist/ when the add-on changes.
 
 # Cambridge Structural Database fixtures are not redistributable (their CIFs
 # carry _database_code_CSD and the CCDC header).  They stay on the machine of

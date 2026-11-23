@@ -3,9 +3,12 @@
 A carboxylate, carbonate, nitrate, phosphate, sulfate or sulfonate has more
 terminal oxygens than its valence ladder can draw as genuine doubles.  Every
 terminal X-O bond of such a group is drawn as a ChemDraw delocalised bond: one
-solid stroke plus one dashed stroke at the multiple-bond spacing.  A nitro
-``N(=O)2`` or a sulfone ``S(=O)2`` spends its whole oxo budget and keeps its
-genuine doubles.
+solid stroke plus one dashed stroke at the multiple-bond spacing.  The dashed
+stroke carries twice as many dash segments as the first implementation, and it
+sits *inside* the O-X-O angle (toward the other delocalised oxygen of the same
+centre) with the solid stroke *outside*, like a hand-drawn nitrite or
+carboxylate.  A nitro ``N(=O)2`` or a sulfone ``S(=O)2`` spends its whole oxo
+budget and keeps its genuine doubles.
 
 Run:
   blender --background --factory-startup --python test_chemdraw_delocalised.py
@@ -68,8 +71,8 @@ def check_rendering():
         str(sorted({int(segment[4]) for segment in rendered})),
     )
     check(
-        "carboxylate draws 8 strokes (1 solid + 3 dashes per C-O)",
-        len(rendered) == 8,
+        "carboxylate draws 12 strokes (1 solid + 5 dashes per C-O)",
+        len(rendered) == 12,
         str(len(rendered)),
     )
 
@@ -86,7 +89,7 @@ def check_rendering():
         full = [segment for segment in groups[index] if length(segment) > 0.5]
         dashes = [segment for segment in groups[index] if length(segment) <= 0.5]
         check(f"C-O {index + 1} has one solid stroke", len(full) == 1, str(len(full)))
-        check(f"C-O {index + 1} has three dashes", len(dashes) == 3, str(len(dashes)))
+        check(f"C-O {index + 1} has five dashes", len(dashes) == 5, str(len(dashes)))
         check(
             f"C-O {index + 1} dashes are short",
             all(length(dash) <= CrystalViz._CHEMDRAW_DASH_LENGTH + 1e-6 for dash in dashes),
@@ -97,6 +100,61 @@ def check_rendering():
             f"C-O {index + 1} draws the solid and dashed strokes on opposite sides",
             solid_offset * dash_offset < 0.0,
             f"solid={solid_offset:.3f} dash={dash_offset:.3f}",
+        )
+
+
+def check_inside_outside():
+    """The dashed stroke of each O-X-O bond sits inside the angle, the solid
+    stroke outside — the nitrite/carboxylate hand-drawing convention."""
+    carbon = (0.0, 0.0, 0.0)
+    oxygen_a = (1.25, 0.0, 0.0)
+    oxygen_b = (-0.3, 1.2, 0.0)
+    bonds = [(carbon, oxygen_a), (carbon, oxygen_b)]
+    segments = [(first, second, "C", "O") for first, second in bonds]
+    bond_orders = {
+        CrystalViz._bond_edge_key(first, second): (2 if index == 0 else 1)
+        for index, (first, second) in enumerate(bonds)
+    }
+    delocalised = frozenset(bond_orders)
+    directions = CrystalViz._multiple_bond_plane_directions(segments, bond_orders)
+    rendered = CrystalViz._chemdraw_segments(
+        segments,
+        bond_orders,
+        {},
+        directions,
+        bond_spacing=0.32,
+        delocalised_edges=delocalised,
+    )
+    # The inside of the O-X-O angle at bond i is the side toward the other
+    # oxygen: O_b -> O_a (and O_a -> O_b for the second bond).
+    inside = {
+        0: tuple(oxygen_b[axis] - oxygen_a[axis] for axis in range(3)),
+        1: tuple(oxygen_a[axis] - oxygen_b[axis] for axis in range(3)),
+    }
+    for index, (first, second) in enumerate(bonds):
+        direction = unit((first, second))
+        strokes = [
+            segment
+            for segment in rendered
+            if max(abs(value) for value in cross(unit(segment), direction)) < 1e-6
+        ]
+        full = [segment for segment in strokes if length(segment) > 0.5]
+        dashes = [segment for segment in strokes if length(segment) <= 0.5]
+        check(f"O-C-O {index + 1}: one solid stroke", len(full) == 1, str(len(full)))
+        check(f"O-C-O {index + 1}: five dashes", len(dashes) == 5, str(len(dashes)))
+
+        def centre(segment):
+            return tuple(0.5 * (segment[0][axis] + segment[1][axis]) for axis in range(3))
+
+        bond_mid = centre((first, second))
+        dash_dir = unit((bond_mid, centre(dashes[0])))
+        solid_dir = unit((bond_mid, centre(full[0])))
+        dash_dot = sum(dash_dir[axis] * inside[index][axis] for axis in range(3))
+        solid_dot = sum(solid_dir[axis] * inside[index][axis] for axis in range(3))
+        check(
+            f"O-C-O {index + 1}: dashes inside the angle, solid outside",
+            dash_dot > 0.0 and solid_dot < 0.0,
+            f"dash dot={dash_dot:.3f} solid dot={solid_dot:.3f}",
         )
 
 
@@ -181,6 +239,7 @@ def check_detection():
 
 def main():
     check_rendering()
+    check_inside_outside()
     check_control_double_bond()
     check_detection()
 

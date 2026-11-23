@@ -177,9 +177,11 @@ _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _MULTIPLE_BOND_RADIUS_SCALE_DEFAULT = 1.0
 _CHEMDRAW_BOND_SPACING_DEFAULT = 0.32
 # Dash pattern of the second stroke of a delocalised (1.5) bond, in Angstrom:
-# the stroke is a run of short collinear edges, each one its own tube.
-_CHEMDRAW_DASH_LENGTH = 0.30
-_CHEMDRAW_DASH_GAP = 0.20
+# the stroke is a run of short collinear edges, each one its own tube.  The
+# dash and gap are half of their first implementation so a bond shows twice as
+# many dash segments (a ChemDraw 1.5 bond reads as a finer, denser hatch).
+_CHEMDRAW_DASH_LENGTH = 0.15
+_CHEMDRAW_DASH_GAP = 0.10
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
 _AROMATIC_TORUS_SIZE_DEFAULT = 0.55
 _AROMATIC_TORUS_WIDTH_DEFAULT = 0.5
@@ -4175,6 +4177,52 @@ def _bond_perpendicular(direction, edge_key, multiple_bond_directions):
     return tuple(value / perpendicular_length for value in perpendicular)
 
 
+def _delocalised_inside_directions(segments, delocalised_edges):
+    """Unit "inside" direction of each delocalised edge, toward the angle interior.
+
+    A delocalised X-O bond of a 1.5-oxo group (carboxylate, nitrite,
+    carbonate, nitrate, phosphate, ...) is drawn as a solid stroke plus a
+    dashed stroke at the multiple-bond spacing.  The two strokes of the two
+    bonds of an O-X-O pair look right only when the group is laid out the way
+    ChemDraw does it: the *dashed* stroke sits inside the O-X-O angle (toward
+    the other delocalised oxygen) and the *solid* stroke on the outside.
+
+    This helper maps each delocalised edge to the unit vector pointing from
+    its oxygen toward the centroid of the other delocalised terminal oxygens
+    of the same centre; ``_chemdraw_segments`` flips the perpendicular so the
+    offset stroke (+perpendicular) lands on that side.  A lone delocalised
+    edge (no other oxygen on its centre) gets no entry and keeps an arbitrary
+    stroke side.
+    """
+    centres = {}
+    for first, second, element_a, _element_b in segments:
+        edge_key = _bond_edge_key(first, second)
+        if edge_key not in delocalised_edges:
+            continue
+        if str(element_a).upper() == "O":
+            centre, oxygen = second, first
+        else:
+            centre, oxygen = first, second
+        centre_key = _bond_point_key(centre)
+        centres.setdefault(centre_key, []).append(
+            (edge_key, tuple(float(value) for value in oxygen))
+        )
+    inside = {}
+    for terms in centres.values():
+        if len(terms) < 2:
+            continue
+        for edge_key, oxygen in terms:
+            others = [other for other_edge, other in terms if other_edge != edge_key]
+            centroid = tuple(
+                sum(other[axis] for other in others) / len(others) for axis in range(3)
+            )
+            vector = tuple(centroid[axis] - oxygen[axis] for axis in range(3))
+            size = math.sqrt(sum(value * value for value in vector))
+            if size > 1e-12:
+                inside[edge_key] = tuple(value / size for value in vector)
+    return inside
+
+
 def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b):
     """Split one offset bond line into short collinear dash segments.
 
@@ -4215,6 +4263,9 @@ def _chemdraw_segments(
 ):
     multiple_bond_directions = multiple_bond_directions or {}
     rendered = []
+    delocalised_inside = (
+        _delocalised_inside_directions(segments, delocalised_edges) if delocalised_edges else {}
+    )
     for first, second, element_a, element_b in segments:
         delta = tuple(float(second[axis]) - float(first[axis]) for axis in range(3))
         length = math.sqrt(sum(value * value for value in delta))
@@ -4229,8 +4280,17 @@ def _chemdraw_segments(
             continue
         if edge_key in delocalised_edges:
             # ChemDraw's delocalised bond: one solid stroke and one dashed
-            # stroke, both at the multiple-bond spacing and radius.
+            # stroke, both at the multiple-bond spacing and radius.  The
+            # dashed stroke sits inside the O-X-O angle (toward the other
+            # delocalised oxygen of the same centre) and the solid stroke
+            # on the outside, like a nitrite/carboxylate drawn by hand.
             perpendicular = _bond_perpendicular(direction, edge_key, multiple_bond_directions)
+            inside = delocalised_inside.get(edge_key)
+            if (
+                inside is not None
+                and sum(perpendicular[axis] * inside[axis] for axis in range(3)) < 0.0
+            ):
+                perpendicular = tuple(-value for value in perpendicular)
             half = float(bond_spacing) / 2.0
             rendered.append(
                 (

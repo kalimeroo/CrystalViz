@@ -133,11 +133,14 @@ for a first run.
 
 - `test_chemdraw_delocalised.py` is the end-to-end counterpart for the 1.5
   stroke: it calls `_chemdraw_segments()` on a synthetic carboxylate and checks
-  that each C-O edge becomes one full-length order-2 stroke plus three short
-  collinear dashes on the opposite side of the bond axis (8 strokes total, all
-  order 2), that a ketone C=O is still two full-length strokes, and that the
-  `_chemdraw_delocalised_edges()` adapter marks a carboxylate and a phosphate
-  while leaving nitro, sulfone and ketone localized.
+  that each C-O edge becomes one full-length order-2 stroke plus five short
+  collinear dashes on the *inside* of the O-C-O angle (the dashed stroke sits
+  toward the other oxygen and the solid stroke outside, the hand-drawn
+  nitrite/carboxylate convention; twice the dash density of the first
+  implementation), 12 strokes total, all order 2, that a ketone C=O is still
+  two full-length strokes, and that the `_chemdraw_delocalised_edges()`
+  adapter marks a carboxylate and a phosphate while leaving nitro, sulfone and
+  ketone localized.
 
 - `test_chemdraw_depiction.py` is the end-to-end counterpart: it imports
   `multiple_bonds.cif`, builds the bond set with ChemDraw on and asserts the

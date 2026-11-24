@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 59/59 pass.
+`pwsh tests/run_all.ps1` → 60/60 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -366,6 +366,20 @@ for a first run.
   to its neighbours) for exact and near duplicates, leaves coincident
   different-element disorder unbonded, and does the same on the grow/append
   path.
+- `test_import_disorder_primes.py` pins the load-time omission of alternate
+  disorder components (`_disorder_minor_labels`). It embeds the AKUQAB
+  thiophene fragment (the CSD export is gitignored) with its primed second
+  orientation, imports it, fills the asymmetric unit and bonds it: only the
+  eleven unprimed atoms survive (16 primed sites are omitted, here eight in the
+  embedded subset), the shared carbon no longer gets a fourth neighbour, and
+  the chemistry API reports the five-ring as aromatic with its two Kekulé
+  doubles. With both components kept the ring is not perceived at all, which
+  is the `S_ring5_no_aromatic` symptom. `tests/test_gemmi_worker.py` carries the
+  bpy-free rule tests: primes dropped without occupancy, the more occupied
+  component winning (even when primed), equal occupancies keeping the unprimed
+  component, fixed hydrogen occupancies abstaining, lone primed labels kept,
+  double-prime third components dropped, and letter suffixes (`H8A`/`H8B`) left
+  alone.
 
 ## Ordered suites
 

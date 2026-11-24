@@ -6,6 +6,7 @@ Run with a Python that has gemmi installed:
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -247,6 +248,145 @@ class TestDisorderTwinDedup(unittest.TestCase):
             0.05,
             "growth must not add the twin of an atom already on screen",
         )
+
+
+def _disorder_cif(rows, with_occupancy):
+    """Minimal P1 CIF from ``(label, element, x, y, z, occupancy)`` rows."""
+    lines = [
+        "data_disorder",
+        "_cell_length_a 10.0",
+        "_cell_length_b 10.0",
+        "_cell_length_c 10.0",
+        "_cell_angle_alpha 90.0",
+        "_cell_angle_beta 90.0",
+        "_cell_angle_gamma 90.0",
+        "_symmetry_space_group_name_H-M 'P 1'",
+        "loop_",
+        "_atom_site_label",
+        "_atom_site_type_symbol",
+        "_atom_site_fract_x",
+        "_atom_site_fract_y",
+        "_atom_site_fract_z",
+    ]
+    if with_occupancy:
+        lines.append("_atom_site_occupancy")
+    for label, element, x, y, z, occupancy in rows:
+        values = [label, element, f"{x:.5f}", f"{y:.5f}", f"{z:.5f}"]
+        if with_occupancy:
+            values.append(f"{occupancy:.3f}")
+        lines.append(" ".join(values))
+    return "\n".join(lines) + "\n"
+
+
+class TestDisorderPrimeLabels(unittest.TestCase):
+    """Alternate disorder components are omitted at load.
+
+    CSD CIFs mark a disordered site's second/third component with a trailing
+    prime/double prime (S1', S1'').  The AKUQAB 5-ring flips between two
+    orientations; keeping both gives the shared exocyclic carbon an extra
+    neighbour and the ring was never enumerated.  Occupancy decides when it is
+    declared (the more occupied component survives); without it the primed
+    components go.
+    """
+
+    def _load(self, rows, with_occupancy=True):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "disorder.cif")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_disorder_cif(rows, with_occupancy))
+            return gw.load_structure(path)
+
+    @staticmethod
+    def _labels(result):
+        return [site["label"] for site in result["sites"]]
+
+    def test_primes_are_dropped_without_occupancy(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("C1", "C", 0.25, 0.30, 0.40, 1.0),
+            ("S1'", "S", 0.20, 0.30, 0.42, 1.0),
+            ("C1'", "C", 0.25, 0.30, 0.40, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["S1", "C1"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_instances_reference_only_kept_sites(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("C1", "C", 0.25, 0.30, 0.40, 1.0),
+            ("S1'", "S", 0.20, 0.30, 0.42, 1.0),
+            ("C1'", "C", 0.25, 0.30, 0.42, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(len(result["sites"]), 2)
+        used = {
+            int(result["instances"][offset]) for offset in range(0, len(result["instances"]), 4)
+        }
+        self.assertTrue(used <= set(range(len(result["sites"]))), str(used))
+
+    def test_occupancy_lets_a_primed_component_win(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 0.40),
+            ("C1", "C", 0.25, 0.30, 0.40, 0.40),
+            ("S1'", "S", 0.20, 0.30, 0.42, 0.60),
+            ("C1'", "C", 0.25, 0.30, 0.42, 0.60),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1'", "C1'"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_equal_occupancy_keeps_the_unprimed_component(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 0.50),
+            ("C1", "C", 0.25, 0.30, 0.40, 0.50),
+            ("S1'", "S", 0.20, 0.30, 0.42, 0.50),
+            ("C1'", "C", 0.25, 0.30, 0.42, 0.50),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1", "C1"])
+
+    def test_fixed_hydrogen_occupancy_does_not_outvote_the_heavy_atoms(self):
+        # Hydrogens of a partially occupied component are often left at 1.0:
+        # that base abstains, so the heavy-atom component still decides.
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 0.60),
+            ("H1", "H", 0.22, 0.30, 0.40, 1.00),
+            ("S1'", "S", 0.20, 0.30, 0.42, 0.40),
+            ("H1'", "H", 0.22, 0.30, 0.42, 1.00),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1", "H1"])
+
+    def test_lone_primed_label_is_kept(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("C1'", "C", 0.60, 0.30, 0.40, 1.0),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1", "C1'"])
+        self.assertEqual(result["omitted_disorder"], 0)
+
+    def test_double_prime_third_component_is_dropped(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 0.50),
+            ("S1'", "S", 0.20, 0.30, 0.42, 0.30),
+            ("S1''", "S", 0.20, 0.30, 0.44, 0.20),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_letter_suffixes_are_not_disorder(self):
+        # H8A/H8B are the two hydrogens of one CH2, not alternate components.
+        rows = [
+            ("C8", "C", 0.20, 0.30, 0.40, 1.0),
+            ("H8A", "H", 0.22, 0.30, 0.40, 1.0),
+            ("H8B", "H", 0.18, 0.32, 0.40, 1.0),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["C8", "H8A", "H8B"])
+        self.assertEqual(result["omitted_disorder"], 0)
 
 
 if __name__ == "__main__":

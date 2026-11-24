@@ -5829,10 +5829,12 @@ class CGN_OT_import_cif(Operator):
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        omitted = int(result.get("omitted_disorder", 0) or 0)
+        omitted_note = f", {omitted} alternate disorder sites omitted" if omitted else ""
         self.report(
             {"INFO"},
             f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
-            f"({root.get('cgn_space_group')}).",
+            f"({root.get('cgn_space_group')}{omitted_note}).",
         )
         return {"FINISHED"}
 

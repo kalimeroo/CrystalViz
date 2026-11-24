@@ -810,6 +810,98 @@ def _dummy_labels(block):
     )
 
 
+# Occupancy difference below which two disorder components count as equally
+# occupied: the unprimed label keeps the site.
+_DISORDER_OCCUPANCY_EPSILON = 1e-3
+
+# Suffixes that mark an alternative disorder component in a small-molecule CIF.
+_DISORDER_PRIME_CHARACTERS = "'\""
+
+
+def _disorder_minor_labels(structure, block):
+    """Labels of the alternate disorder components that load must omit.
+
+    CSD CIFs label the second and third components of a disordered site with a
+    trailing prime or double prime (``S1'``, ``S1''``) while the first component
+    keeps the plain label.  The omission is per base label: a primed label is
+    only dropped when an unprimed sibling of the same base exists, so an atom
+    that legitimately carries a prime with no counterpart (``C12'`` and no
+    ``C12``) is kept.
+
+    Occupancy wins when the CIF declares it: a base whose components differ in
+    occupancy keeps the more occupied one and drops the other, so a primed
+    component can survive while the plain one goes.  A base whose components
+    are equally occupied abstains, which keeps fixed hydrogen occupancies from
+    skewing the choice; without an occupancy column the primed (and
+    double-primed) components are dropped and the unprimed one kept.
+
+    The suffix is a labelling convention, not a CIF guarantee: an author can
+    also number a second independent molecule of the asymmetric unit with
+    primes.  Such a block loses those atoms here; :func:`load_structure`
+    reports the count in ``omitted_disorder`` so the import message makes it
+    visible.  The formal ``_atom_site_disorder_group`` tag is not consulted.
+    """
+    levels = {}
+    for site in structure.sites:
+        label = str(site.label)
+        base = label.rstrip(_DISORDER_PRIME_CHARACTERS)
+        if not base:
+            continue
+        levels.setdefault(base, {}).setdefault(len(label) - len(base), []).append(site)
+    occupancy_declared = any(
+        str(value).strip() for value in block.find_values("_atom_site_occupancy")
+    )
+
+    def mean_occupancy(level_sites):
+        values = []
+        for site in level_sites:
+            try:
+                value = float(site.occ)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                values.append(value)
+        return sum(values) / len(values) if values else None
+
+    def clear_winner(by_level):
+        """Prime level this base's declared occupancies prefer, if any."""
+        if not occupancy_declared or len(by_level) < 2:
+            return None
+        means = {level: mean_occupancy(sites) for level, sites in by_level.items()}
+        means = {level: mean for level, mean in means.items() if mean is not None}
+        if len(means) < 2:
+            return None
+        ordered = sorted(means.values(), reverse=True)
+        if ordered[0] - ordered[1] <= _DISORDER_OCCUPANCY_EPSILON:
+            return None
+        return max(means, key=means.get)
+
+    # One vote per base that clearly prefers a level: bases whose levels are
+    # tied abstain, so a structure-wide component (all primed atoms, say) wins
+    # even when a few fixed-occupancy atoms vote the other way.
+    votes = {}
+    for by_level in levels.values():
+        winner = clear_winner(by_level)
+        if winner is not None:
+            votes[winner] = votes.get(winner, 0) + 1
+    ranked = sorted(votes.items(), key=lambda item: (-item[1], item[0]))
+    preferred = ranked[0][0] if ranked else 0
+
+    dropped = set()
+    for by_level in levels.values():
+        if len(by_level) < 2:
+            continue
+        winner = clear_winner(by_level)
+        if winner is None:
+            winner = preferred if preferred in by_level else 0
+        if winner not in by_level:
+            winner = min(by_level)
+        for level, level_sites in by_level.items():
+            if level != winner:
+                dropped.update(str(site.label) for site in level_sites)
+    return frozenset(dropped)
+
+
 def _skip_site(site, skip_labels):
     """True for a dummy site or a site with an explicit zero occupancy."""
     if site.label in skip_labels:
@@ -852,7 +944,9 @@ def load_structure(cif_path, block_name=None):
     structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
-    skip_labels = _dummy_labels(block)
+    dummy_labels = _dummy_labels(block)
+    disorder_labels = _disorder_minor_labels(structure, block)
+    skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)
     base_atoms = _base_atoms(unit_cell, sites)
     lookup = _base_atom_lookup(unit_cell, base_atoms)
@@ -893,6 +987,9 @@ def load_structure(cif_path, block_name=None):
         "cell_matrix": list(unit_cell._columns),
         "sites": sites,
         "instances": instances,
+        # Number of alternate disorder components omitted at load, so the
+        # import message can report them (see _disorder_minor_labels).
+        "omitted_disorder": len(disorder_labels),
         # Connectivity hints: declared oxidation numbers, Shannon radii for the
         # charged elements, and which elements gemmi considers metallic.  All
         # three are used by the add-on to derive the default distance windows.

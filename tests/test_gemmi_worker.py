@@ -369,6 +369,34 @@ class TestDisorderPrimeLabels(unittest.TestCase):
         self.assertEqual(self._labels(result), ["S1", "C1'"])
         self.assertEqual(result["omitted_disorder"], 0)
 
+    def test_no_overlapping_components_keeps_naming_convention_primes(self):
+        # ANUBUI: a second molecule (or an author's numbering convention)
+        # carries primes on *distinct* atoms, a full bond length from their
+        # base names.  Nothing overlaps its own base, so the primes are names,
+        # not alternate positions, and no level is dropped without occupancy.
+        rows = [
+            ("C1", "C", 0.20, 0.30, 0.40, 1.0),
+            ("C1'", "C", 0.35, 0.30, 0.40, 1.0),  # 1.5 A away: distinct atom
+            ("S2", "S", 0.60, 0.20, 0.30, 1.0),
+            ("S2'", "S", 0.80, 0.20, 0.30, 1.0),  # 2.0 A away: distinct atom
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["C1", "C1'", "S2", "S2'"])
+        self.assertEqual(result["omitted_disorder"], 0)
+
+    def test_one_overlapping_base_marks_the_whole_block_disorder(self):
+        # One genuine disorder base is enough to mark the block: a coincident
+        # pair on C1/C1' drops every prime even though S2/S2' sit apart.
+        rows = [
+            ("C1", "C", 0.20, 0.30, 0.40, 1.0),
+            ("C1'", "C", 0.20, 0.30, 0.40, 1.0),  # same position: same atom
+            ("S2", "S", 0.60, 0.20, 0.30, 1.0),
+            ("S2'", "S", 0.80, 0.20, 0.30, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["C1", "S2"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
     def test_double_prime_third_component_is_dropped(self):
         rows = [
             ("S1", "S", 0.20, 0.30, 0.40, 0.50),

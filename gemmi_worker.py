@@ -817,8 +817,42 @@ _DISORDER_OCCUPANCY_EPSILON = 1e-3
 # Suffixes that mark an alternative disorder component in a small-molecule CIF.
 _DISORDER_PRIME_CHARACTERS = "'\""
 
+# Two labels of one base name this close (A) are the *same atomic position*
+# deposited once per component -- the signature of a prime-labelled disorder
+# deposition.  Distinct atoms of a molecule are never within half an Angstrom
+# of each other: the shortest real covalent bonds run around 1.2 A.  When no
+# base carries such a coincident pair, trailing primes are an author's naming
+# convention (a second molecule of the asymmetric unit, say), not disorder.
+_DISORDER_OVERLAP_A = 0.5
 
-def _disorder_minor_labels(structure, block):
+
+def _disorder_overlaps(levels, unit_cell):
+    """Whether a base name carries two components at one atomic position.
+
+    A prime-labelled disorder deposition lists the same atom twice -- once per
+    alternate component -- so some base names are represented by a plain label
+    and a primed label that land on (almost) the same point (AKUQAB's thiophene
+    keeps ``C1``/``C1'`` 0.08 A apart).  An author's numbering convention never
+    does that: two distinct atoms of a molecule sit at least a covalent bond
+    (around 1.2 A) apart.  A single coincident pair marks the whole block
+    as a disorder deposition; without any, the primes are just names.
+    """
+    for by_level in levels.values():
+        if len(by_level) < 2:
+            continue
+        for level_a, sites_a in by_level.items():
+            for level_b, sites_b in by_level.items():
+                if level_b <= level_a:
+                    continue
+                for site_a in sites_a:
+                    for site_b in sites_b:
+                        distance = _cart_distance(unit_cell, site_a.fract, site_b.fract)
+                        if distance <= _DISORDER_OVERLAP_A:
+                            return True
+    return False
+
+
+def _disorder_minor_labels(structure, block, unit_cell):
     """Labels of the alternate disorder components that load must omit.
 
     CSD CIFs label the second and third components of a disordered site with a
@@ -837,9 +871,14 @@ def _disorder_minor_labels(structure, block):
 
     The suffix is a labelling convention, not a CIF guarantee: an author can
     also number a second independent molecule of the asymmetric unit with
-    primes.  Such a block loses those atoms here; :func:`load_structure`
-    reports the count in ``omitted_disorder`` so the import message makes it
-    visible.  The formal ``_atom_site_disorder_group`` tag is not consulted.
+    primes.  :func:`_disorder_overlaps` tells the two apart from the deposited
+    geometry -- a genuine disorder deposition lists the same atomic position
+    twice (once per component), while a naming convention never puts two
+    distinct atoms within half an Angstrom.  When no base name overlaps itself
+    that way, the block's primes are pure names and no level is removed unless
+    occupancy says otherwise; :func:`load_structure` reports any real loss in
+    ``omitted_disorder`` so the import message makes it visible.  The formal
+    ``_atom_site_disorder_group`` tag is not consulted.
     """
     levels = {}
     for site in structure.sites:
@@ -887,12 +926,19 @@ def _disorder_minor_labels(structure, block):
     ranked = sorted(votes.items(), key=lambda item: (-item[1], item[0]))
     preferred = ranked[0][0] if ranked else 0
 
+    naming_convention = not _disorder_overlaps(levels, unit_cell)
+
     dropped = set()
     for by_level in levels.values():
         if len(by_level) < 2:
             continue
         winner = clear_winner(by_level)
         if winner is None:
+            if naming_convention and not preferred:
+                # Every base is a distinct atom's worth of geometry: the
+                # primes are only names, so occupancy evidence alone (above)
+                # may remove a level.
+                continue
             winner = preferred if preferred in by_level else 0
         if winner not in by_level:
             winner = min(by_level)
@@ -945,7 +991,7 @@ def load_structure(cif_path, block_name=None, keep_disorder=False):
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
     dummy_labels = _dummy_labels(block)
-    disorder_labels = _disorder_minor_labels(structure, block)
+    disorder_labels = _disorder_minor_labels(structure, block, unit_cell)
     skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)
     asu_fracs = {

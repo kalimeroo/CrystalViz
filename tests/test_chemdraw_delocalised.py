@@ -18,9 +18,13 @@ import math
 import os
 import sys
 
+import bpy
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (gemmi + add-on parent on sys.path)
 import CrystalViz
+
+CrystalViz.register()
 
 FAILURES = []
 
@@ -442,6 +446,256 @@ def check_delocalised_shared_plane():
     )
 
 
+def check_two_color_dashes():
+    """In two-colour mode the dashes of a delocalised bond are one colour
+    up to the middle of the *bond*, not two-toned per dash.
+
+    The dashed stroke of a delocalised 1.5 bond is a run of short order-2
+    dashes.  Each dash carries the original bond midpoint and
+    ``_color_half_segments`` colours a whole dash with the element whose half
+    of the bond it belongs to: dashes before the middle stay single-coloured,
+    dashes after it too, and only the dash the middle crosses is cut — at the
+    bond's midpoint.  Before this fix every dash was halved at its own centre,
+    so each dash produced a piece of each element and the A/B boundary was a
+    zig-zag of dash fragments instead of one line at the bond's middle.
+    """
+    carbon = (0.0, 0.0, 0.0)
+    oxygen_a = (1.25, 0.0, 0.0)
+    oxygen_b = (-0.3, 1.2, 0.0)
+    chain = (0.0, -1.5, 0.0)
+    bonds = [(carbon, oxygen_a), (carbon, oxygen_b), (carbon, chain)]
+    segments = [
+        (first, second, "C", "O" if second in (oxygen_a, oxygen_b) else "C")
+        for first, second in bonds
+    ]
+    edges = [CrystalViz._bond_edge_key(first, second) for first, second in bonds]
+    delocalised = frozenset((edges[0], edges[1]))
+    bond_orders = {edges[2]: 1}
+    rendered = CrystalViz._chemdraw_segments(
+        segments,
+        bond_orders,
+        {},
+        bond_spacing=0.32,
+        delocalised_edges=delocalised,
+    )
+
+    bond_axis = unit((carbon, oxygen_a))
+    midpoint = tuple(0.5 * (carbon[axis] + oxygen_a[axis]) for axis in range(3))
+
+    def projection(point):
+        return sum((point[axis] - carbon[axis]) * bond_axis[axis] for axis in range(3))
+
+    middle = projection(midpoint)
+    dashes = []
+    for segment in rendered:
+        if len(segment) <= 5 or int(segment[4]) != 2:
+            continue
+        if max(abs(value) for value in cross(unit(segment), bond_axis)) > 1e-6:
+            continue
+        dashes.append(segment)
+    check(
+        "two-colour: delocalised dashes carry the bond midpoint",
+        len(dashes) > 2 and all(segment[5] == midpoint for segment in dashes),
+        f"{len(dashes)} dashes",
+    )
+    split_dashes = 0
+    wrong_side = 0
+    boundary = None
+    for segment in dashes:
+        first, second, element_a, element_b, _order, bond_mid = segment
+        halves = CrystalViz._color_half_segments(first, second, element_a, element_b, bond_mid)
+        if len(halves) == 2:
+            split_dashes += 1
+            boundary = [half for half in halves if half[0] == element_a][0][1][1]
+        for element, (start, end) in halves:
+            side = 0.5 * (projection(start) + projection(end))
+            if element == "C" and side > middle + 1e-9:
+                wrong_side += 1
+            if element == "O" and side < middle - 1e-9:
+                wrong_side += 1
+    check(
+        "two-colour: only the boundary dash is two-toned",
+        split_dashes == 1,
+        f"{split_dashes} of {len(dashes)} dashes split",
+    )
+    check(
+        "two-colour: the two-toned dash is cut at the bond middle",
+        boundary is not None and abs(projection(boundary) - middle) < 1e-9,
+        f"cut={projection(boundary):.3f} middle={middle:.3f}" if boundary else "no boundary",
+    )
+    check(
+        "two-colour: no dash piece crosses the bond middle",
+        wrong_side == 0,
+        f"{wrong_side} pieces",
+    )
+
+
+def check_two_color_bond_objects():
+    """End-to-end: the two-colour half-bond objects obey the bond's midpoint.
+
+    Drives the real ``_bond_objects`` path over a synthetic carboxylate
+    (``C(=O)(O-)C``: two delocalised C-O bonds, one of them also a seeded
+    double) with TWO_COLOR + ChemDraw + delocalised on, then reads the mesh
+    edges of the ``CGN_Bonds_C|O_*_Order_2`` half objects back into cart
+    space.  Every C-coloured piece of a bond must lie entirely on the carbon
+    side of that bond's true middle (from its cart endpoints, not from the
+    dash run, whose trailing gap would shift the midpoint) and every
+    O-coloured piece on the oxygen side, with the boundary exactly at the
+    middle: the dashed bond reads as one colour up to the middle instead of
+    every dash being two-toned.
+    """
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.cgn_chemdraw = True
+    scene.cgn_delocalised_bonds = True
+    scene.cgn_bond_style = "TWO_COLOR"
+    root = bpy.data.collections.new("SynthTwoColor")
+    scene.collection.children.link(root)
+    carbon = (0.0, 0.0, 0.0)
+    oxygen_a = (1.25, 0.0, 0.0)
+    oxygen_b = (-0.3, 1.2, 0.0)
+    chain = (0.0, -1.5, 0.0)
+    atoms = [
+        {"element": "C", "cart": carbon, "covalent_radius": 0.76, "component": 0, "index": 0},
+        {"element": "O", "cart": oxygen_a, "covalent_radius": 0.66, "component": 0, "index": 1},
+        {"element": "O", "cart": oxygen_b, "covalent_radius": 0.66, "component": 0, "index": 2},
+        {"element": "C", "cart": chain, "covalent_radius": 0.76, "component": 0, "index": 3},
+    ]
+    CrystalViz._default_connectivity_pairs(scene, atoms, root)
+    CrystalViz._bond_objects(root, atoms, scene.cgn_connectivity_pairs)
+    bpy.context.view_layer.update()
+
+    def half_edges(element):
+        obj = next(
+            (
+                o
+                for o in root.objects
+                if o.get("cgn_role") == "bonds"
+                and not o.get("cgn_aromatic_torus")
+                and o.get("cgn_pair") == "C|O"
+                and str(o.get("cgn_bond_element", "")) == element
+                and int(o.get("cgn_bond_order", 1)) == 2
+            ),
+            None,
+        )
+        if obj is None:
+            return []
+        vertices = obj.data.vertices
+        return [
+            {
+                "element": element,
+                "first": tuple(vertices[edge.vertices[0]].co[axis] * 10.0 for axis in range(3)),
+                "second": tuple(vertices[edge.vertices[1]].co[axis] * 10.0 for axis in range(3)),
+            }
+            for edge in obj.data.edges
+        ]
+
+    pieces = half_edges("C") + half_edges("O")
+    check(
+        "two-colour: C|O order-2 half objects exist",
+        len(pieces) > 4,
+        f"{len(pieces)} pieces",
+    )
+
+    # Recover the delocalised bonds as drawn (the spatial search kept one
+    # orientation per edge, C end first for this synthetic structure).
+    radii = {
+        CrystalViz._bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0))
+        for atom in atoms
+    }
+    cache = CrystalViz._BOND_SPATIAL_CACHE
+    delocalised = CrystalViz._chemdraw_delocalised_edges(cache["segments"], radii)
+    bonds = []
+    for first, second, element_a, element_b in cache["segments"]:
+        key = CrystalViz._bond_edge_key(first, second)
+        if key in delocalised and (element_a, element_b) in (("C", "O"), ("O", "C")):
+            bonds.append((first, second) if element_a == "C" else (second, first))
+    check(
+        "two-colour: both carboxylate C-O bonds are perceived delocalised",
+        len(bonds) == 2,
+        f"{len(bonds)} bonds",
+    )
+
+    failures = []
+    for first, second in bonds:
+        delta = tuple(second[xyz] - first[xyz] for xyz in range(3))
+        length = math.sqrt(sum(value * value for value in delta))
+        unit = tuple(value / length for value in delta)
+        middle = 0.5 * length
+        bond_pieces = []
+        for piece in pieces:
+            first_point, second_point = piece["first"], piece["second"]
+            mid_projection = 0.5 * (
+                sum((first_point[xyz] - first[xyz]) * unit[xyz] for xyz in range(3))
+                + sum((second_point[xyz] - first[xyz]) * unit[xyz] for xyz in range(3))
+            )
+            delta_point = tuple(second_point[xyz] - first_point[xyz] for xyz in range(3))
+            delta_size = math.sqrt(sum(value * value for value in delta_point))
+            parallel = (
+                abs(sum(delta_point[xyz] * unit[xyz] for xyz in range(3))) > 0.99 * delta_size
+                if delta_size > 0
+                else False
+            )
+            if not parallel:
+                continue
+            if -0.2 <= mid_projection <= length + 0.2:
+                bond_pieces.append((piece, mid_projection))
+
+        c_ends = [
+            max(
+                sum(p[xyz] * unit[xyz] for xyz in range(3))
+                for p in (piece["first"], piece["second"])
+            )
+            for piece, _projection in bond_pieces
+            if piece["element"] == "C"
+        ]
+        o_starts = [
+            min(
+                sum(p[xyz] * unit[xyz] for xyz in range(3))
+                for p in (piece["first"], piece["second"])
+            )
+            for piece, _projection in bond_pieces
+            if piece["element"] == "O"
+        ]
+        c_starts = [
+            min(
+                sum(p[xyz] * unit[xyz] for xyz in range(3))
+                for p in (piece["first"], piece["second"])
+            )
+            for piece, _projection in bond_pieces
+            if piece["element"] == "C"
+        ]
+        o_ends = [
+            max(
+                sum(p[xyz] * unit[xyz] for xyz in range(3))
+                for p in (piece["first"], piece["second"])
+            )
+            for piece, _projection in bond_pieces
+            if piece["element"] == "O"
+        ]
+        if not c_ends or not o_starts:
+            failures.append("missing colour side")
+            continue
+        if max(c_ends) > middle + 1e-6:
+            failures.append(f"C past middle: {max(c_ends):.3f} > {middle:.3f}")
+        if min(o_starts) < middle - 1e-6:
+            failures.append(f"O before middle: {min(o_starts):.3f} < {middle:.3f}")
+        if max(c_ends) < middle - 1e-6:
+            failures.append(f"C colour stops short of middle: {max(c_ends):.3f} < {middle:.3f}")
+        if min(o_starts) > middle + 1e-6:
+            failures.append(f"O colour starts past middle: {min(o_starts):.3f} > {middle:.3f}")
+        if min(c_starts) > 1e-6 or max(o_ends) < length - 1e-6:
+            failures.append(
+                f"coverage gap: C[{min(c_starts):.3f}..{max(c_ends):.3f}] "
+                f"O[{min(o_starts):.3f}..{max(o_ends):.3f}] over [0.000..{length:.3f}]"
+            )
+    check(
+        "two-colour: half objects colour each bond up to its middle",
+        not failures,
+        "; ".join(failures[:3]) if failures else f"{len(bonds)} bonds checked",
+    )
+
+
 def main():
     check_rendering()
     check_inside_outside()
@@ -449,6 +703,8 @@ def main():
     check_delocalised_shared_plane()
     check_control_double_bond()
     check_detection()
+    check_two_color_dashes()
+    check_two_color_bond_objects()
 
 
 main()

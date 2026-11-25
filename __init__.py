@@ -4306,18 +4306,23 @@ def _delocalised_inside_directions(segments, delocalised_edges):
     return inside
 
 
-def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b):
+def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b, bond_midpoint=None):
     """Split one offset bond line into short collinear dash segments.
 
     The dashes are ordinary order-2 segments, so the pair bucketing, the
-    multiple-bond radius and the two-colour split all apply unchanged.
+    multiple-bond radius and the two-colour split all apply unchanged.  Each
+    dash carries the original bond's midpoint in its trailing field (``None``
+    for a degenerate zero-length bond): the two-colour splitter then colours a
+    whole dash with the element whose half of the *bond* it belongs to, so the
+    dashes are one colour up to the middle of the bond instead of every dash
+    being split in two at its own centre.
     """
     start = tuple(float(first[axis]) + perpendicular[axis] * offset for axis in range(3))
     end = tuple(float(second[axis]) + perpendicular[axis] * offset for axis in range(3))
     delta = tuple(end[axis] - start[axis] for axis in range(3))
     length = math.sqrt(sum(value * value for value in delta))
     if length <= 1e-8:
-        return [(start, end, element_a, element_b, 2)]
+        return [(start, end, element_a, element_b, 2, bond_midpoint)]
     direction = tuple(value / length for value in delta)
     dashes = []
     position = 0.0
@@ -4330,6 +4335,7 @@ def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b):
                 element_a,
                 element_b,
                 2,
+                bond_midpoint,
             )
         )
         position = stop + _CHEMDRAW_DASH_GAP
@@ -4384,8 +4390,13 @@ def _chemdraw_segments(
                     2,
                 )
             )
+            bond_midpoint = tuple(
+                0.5 * (float(first[axis]) + float(second[axis])) for axis in range(3)
+            )
             rendered.extend(
-                _dashed_stroke(first, second, perpendicular, half, element_a, element_b)
+                _dashed_stroke(
+                    first, second, perpendicular, half, element_a, element_b, bond_midpoint
+                )
             )
             continue
 
@@ -4406,6 +4417,37 @@ def _chemdraw_segments(
                 )
             )
     return rendered
+
+
+def _color_half_segments(first, second, element_a, element_b, bond_midpoint=None):
+    """Split *first→second* into the element-coloured halves of two-colour mode.
+
+    A full bond (no *bond_midpoint*, i.e. a genuine double stroke or an
+    ordinary single bond) is halved at its own middle.  A short dash of a
+    delocalised bond carries the original bond midpoint in its trailing
+    field: the split then lands at the middle of the *bond*, so a dash lying
+    entirely on the first element's side of the middle keeps that element's
+    colour outright and only the dash the middle crosses gets cut.  A dashed
+    bond is therefore one colour up to the middle of the bond instead of
+    every dash being two-toned; the solid stroke of the same delocalised bond
+    spans the whole bond and is halved at its own middle, which is the same
+    line.  Returns ``(element, (start, end))`` pairs in colour order.
+    """
+    delta = tuple(second[axis] - first[axis] for axis in range(3))
+    length_squared = sum(value * value for value in delta)
+    if bond_midpoint is not None and length_squared > 1e-12:
+        position = (
+            sum((bond_midpoint[axis] - first[axis]) * delta[axis] for axis in range(3))
+            / length_squared
+        )
+        if position <= 0.0:
+            return ((element_b, (first, second)),)
+        if position >= 1.0:
+            return ((element_a, (first, second)),)
+        split = tuple(first[axis] + position * delta[axis] for axis in range(3))
+        return ((element_a, (first, split)), (element_b, (split, second)))
+    midpoint = tuple(0.5 * (first[axis] + second[axis]) for axis in range(3))
+    return ((element_a, (first, midpoint)), (element_b, (midpoint, second)))
 
 
 def _connectivity_settings_signature(pair_settings):
@@ -4899,11 +4941,8 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         bond_radius = _bond_radius(vdw_a, vdw_b, model)
         segments_by_order = {}
         for segment in rendered_segments:
-            first, second, first_element, second_element = segment[:4]
             order = int(segment[4]) if len(segment) > 4 else 1
-            segments_by_order.setdefault(order, []).append(
-                (first, second, first_element, second_element)
-            )
+            segments_by_order.setdefault(order, []).append(segment)
         for order, order_segments in sorted(segments_by_order.items()):
             order_scale = _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE.get(order, 1.0)
             order_bond_radius = bond_radius * order_scale
@@ -4926,10 +4965,13 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             order_suffix = f"_Order_{order}" if order > 1 else ""
             if two_color:
                 segments_by_element = {}
-                for first, second, first_element, second_element in order_segments:
-                    midpoint = tuple(0.5 * (first[axis] + second[axis]) for axis in range(3))
-                    segments_by_element.setdefault(first_element, []).append((first, midpoint))
-                    segments_by_element.setdefault(second_element, []).append((midpoint, second))
+                for segment in order_segments:
+                    first, second, first_element, second_element = segment[:4]
+                    bond_midpoint = segment[5] if len(segment) > 5 else None
+                    for element, half_segment in _color_half_segments(
+                        first, second, first_element, second_element, bond_midpoint
+                    ):
+                        segments_by_element.setdefault(element, []).append(half_segment)
                 for element, element_segments in sorted(segments_by_element.items()):
                     if append_only and _merge_into_existing_bond_object(
                         root,
@@ -4974,13 +5016,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     None,
                     [
                         (_display_point(first), _display_point(second))
-                        for first, second, _first_element, _second_element in order_segments
+                        for first, second, _first_element, _second_element in (
+                            segment[:4] for segment in order_segments
+                        )
                     ],
                 ):
                     continue
                 vertices = []
                 edges = []
-                for first, second, _first_element, _second_element in order_segments:
+                for first, second, _first_element, _second_element in (
+                    segment[:4] for segment in order_segments
+                ):
                     start = len(vertices)
                     vertices.extend((_display_point(first), _display_point(second)))
                     edges.append((start, start + 1))

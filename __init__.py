@@ -4100,7 +4100,17 @@ def _aromatic_torus_segments(
 
 
 def _multiple_bond_plane_directions(segments, bond_orders):
-    """Find each multiple-bond offset direction from its neighboring atoms."""
+    """Find each multiple-bond offset direction from its neighboring atoms.
+
+    Each multiple bond is drawn as parallel strokes offset perpendicular to
+    the bond, and that perpendicular should lie in the molecular plane.  The
+    per-bond fit below is made over each edge's own neighbouring atoms, so a
+    centre that carries two or more multiple bonds (an O=S=O, O=P=O, Se/Te
+    analogue, a cumulene) would otherwise get one independent fit per bond and
+    could end up with its double bonds drawn in different planes; the
+    coplanarity pass at the end re-derives every such centre's offsets inside
+    the shared plane of its bond axes instead.
+    """
     points = {}
     neighbors = {}
     seen_edges = set()
@@ -4154,7 +4164,63 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
         if perpendicular_length > 1e-8:
             directions[edge_key] = tuple(value / perpendicular_length for value in perpendicular)
+    _resolve_shared_centre_planes(points, directions, bond_orders)
     return directions
+
+
+def _resolve_shared_centre_planes(points, directions, bond_orders):
+    """Force every multiple bond of one centre into a single stroke plane.
+
+    Each multiple bond's offset is fitted independently over its own
+    neighbours, so a centre that carries two or more of them (an O=S=O,
+    O=P=O, Se/Te analogue, a cumulene) can get one double bond tilted in a
+    different plane than the other.  Such a centre must read as one flat unit:
+    fit its multiple-bond axes to their shared plane (the direction of least
+    variance of the axes) and re-derive every edge's offset inside that plane,
+    so both stroke pairs of an X(=O)2 group stay coplanar.  A collinear
+    cumulene (O=C=O) spans no plane; its axes are all one line, so all its
+    edges share a single common offset vector instead, which is the flat 2D
+    depiction of a linear group.  The pass touches only centres with at least
+    two order-2+ bonds; a lone multiple bond keeps its per-edge fit.
+    """
+    by_centre = {}
+    for edge_key in directions:
+        if int(bond_orders[edge_key]) < 2:
+            continue
+        by_centre.setdefault(edge_key[0], []).append(edge_key)
+        by_centre.setdefault(edge_key[1], []).append(edge_key)
+    for edge_keys in by_centre.values():
+        if len(edge_keys) < 2:
+            continue
+        axes = []
+        for edge_key in edge_keys:
+            first, second = edge_key
+            delta = tuple(points[second][axis] - points[first][axis] for axis in range(3))
+            size = math.sqrt(sum(value * value for value in delta))
+            if size <= 1e-8:
+                break
+            axes.append((edge_key, tuple(value / size for value in delta)))
+        if len(axes) < 2:
+            continue
+        _left, singular_values, right = np.linalg.svd(
+            np.asarray([axis for _edge, axis in axes], dtype=float),
+            full_matrices=True,
+        )
+        if singular_values[0] > 1e-12 and singular_values[1] / singular_values[0] > 1e-3:
+            normal = tuple(float(value) for value in right[2])
+            for edge_key, axis in axes:
+                perpendicular = (
+                    axis[1] * normal[2] - axis[2] * normal[1],
+                    axis[2] * normal[0] - axis[0] * normal[2],
+                    axis[0] * normal[1] - axis[1] * normal[0],
+                )
+                size = math.sqrt(sum(value * value for value in perpendicular))
+                if size > 1e-8:
+                    directions[edge_key] = tuple(value / size for value in perpendicular)
+        else:
+            common = directions[axes[0][0]]
+            for edge_key, _axis in axes:
+                directions[edge_key] = common
 
 
 def _bond_perpendicular(direction, edge_key, multiple_bond_directions):

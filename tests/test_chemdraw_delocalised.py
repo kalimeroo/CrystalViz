@@ -158,6 +158,127 @@ def check_inside_outside():
         )
 
 
+def check_shared_centre_planes():
+    """Two double bonds of one centre (O=S=O, O=C=O) are drawn coplanar.
+
+    Each double bond's offset is fitted independently over its own neighbour
+    atoms, so without the shared-centre resolution a centre that carries two
+    multiple bonds can get each offset tilted in its own plane and the strokes
+    no longer read as one flat group.  The resolution forces every
+    multiple-bond offset of one centre inside the shared plane of its bond
+    axes; a near-linear cumulene spans nearly no plane, so its offsets end up
+    sharing one stroke direction and the two double bonds stay parallel.
+    """
+
+    def offset_strokes(rendered, edge_key):
+        """The two full-length order-2 offset strokes of one double bond."""
+        axis = unit(edge_key)
+        return [
+            segment
+            for segment in rendered
+            if int(segment[4]) == 2
+            and max(abs(value) for value in cross(unit(segment), axis)) < 1e-6
+        ]
+
+    def plane_distance(points, origin, direction_a, direction_b):
+        normal = cross(direction_a, direction_b)
+        size = math.sqrt(sum(value * value for value in normal))
+        normal = tuple(value / size for value in normal)
+        return max(
+            abs(sum((point[axis] - origin[axis]) * normal[axis] for axis in range(3)))
+            for point in points
+        )
+
+    # Bent sulfone: S with two genuine S=O doubles and two single-bond
+    # carbons, deliberately not sitting in one plane so each per-edge fit
+    # would tilt its own way without the shared-centre resolution.
+    sulfur = (0.0, 0.0, 0.0)
+    oxygen_a = (1.42, 0.08, 0.30)
+    oxygen_b = (-0.66, 1.26, 0.12)
+    carbon_a = (0.55, -0.85, 0.05)
+    carbon_b = (-0.95, -0.95, -0.15)
+    bends = [(sulfur, oxygen_a), (sulfur, oxygen_b), (sulfur, carbon_a), (sulfur, carbon_b)]
+    segments = [
+        (first, second, "S", "O" if index < 2 else "C")
+        for index, (first, second) in enumerate(bends)
+    ]
+    orders = {
+        CrystalViz._bond_edge_key(first, second): (2 if index < 2 else 1)
+        for index, (first, second) in enumerate(bends)
+    }
+    directions = CrystalViz._multiple_bond_plane_directions(segments, orders)
+    rendered = CrystalViz._chemdraw_segments(segments, orders, {}, directions, bond_spacing=0.32)
+    axis_a = unit((sulfur, oxygen_a))
+    axis_b = unit((sulfur, oxygen_b))
+    perp_a = directions[CrystalViz._bond_edge_key(sulfur, oxygen_a)]
+    perp_b = directions[CrystalViz._bond_edge_key(sulfur, oxygen_b)]
+    check(
+        "O=S=O offsets are perpendicular to their own bonds",
+        all(
+            abs(sum(perp[index] * bond_axis[index] for index in range(3))) < 1e-6
+            for perp, bond_axis in ((perp_a, axis_a), (perp_b, axis_b))
+        ),
+        f"perp_a={[round(v, 4) for v in perp_a]} perp_b={[round(v, 4) for v in perp_b]}",
+    )
+    shared_normal = cross(axis_a, axis_b)
+    shared_size = math.sqrt(sum(value * value for value in shared_normal))
+    shared_normal = tuple(value / shared_size for value in shared_normal)
+    check(
+        "O=S=O offsets lie in the plane of the two S=O bonds",
+        all(
+            abs(sum(perp[axis] * shared_normal[axis] for axis in range(3))) < 1e-6
+            for perp in (perp_a, perp_b)
+        ),
+        f"dot_a={sum(perp_a[a] * shared_normal[a] for a in range(3)):.2e} "
+        f"dot_b={sum(perp_b[a] * shared_normal[a] for a in range(3)):.2e}",
+    )
+    stroke_a = offset_strokes(rendered, CrystalViz._bond_edge_key(sulfur, oxygen_a))
+    stroke_b = offset_strokes(rendered, CrystalViz._bond_edge_key(sulfur, oxygen_b))
+    endpoints = []
+    for stroke in stroke_a + stroke_b:
+        endpoints.extend((stroke[0], stroke[1]))
+    check(
+        "O=S=O: both double bonds are two full strokes",
+        len(stroke_a) == 2 and len(stroke_b) == 2,
+    )
+    check(
+        "O=S=O stroke pairs are coplanar",
+        plane_distance(endpoints, sulfur, axis_a, perp_a) < 1e-6,
+        f"max distance={plane_distance(endpoints, sulfur, axis_a, perp_a):.2e}",
+    )
+
+    # Linear cumulene O=C=O: the two offsets resolve to one shared stroke
+    # direction, keeping both double bonds parallel.
+    carbon = (0.0, 0.0, 0.0)
+    chain_a = (1.2, 0.1, 0.3)
+    chain_b = (-0.95 * chain_a[0], -0.95 * chain_a[1], -0.95 * chain_a[2])
+    chain_segments = [(carbon, chain_a, "C", "O"), (carbon, chain_b, "C", "O")]
+    chain_edges = [(carbon, chain_a), (carbon, chain_b)]
+    chain_orders = {CrystalViz._bond_edge_key(first, second): 2 for first, second in chain_edges}
+    chain_directions = CrystalViz._multiple_bond_plane_directions(chain_segments, chain_orders)
+    chain_rendered = CrystalViz._chemdraw_segments(
+        chain_segments, chain_orders, {}, chain_directions, bond_spacing=0.32
+    )
+    chain_perp_a = chain_directions[CrystalViz._bond_edge_key(carbon, chain_a)]
+    chain_perp_b = chain_directions[CrystalViz._bond_edge_key(carbon, chain_b)]
+    check(
+        "O=C=O offsets are the same shared stroke direction",
+        sum(chain_perp_a[axis] * chain_perp_b[axis] for axis in range(3)) > 1.0 - 1e-6,
+        f"dot={sum(chain_perp_a[a] * chain_perp_b[a] for a in range(3)):.6f}",
+    )
+    chain_axis_a = unit((carbon, chain_a))
+    chain_endpoints = []
+    for stroke in offset_strokes(
+        chain_rendered, CrystalViz._bond_edge_key(carbon, chain_a)
+    ) + offset_strokes(chain_rendered, CrystalViz._bond_edge_key(carbon, chain_b)):
+        chain_endpoints.extend((stroke[0], stroke[1]))
+    check(
+        "O=C=O stroke pairs are coplanar",
+        plane_distance(chain_endpoints, carbon, chain_axis_a, chain_perp_a) < 1e-6,
+        f"max distance={plane_distance(chain_endpoints, carbon, chain_axis_a, chain_perp_a):.2e}",
+    )
+
+
 def check_control_double_bond():
     """A genuine ketone C=O is still two full-length strokes."""
     carbon = (5.0, 0.0, 0.0)
@@ -240,6 +361,7 @@ def check_detection():
 def main():
     check_rendering()
     check_inside_outside()
+    check_shared_centre_planes()
     check_control_double_bond()
     check_detection()
 

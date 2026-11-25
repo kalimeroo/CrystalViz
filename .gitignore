@@ -76,6 +76,18 @@ CIF/Se_ring6_no_aromatic/
 CIF/Te_ring5_aromatic/
 CIF/Te_ring6_aromatic/
 
+# Local CSD fixture for the trailing-`?` disorder convention (PEPQAG, CCDC
+# 2123685: the alternate component is numbered on its own lines and flagged
+# with a question mark, with no occupancy column).  Referenced by
+# tests/test_import_disorder_questions.py and the TestDisorderQuestionLabels
+# cases of tests/test_gemmi_worker.py; not redistributable, stays on the
+# author's machine like the CSD fixtures above.
+CIF/PEPQAG.cif
+
+# Scratch edit of the same CSD entry (a few `?` components deleted by hand to
+# isolate the rule); local-only like PEPQAG.cif.
+CIF/disorder_mod.cif
+
 # Five-membered chalcogen ring exports from the same CSD pilot (S/Se/Te,
 # aromatic- and non-aromatic-typed), used to validate the 5-ring lone-pair
 # heuristic.  Not redistributable.

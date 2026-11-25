@@ -948,6 +948,20 @@ def _disorder_minor_labels(structure, block, unit_cell):
     return frozenset(dropped)
 
 
+def _disorder_question_labels(structure):
+    """Labels of the ``?``-suffixed alternate disorder components to omit.
+
+    Some CSD deposits number the second component of a disordered site on its
+    own lines and flag it with a trailing question mark (PEPQAG's ring flips
+    sit ``H2?`` 0.06 A from ``H1``, ``C32?`` 0.36 A from ``S1``).  There is no
+    shared base name for the prime pairing to see, so the ``?`` mark itself is
+    the tell, and unlike the primes it is unconditional: every site carrying a
+    trailing ``?`` is an alternate component and is ignored, with no geometry
+    gate and no occupancy vote.
+    """
+    return frozenset(str(site.label) for site in structure.sites if str(site.label).endswith("?"))
+
+
 def _skip_site(site, skip_labels):
     """True for a dummy site or a site with an explicit zero occupancy."""
     if site.label in skip_labels:
@@ -991,7 +1005,9 @@ def load_structure(cif_path, block_name=None, keep_disorder=False):
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
     dummy_labels = _dummy_labels(block)
-    disorder_labels = _disorder_minor_labels(structure, block, unit_cell)
+    disorder_labels = _disorder_minor_labels(
+        structure, block, unit_cell
+    ) | _disorder_question_labels(structure)
     skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)
     asu_fracs = {
@@ -1050,7 +1066,8 @@ def load_structure(cif_path, block_name=None, keep_disorder=False):
         "sites": sites,
         "instances": instances,
         # Number of alternate disorder components omitted at load, so the
-        # import message can report them (see _disorder_minor_labels).
+        # import message can report them (see _disorder_minor_labels and
+        # _disorder_question_labels).
         "omitted_disorder": len(disorder_labels),
         # Number of symmetry-disordered groups resolved to one component, and
         # the number of alternate P1 images dropped to do so (0 when the caller

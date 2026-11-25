@@ -419,6 +419,100 @@ class TestDisorderPrimeLabels(unittest.TestCase):
         self.assertEqual(result["omitted_disorder"], 0)
 
 
+class TestDisorderQuestionLabels(unittest.TestCase):
+    """``?``-suffixed alternate components are always omitted at load (PEPQAG).
+
+    Some CSD deposits number the second component of a disordered site on its
+    own lines and flag it with a trailing question mark (``H2?`` on ``H1``,
+    ``C32?`` on ``C31``): there is no shared base name for the prime pairing to
+    see, so the mark itself is the tell.  Unlike the primes the rule is
+    unconditional -- every ``?``-labelled site is an alternate component and is
+    dropped, whether or not it coincides with a plain atom and whatever the
+    occupancies say.
+    """
+
+    def _load(self, rows, with_occupancy=True):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "disorder.cif")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_disorder_cif(rows, with_occupancy))
+            return gw.load_structure(path)
+
+    @staticmethod
+    def _labels(result):
+        return [site["label"] for site in result["sites"]]
+
+    def test_question_components_are_dropped_without_occupancy(self):
+        # PEPQAG shape: separate numbering, coincident (often cross-element)
+        # ring flips, plus the flip hydrogens that sit beyond the overlap
+        # window from every plain atom -- all still part of the marked level.
+        rows = [
+            ("C31", "C", 0.20, 0.30, 0.40, 1.0),
+            ("S2", "S", 0.15, 0.35, 0.40, 1.0),
+            ("H29", "H", 0.22, 0.30, 0.42, 1.0),
+            ("C32?", "C", 0.11, 0.35, 0.42, 1.0),  # 0.45 A from S2: partner
+            ("S6?", "S", 0.20, 0.30, 0.405, 1.0),  # 0.05 A from C31: partner
+            ("H33?", "H", 0.13, 0.33, 0.47, 1.0),  # no plain atom within 0.5 A
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["C31", "S2", "H29"])
+        self.assertEqual(result["omitted_disorder"], 3)
+
+    def test_instances_reference_only_kept_sites(self):
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("C1", "C", 0.25, 0.30, 0.40, 1.0),
+            ("S1?", "S", 0.20, 0.30, 0.42, 1.0),
+            ("C1?", "C", 0.25, 0.30, 0.42, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(len(result["sites"]), 2)
+        used = {
+            int(result["instances"][offset]) for offset in range(0, len(result["instances"]), 4)
+        }
+        self.assertTrue(used <= set(range(len(result["sites"]))), str(used))
+
+    def test_lone_question_mark_is_ignored(self):
+        # No coincidence, no plain partner anywhere: the ``?`` alone marks the
+        # site as an alternate component and it is dropped unconditionally.
+        rows = [
+            ("C1", "C", 0.10, 0.10, 0.10, 1.0),
+            ("C2?", "C", 0.30, 0.10, 0.10, 1.0),  # 2.0 A from C1: distinct atom
+            ("S3", "S", 0.60, 0.60, 0.60, 1.0),
+            ("S4?", "S", 0.80, 0.60, 0.60, 1.0),  # 2.0 A from S3: distinct atom
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["C1", "S3"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_occupancy_is_not_consulted(self):
+        # The ``?`` mark wins outright: even a clearly more occupied ``?`` atom
+        # that has no plain partner is dropped, and a plainly more occupied
+        # plain atom never rescues the marked component.
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 0.40),
+            ("S1?", "S", 0.20, 0.30, 0.42, 0.60),
+            ("C1", "C", 0.25, 0.30, 0.40, 0.60),
+            ("C1?", "C", 0.25, 0.30, 0.42, 0.40),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["S1", "C1"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_primes_and_question_marks_compose(self):
+        # The two rules are independent label schemes: a base-paired prime and
+        # a ``?``-marked alternate both belong to the omitted component.
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("S1'", "S", 0.20, 0.30, 0.42, 1.0),
+            ("S2", "S", 0.60, 0.60, 0.60, 1.0),
+            ("S2?", "S", 0.60, 0.60, 0.605, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False)
+        self.assertEqual(self._labels(result), ["S1", "S2"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+
 class TestSymmetryDisorder(unittest.TestCase):
     """A substituent whose alternate position the space group generates.
 

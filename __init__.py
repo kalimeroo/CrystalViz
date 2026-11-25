@@ -4099,7 +4099,7 @@ def _aromatic_torus_segments(
     return rings
 
 
-def _multiple_bond_plane_directions(segments, bond_orders):
+def _multiple_bond_plane_directions(segments, bond_orders, delocalised_edges=frozenset()):
     """Find each multiple-bond offset direction from its neighboring atoms.
 
     Each multiple bond is drawn as parallel strokes offset perpendicular to
@@ -4109,7 +4109,13 @@ def _multiple_bond_plane_directions(segments, bond_orders):
     analogue, a cumulene) would otherwise get one independent fit per bond and
     could end up with its double bonds drawn in different planes; the
     coplanarity pass at the end re-derives every such centre's offsets inside
-    the shared plane of its bond axes instead.
+    the shared plane of its bond axes instead.  Delocalised 1.5 bonds are
+    drawn at the multiple-bond spacing too, so they get the same per-edge fit
+    and the same shared-centre resolution: without a direction the second
+    ``X-O`` of a resonance group (the second P-O of a hypophosphite ``PO2H``
+    or carboxylate C-O) would fall back to the arbitrary reference-axis
+    perpendicular inside ``_chemdraw_segments`` and tilt that bond out of the
+    O-X-O plane.
     """
     points = {}
     neighbors = {}
@@ -4126,11 +4132,15 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         neighbors.setdefault(first_key, set()).add(second_key)
         neighbors.setdefault(second_key, set()).add(first_key)
 
+    multiple_edges = set(bond_orders)
+    multiple_edges.update(delocalised_edges)
     directions = {}
-    for edge_key in bond_orders:
+    for edge_key in multiple_edges:
         first_key, second_key = edge_key
-        first = points[first_key]
-        second = points[second_key]
+        first = points.get(first_key)
+        second = points.get(second_key)
+        if first is None or second is None:
+            continue
         delta = tuple(second[axis] - first[axis] for axis in range(3))
         length = math.sqrt(sum(value * value for value in delta))
         if length <= 1e-8:
@@ -4164,11 +4174,11 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
         if perpendicular_length > 1e-8:
             directions[edge_key] = tuple(value / perpendicular_length for value in perpendicular)
-    _resolve_shared_centre_planes(points, directions, bond_orders)
+    _resolve_shared_centre_planes(points, directions, bond_orders, delocalised_edges)
     return directions
 
 
-def _resolve_shared_centre_planes(points, directions, bond_orders):
+def _resolve_shared_centre_planes(points, directions, bond_orders, delocalised_edges=frozenset()):
     """Force every multiple bond of one centre into a single stroke plane.
 
     Each multiple bond's offset is fitted independently over its own
@@ -4181,11 +4191,14 @@ def _resolve_shared_centre_planes(points, directions, bond_orders):
     cumulene (O=C=O) spans no plane; its axes are all one line, so all its
     edges share a single common offset vector instead, which is the flat 2D
     depiction of a linear group.  The pass touches only centres with at least
-    two order-2+ bonds; a lone multiple bond keeps its per-edge fit.
+    two order-2+ bonds; delocalised 1.5 edges count as their own kind of
+    multiple bond, since ``_chemdraw_segments`` draws them at the
+    multiple-bond spacing and they must read flat with the group's genuine
+    doubles.  A lone multiple bond keeps its per-edge fit.
     """
     by_centre = {}
     for edge_key in directions:
-        if int(bond_orders[edge_key]) < 2:
+        if int(bond_orders.get(edge_key, 0)) < 2 and edge_key not in delocalised_edges:
             continue
         by_centre.setdefault(edge_key[0], []).append(edge_key)
         by_centre.setdefault(edge_key[1], []).append(edge_key)
@@ -4195,7 +4208,11 @@ def _resolve_shared_centre_planes(points, directions, bond_orders):
         axes = []
         for edge_key in edge_keys:
             first, second = edge_key
-            delta = tuple(points[second][axis] - points[first][axis] for axis in range(3))
+            first_point = points.get(first)
+            second_point = points.get(second)
+            if first_point is None or second_point is None:
+                break
+            delta = tuple(second_point[axis] - first_point[axis] for axis in range(3))
             size = math.sqrt(sum(value * value for value in delta))
             if size <= 1e-8:
                 break
@@ -4845,7 +4862,9 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         else ({}, [])
     )
     multiple_bond_directions = (
-        _multiple_bond_plane_directions(all_segments, bond_orders) if chemdraw else {}
+        _multiple_bond_plane_directions(all_segments, bond_orders, delocalised_edges)
+        if chemdraw
+        else {}
     )
     two_color = getattr(scene, "cgn_bond_style", "SINGLE_COLOR") == "TWO_COLOR"
     for key, segments in sorted(by_pair.items()):

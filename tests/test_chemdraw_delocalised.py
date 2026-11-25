@@ -358,10 +358,95 @@ def check_detection():
     )
 
 
+def check_delocalised_shared_plane():
+    """The two 1.5 strokes of a resonance O-X-O group share one stroke plane.
+
+    A hypophosphite ``PO2H`` (or a carboxylate) centre is drawn as two
+    delocalised 1.5 bonds: the valence ladder seeds one genuine ``X=O`` double
+    (that edge is in ``bond_orders``) and the whole group is delocalised, so
+    the *second* ``X-O`` edge is absent from ``bond_orders``.  The direction
+    pass must fit and resolve that edge as a multiple bond too, or its strokes
+    fall back to the arbitrary reference-axis perpendicular inside
+    ``_chemdraw_segments`` and tilt out of the O-X-O plane.
+    """
+    phosphorus = (0.0, 0.0, 0.0)
+    oxygen_a = (1.42, 0.08, 0.30)
+    oxygen_b = (-0.66, 1.26, 0.12)
+    hydrogen_a = (0.55, -0.85, 0.05)
+    hydrogen_b = (-0.95, -0.95, -0.15)
+    bonds = [
+        (phosphorus, oxygen_a),
+        (phosphorus, oxygen_b),
+        (phosphorus, hydrogen_a),
+        (phosphorus, hydrogen_b),
+    ]
+    segments = [
+        (first, second, "P", "O" if index < 2 else "H")
+        for index, (first, second) in enumerate(bonds)
+    ]
+    # Hypophosphite bookkeeping: P is covalently 4-connected (2 H + 2 O), so
+    # its (3, 5) ladder leaves one spare order — exactly one seeded P=O.  Both
+    # P-O edges are terminal oxide, so the group is delocalised as a whole.
+    edges = [CrystalViz._bond_edge_key(first, second) for first, second in bonds]
+    bond_orders = {edges[0]: 2}
+    delocalised = frozenset((edges[0], edges[1]))
+    directions = CrystalViz._multiple_bond_plane_directions(segments, bond_orders, delocalised)
+    rendered = CrystalViz._chemdraw_segments(
+        segments, bond_orders, {}, directions, bond_spacing=0.32, delocalised_edges=delocalised
+    )
+
+    axis_a = unit((phosphorus, oxygen_a))
+    axis_b = unit((phosphorus, oxygen_b))
+    shared_normal = cross(axis_a, axis_b)
+    shared_size = math.sqrt(sum(value * value for value in shared_normal))
+    shared_normal = tuple(value / shared_size for value in shared_normal)
+
+    def stroke_points(axis, rendered):
+        points_out = []
+        for segment in rendered:
+            if int(segment[4]) != 2:
+                continue
+            if max(abs(value) for value in cross(unit(segment), axis)) > 1e-6:
+                continue
+            points_out.extend((segment[0], segment[1]))
+        return points_out
+
+    stroke_a = stroke_points(axis_a, rendered)
+    stroke_b = stroke_points(axis_b, rendered)
+    check(
+        "PO2H delocalised bonds have strokes (not bare singles)",
+        len(stroke_a) >= 2 and len(stroke_b) >= 2,
+        f"a={len(stroke_a)} b={len(stroke_b)}",
+    )
+    worst = max(
+        abs(sum((point[axis] - phosphorus[axis]) * shared_normal[axis] for axis in range(3)))
+        for point in stroke_a + stroke_b
+    )
+    check(
+        "PO2H delocalised stroke pairs are coplanar",
+        worst < 1e-6,
+        f"max out-of-plane={worst:.2e}",
+    )
+    perp_a = directions.get(edges[0])
+    perp_b = directions.get(edges[1])
+    check(
+        "PO2H both P-O edges carry a fitted stroke direction",
+        perp_a is not None and perp_b is not None,
+        f"a={perp_a is not None} b={perp_b is not None}",
+    )
+    check(
+        "PO2H offsets lie in the plane of the two P-O bonds",
+        perp_b is not None
+        and abs(sum(perp_b[axis] * shared_normal[axis] for axis in range(3))) < 1e-6,
+        f"dot={sum(perp_b[a] * shared_normal[a] for a in range(3)):.2e}" if perp_b else "no perp",
+    )
+
+
 def main():
     check_rendering()
     check_inside_outside()
     check_shared_centre_planes()
+    check_delocalised_shared_plane()
     check_control_double_bond()
     check_detection()
 

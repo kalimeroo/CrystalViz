@@ -38,6 +38,11 @@ desktop.ini
 CIF/S1.cif
 CIF/S2.cif
 
+# Local user structure used to debug the phosphinate PO2H stroke coplanarity:
+# two P=O double bonds of one centre must be drawn in the same plane.  Not
+# redistributable; stays on the author's machine like the CSD fixtures above.
+CIF/search7.cif
+
 # Local user structure used to debug the metal-coordinated sulfone depiction
 # (a calcium sulfonate hydrate with S=O oxygens that also coordinate Ca/K).
 # Not redistributable; stays on the author's machine like the S1/S2 CSD

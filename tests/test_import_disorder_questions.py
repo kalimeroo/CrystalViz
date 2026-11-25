@@ -132,6 +132,26 @@ def main():
     segments = CrystalViz._drawn_segments_for(root_id)
     check("the filled structure drew bonds", bool(segments), str(len(segments)))
 
+    # "Keep All Disorder Components" (operator toggle): the same CIF keeps
+    # every ?-marked component alongside the plain one -- the operator forwards
+    # the toggle to load_structure, which skips the label-based omission
+    # entirely.
+    bpy.ops.cgn.import_cif(filepath=path, keep_disorder=True)
+    keep_root = bpy.data.collections.get(scene.cgn_active_structure)
+    keep_labels = [site["label"] for site in json.loads(keep_root["cgn_sites"])]
+    kept_marked = {label for label in keep_labels if label.endswith("?")}
+    check(
+        "keep_disorder keeps every question-marked component",
+        len(keep_labels) == 11 and kept_marked == {"S6?", "C35?", "H2?", "C32?", "H33?"},
+        f"{len(keep_labels)} sites, marked={sorted(kept_marked)}",
+    )
+    keep_atoms = CrystalViz._structure_atom_count(keep_root)
+    check(
+        "keep_disorder ASU holds all 11 components",
+        keep_atoms == 11,
+        str(keep_atoms),
+    )
+
     # Unconditional ``?`` (distinct atom, no coincidence anywhere): the marked
     # label is still ignored instead of surviving.
     lone_path = os.path.join(directory, "question_lone.cif")

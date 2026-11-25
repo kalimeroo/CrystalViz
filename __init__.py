@@ -5951,8 +5951,10 @@ class CGN_OT_import_cif(Operator):
     keep_disorder: BoolProperty(
         name="Keep All Disorder Components",
         description=(
-            "Keep every symmetry-generated alternate position instead of "
-            "resolving each anchored disordered group to one component"
+            "Keep every disorder component instead of omitting the alternates: "
+            "the prime- and ?-labelled sites are kept alongside the plain ones, "
+            "and each symmetry-generated alternate position is kept instead of "
+            "resolving every anchored disordered group to one component"
         ),
         default=False,
     )

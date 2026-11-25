@@ -291,12 +291,12 @@ class TestDisorderPrimeLabels(unittest.TestCase):
     components go.
     """
 
-    def _load(self, rows, with_occupancy=True):
+    def _load(self, rows, with_occupancy=True, keep_disorder=False):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "disorder.cif")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(_disorder_cif(rows, with_occupancy))
-            return gw.load_structure(path)
+            return gw.load_structure(path, keep_disorder=keep_disorder)
 
     @staticmethod
     def _labels(result):
@@ -418,6 +418,19 @@ class TestDisorderPrimeLabels(unittest.TestCase):
         self.assertEqual(self._labels(result), ["C8", "H8A", "H8B"])
         self.assertEqual(result["omitted_disorder"], 0)
 
+    def test_keep_disorder_keeps_the_primed_components(self):
+        # "Keep All Disorder Components": the alternate component is kept
+        # alongside the plain one, and nothing is reported as omitted.
+        rows = [
+            ("S1", "S", 0.20, 0.30, 0.40, 1.0),
+            ("C1", "C", 0.25, 0.30, 0.40, 1.0),
+            ("S1'", "S", 0.20, 0.30, 0.42, 1.0),
+            ("C1'", "C", 0.25, 0.30, 0.42, 1.0),
+        ]
+        result = self._load(rows, with_occupancy=False, keep_disorder=True)
+        self.assertEqual(self._labels(result), ["S1", "C1", "S1'", "C1'"])
+        self.assertEqual(result["omitted_disorder"], 0)
+
 
 class TestDisorderQuestionLabels(unittest.TestCase):
     """``?``-suffixed alternate components are always omitted at load (PEPQAG).
@@ -431,12 +444,12 @@ class TestDisorderQuestionLabels(unittest.TestCase):
     occupancies say.
     """
 
-    def _load(self, rows, with_occupancy=True):
+    def _load(self, rows, with_occupancy=True, keep_disorder=False):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "disorder.cif")
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(_disorder_cif(rows, with_occupancy))
-            return gw.load_structure(path)
+            return gw.load_structure(path, keep_disorder=keep_disorder)
 
     @staticmethod
     def _labels(result):
@@ -511,6 +524,24 @@ class TestDisorderQuestionLabels(unittest.TestCase):
         result = self._load(rows, with_occupancy=False)
         self.assertEqual(self._labels(result), ["S1", "S2"])
         self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_keep_disorder_keeps_the_question_components(self):
+        # "Keep All Disorder Components": the ``?``-marked alternate component
+        # is kept alongside the plain one, and nothing is reported as omitted --
+        # even the far flip hydrogen with no coincident plain partner.
+        rows = [
+            ("C31", "C", 0.20, 0.30, 0.40, 1.0),
+            ("S2", "S", 0.15, 0.35, 0.40, 1.0),
+            ("H29", "H", 0.22, 0.30, 0.42, 1.0),
+            ("C32?", "C", 0.11, 0.35, 0.42, 1.0),  # 0.45 A from S2: partner
+            ("S6?", "S", 0.20, 0.30, 0.405, 1.0),  # 0.05 A from C31: partner
+            ("H33?", "H", 0.13, 0.33, 0.47, 1.0),  # no plain atom within 0.5 A
+        ]
+        result = self._load(rows, with_occupancy=False, keep_disorder=True)
+        self.assertEqual(
+            self._labels(result), ["C31", "S2", "H29", "C32?", "S6?", "H33?"]
+        )
+        self.assertEqual(result["omitted_disorder"], 0)
 
 
 class TestSymmetryDisorder(unittest.TestCase):

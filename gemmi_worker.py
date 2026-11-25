@@ -1005,9 +1005,17 @@ def load_structure(cif_path, block_name=None, keep_disorder=False):
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
     dummy_labels = _dummy_labels(block)
-    disorder_labels = _disorder_minor_labels(
-        structure, block, unit_cell
-    ) | _disorder_question_labels(structure)
+    if keep_disorder:
+        # The caller asked for every disorder component (the import operator's
+        # "Keep All Disorder Components" toggle): neither the prime- nor the
+        # ?-labelled alternates are omitted, only the space-group resolution
+        # below keeps both combinations as separate components.
+        disorder_labels = frozenset()
+    else:
+        disorder_labels = (
+            _disorder_minor_labels(structure, block, unit_cell)
+            | _disorder_question_labels(structure)
+        )
     skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)
     asu_fracs = {

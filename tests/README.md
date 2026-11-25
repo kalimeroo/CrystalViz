@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 60/60 pass.
+`pwsh tests/run_all.ps1` → 61/61 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -380,6 +380,24 @@ for a first run.
   component, fixed hydrogen occupancies abstaining, lone primed labels kept,
   double-prime third components dropped, and letter suffixes (`H8A`/`H8B`) left
   alone.
+- `test_import_symmetry_disorder.py` pins the load-time resolver for
+  space-group-generated disorder (`_resolve_symmetry_disorder`). The driving
+  case `CIF/Ca.cif` (local-only) sits two groups — a *tert*-butyl and a methyl
+  — on a mirror plane, with every atom written once at half occupancy, so the
+  P1 expansion holds both orientations at once. The resolver keeps exactly one
+  chemically valid orientation per anchored cluster (parents-first, identity-max
+  solution, valence and bond-length gates) on a synthetic mirror-t-Bu fixture,
+  promotes it to full occupancy and relocates the asymmetric unit onto it, and
+  leaves half-occupied substitutional solvent on general positions untouched
+  (a K/water pair stays four 0.5 images). The Blender suite drives import →
+  Fill → bond → ChemDraw: one tetrahedral t-Bu (3 methyls, 9 H, no clash), the
+  benzene ring still aromatic, solvent present; `keep_disorder=True` keeps both
+  components as site `component` keys with no cross-component methyl–methyl
+  bond. `tests/test_gemmi_worker.py` carries the bpy-free rule tests: counts,
+  occupancy promotion, ASU relocation, keep-all components, the
+  general-position-anchor rejection (the false positive that used to swallow
+  the Ca.cif solvent region), and both suites share the fixture in
+  `tests/_symmetry_disorder_fixture.py`.
 
 ## Ordered suites
 

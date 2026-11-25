@@ -4,6 +4,7 @@ Run with a Python that has gemmi installed:
     python test_gemmi_worker.py
 """
 
+import math
 import os
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _env  # noqa: F401  (puts a gemmi build on sys.path)
+import _symmetry_disorder_fixture as _fixture
 
 sys.path.insert(0, _env.REPO_DIR)
 import gemmi_worker as gw
@@ -387,6 +389,194 @@ class TestDisorderPrimeLabels(unittest.TestCase):
         result = self._load(rows)
         self.assertEqual(self._labels(result), ["C8", "H8A", "H8B"])
         self.assertEqual(result["omitted_disorder"], 0)
+
+
+class TestSymmetryDisorder(unittest.TestCase):
+    """A substituent whose alternate position the space group generates.
+
+    ``Ca.cif`` (local-only) is the driving case: a *tert*-butyl group and a
+    methyl sit on a mirror plane, their atoms are written once at half
+    occupancy, and the P1 expansion therefore holds two orientations of both
+    groups.  The loader keeps one chemically valid orientation per anchor and
+    promotes it to full occupancy; half-occupied solvent on general positions is
+    genuine substitutional disorder and stays untouched.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._directory = tempfile.TemporaryDirectory()
+        cls.path = _fixture.write_cif(os.path.join(cls._directory.name, "mirror_tbu.cif"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._directory.cleanup()
+
+    def _load(self, **kwargs):
+        return gw.load_structure(self.path, **kwargs)
+
+    @staticmethod
+    def _distances(unit_cell, sites, indexes):
+        points = [unit_cell.orthogonalize(sites[index]["frac"]) for index in indexes]
+        return [
+            math.dist(points[first], points[second])
+            for first in range(len(points))
+            for second in range(first + 1, len(points))
+        ]
+
+    @staticmethod
+    def _around(unit_cell, sites, centre, predicate, radius):
+        origin = unit_cell.orthogonalize(sites[centre]["frac"])
+        out = []
+        for index, site in enumerate(sites):
+            if index == centre or not predicate(site):
+                continue
+            point = unit_cell.orthogonalize(site["frac"])
+            if math.dist(origin, point) <= radius:
+                out.append(index)
+        return out
+
+    def test_mirror_generated_tbutyl_resolves_to_one_tetrahedron(self):
+        result = self._load()
+        unit_cell = gw._UnitCell(result["unit_cell"])
+        sites = result["sites"]
+        self.assertEqual(result["resolved_disorder"], 1)
+        self.assertEqual(result["dropped_disorder"], 24)
+        self.assertEqual(len(sites), 56)
+        apices = [index for index, site in enumerate(sites) if site["label"] == "C7"]
+        self.assertEqual(len(apices), 2, "one t-Bu per asymmetric-unit copy")
+        for apex in apices:
+            methyls = self._around(
+                unit_cell, sites, apex, lambda site: site["label"] in ("C8", "C9", "C10"), 1.9
+            )
+            self.assertEqual(len(methyls), 3, "the two orientations must not be kept together")
+            for methyl in methyls:
+                self.assertEqual(sites[methyl]["occupancy"], 1.0)
+                base = sites[methyl]["label"]
+                hydrogens = self._around(
+                    unit_cell,
+                    sites,
+                    methyl,
+                    lambda site, base=base: site["label"].startswith("H" + base[1:]),
+                    1.4,
+                )
+                self.assertEqual(len(hydrogens), 3, sites[methyl]["label"])
+            for distance in self._distances(unit_cell, sites, methyls):
+                self.assertGreaterEqual(distance, 2.3, "methyl-methyl clash survived")
+            for methyl in methyls:
+                self.assertAlmostEqual(
+                    math.dist(
+                        unit_cell.orthogonalize(sites[apex]["frac"]),
+                        unit_cell.orthogonalize(sites[methyl]["frac"]),
+                    ),
+                    1.52,
+                    places=2,
+                )
+
+    def test_asymmetric_unit_moves_to_the_chosen_image(self):
+        # The CIF deposits one methyl at its mirrored position, so the CIF's own
+        # combination is not a tetrahedron; the ASU atom has to follow the
+        # resolver's choice or it would no longer sit on any kept site.
+        result = self._load()
+        unit_cell = gw._UnitCell(result["unit_cell"])
+        sites = result["sites"]
+        instances = result["instances"]
+        asu = []
+        for offset in range(0, len(instances), 4):
+            site = sites[instances[offset]]
+            frac = [site["frac"][axis] + instances[offset + 1 + axis] for axis in range(3)]
+            asu.append((site["label"], unit_cell.orthogonalize(frac)))
+        apices = [point for label, point in asu if label == "C7"]
+        self.assertEqual(len(apices), 1)
+        methyls = [point for label, point in asu if label in ("C8", "C9", "C10")]
+        self.assertEqual(len(methyls), 3)
+        self.assertEqual(len({tuple(round(v, 4) for v in point) for point in methyls}), 3)
+        for first in range(3):
+            for second in range(first + 1, 3):
+                self.assertGreaterEqual(math.dist(methyls[first], methyls[second]), 2.3)
+
+    def test_substitutional_solvent_is_left_alone(self):
+        result = self._load()
+        sites = result["sites"]
+        for label in ("K1", "O1"):
+            images = [site for site in sites if site["label"] == label]
+            self.assertEqual(len(images), 4, label)
+            for site in images:
+                self.assertEqual(site["occupancy"], 0.5, label)
+
+    def test_keep_disorder_keeps_both_components(self):
+        result = self._load(keep_disorder=True)
+        unit_cell = gw._UnitCell(result["unit_cell"])
+        sites = result["sites"]
+        self.assertEqual(result["resolved_disorder"], 1)
+        self.assertEqual(result["dropped_disorder"], 0)
+        self.assertEqual(len(sites), 80)
+        apices = [index for index, site in enumerate(sites) if site["label"] == "C7"]
+        self.assertEqual(len(apices), 2)
+        for apex in apices:
+            methyls = self._around(
+                unit_cell, sites, apex, lambda site: site["label"] in ("C8", "C9", "C10"), 1.9
+            )
+            self.assertEqual(len(methyls), 6)
+            components = {}
+            for index in methyls:
+                components.setdefault(sites[index]["component"], []).append(index)
+            self.assertEqual(len(components), 2, "each anchor holds two components")
+            for members in components.values():
+                self.assertGreaterEqual(len(members), 3)
+                for distance in self._distances(unit_cell, sites, members):
+                    self.assertGreaterEqual(
+                        distance, 2.3, "a component must be a valid tetrahedron"
+                    )
+        for label in ("K1", "O1"):
+            for site in sites:
+                if site["label"] == label:
+                    self.assertEqual(site["occupancy"], 0.5)
+                    self.assertEqual(site.get("component", 0), 0)
+
+    def test_general_position_anchor_is_not_resolved(self):
+        # A sulfonate oxygen merely bonded to a disordered potassium/water
+        # cluster sits on a general position: its two K images are not symmetry
+        # mates around it, so the group must not be resolved (this is the false
+        # positive that used to swallow the Ca.cif solvent region).
+        rows = [
+            ("S1", "S", 0.10, 0.40, 0.10, 1.0),
+            ("O1", "O", 0.10, 0.45, 0.17, 1.0),
+            ("O2", "O", 0.10, 0.36, 0.16, 1.0),
+            ("K1", "K", 0.10, 0.38, 0.25, 0.5),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "general_position.cif")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_p2m_cif(rows))
+            result = gw.load_structure(path)
+        self.assertEqual(result["resolved_disorder"], 0)
+        self.assertEqual(result["dropped_disorder"], 0)
+        self.assertEqual(len(result["sites"]), 16)
+        self.assertEqual(len([site for site in result["sites"] if site["label"] == "K1"]), 4)
+
+
+def _p2m_cif(rows, cell=(20.0, 14.0, 20.0)):
+    """P 1 2/m 1 CIF from ``(label, element, x, y, z, occupancy)`` rows."""
+    lines = [
+        "data_symmetry_disorder",
+        f"_cell_length_a {cell[0]}",
+        f"_cell_length_b {cell[1]}",
+        f"_cell_length_c {cell[2]}",
+        "_cell_angle_alpha 90.0",
+        "_cell_angle_beta 90.0",
+        "_cell_angle_gamma 90.0",
+        "_symmetry_space_group_name_H-M 'P 1 2/m 1'",
+        "loop_",
+        "_atom_site_label",
+        "_atom_site_type_symbol",
+        "_atom_site_fract_x",
+        "_atom_site_fract_y",
+        "_atom_site_fract_z",
+        "_atom_site_occupancy",
+    ]
+    for label, element, x, y, z, occupancy in rows:
+        lines.append(f"{label} {element} {x:.6f} {y:.6f} {z:.6f} {occupancy:.2f}")
+    return "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":

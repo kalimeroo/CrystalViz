@@ -4657,6 +4657,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         atom_cart = atom["cart"]
         element = str(atom.get("element", "X")).upper()
         elements[index] = element
+        component = int(atom.get("component", 0) or 0)
         element_entries = pair_entries.get(element, {})
         element_reach = reach.get(element, 0.0)
         if element_reach <= 0.0:
@@ -4692,6 +4693,14 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         # work, and most candidates fall outside this element's
                         # own reach (not the largest global window).
                         other = atoms[other_index]
+                        # Alternate components of a symmetry-disordered group
+                        # are alternatives, never bonded to each other.  With
+                        # "Keep All Disorder Components" the site table stores
+                        # every image, so the per-site component id (0 for
+                        # shared, fully occupied atoms) gates the pair.
+                        other_component = int(other.get("component", 0) or 0)
+                        if component and other_component and component != other_component:
+                            continue
                         other_cart = other["cart"]
                         delta_x = x - other_cart[0]
                         delta_y = y - other_cart[1]
@@ -5808,6 +5817,14 @@ class CGN_OT_import_cif(Operator):
         name="CIF Block",
         description="Optional exact data-block name for multi-structure CIF files",
     )
+    keep_disorder: BoolProperty(
+        name="Keep All Disorder Components",
+        description=(
+            "Keep every symmetry-generated alternate position instead of "
+            "resolving each anchored disordered group to one component"
+        ),
+        default=False,
+    )
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -5823,18 +5840,38 @@ class CGN_OT_import_cif(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         try:
-            result = worker.load_structure(bpy.path.abspath(self.filepath), self.block_name or None)
+            result = worker.load_structure(
+                bpy.path.abspath(self.filepath),
+                self.block_name or None,
+                keep_disorder=self.keep_disorder,
+            )
             root = _import_result(context.scene, result, self.filepath)
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         omitted = int(result.get("omitted_disorder", 0) or 0)
-        omitted_note = f", {omitted} alternate disorder sites omitted" if omitted else ""
+        resolved = int(result.get("resolved_disorder", 0) or 0)
+        dropped = int(result.get("dropped_disorder", 0) or 0)
+        notes = []
+        if omitted:
+            noun = "site" if omitted == 1 else "sites"
+            notes.append(f"{omitted} alternate disorder {noun} omitted")
+        if resolved and dropped:
+            groups = "group" if resolved == 1 else "groups"
+            sites = "site" if dropped == 1 else "sites"
+            notes.append(
+                f"{resolved} symmetry-disordered {groups} resolved "
+                f"({dropped} alternate {sites} omitted)"
+            )
+        elif resolved:
+            groups = "group" if resolved == 1 else "groups"
+            notes.append(f"{resolved} symmetry-disordered {groups} kept")
+        note = (", " + "; ".join(notes)) if notes else ""
         self.report(
             {"INFO"},
             f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
-            f"({root.get('cgn_space_group')}{omitted_note}).",
+            f"({root.get('cgn_space_group')}{note}).",
         )
         return {"FINISHED"}
 

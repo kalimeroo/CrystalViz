@@ -939,7 +939,7 @@ def _p1_sites(structure, unit_cell, skip_labels=frozenset()):
     return sites
 
 
-def load_structure(cif_path, block_name=None):
+def load_structure(cif_path, block_name=None, keep_disorder=False):
     """Return the P1 site table and the instances that make up the ASU."""
     structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = _UnitCell(structure.cell.parameters)
@@ -948,13 +948,29 @@ def load_structure(cif_path, block_name=None):
     disorder_labels = _disorder_minor_labels(structure, block)
     skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)
+    asu_fracs = {
+        site.label: [float(value) for value in site.fract]
+        for site in structure.sites
+        if not _skip_site(site, skip_labels)
+    }
+    # Resolve the disorder the space group itself generates (a half-occupied
+    # substituent whose alternate position is not a second CIF label).  This
+    # runs after the prime-label omission, so the two rules compose: primed
+    # alternate components are already gone, and only anchored groups whose
+    # anchor sits on the symmetry element are touched here.
+    resolution = _resolve_symmetry_disorder(
+        sites, unit_cell, ops, asu_fracs, keep_disorder=keep_disorder
+    )
+    sites = resolution["sites"]
     base_atoms = _base_atoms(unit_cell, sites)
     lookup = _base_atom_lookup(unit_cell, base_atoms)
     asu_atoms = []
     for site in structure.sites:
         if _skip_site(site, skip_labels):
             continue
-        frac = [float(value) for value in site.fract]
+        frac = resolution["asu_fracs"].get(site.label)
+        if frac is None:
+            frac = [float(value) for value in site.fract]
         asu_atoms.append(
             {
                 "label": site.label,
@@ -990,6 +1006,11 @@ def load_structure(cif_path, block_name=None):
         # Number of alternate disorder components omitted at load, so the
         # import message can report them (see _disorder_minor_labels).
         "omitted_disorder": len(disorder_labels),
+        # Number of symmetry-disordered groups resolved to one component, and
+        # the number of alternate P1 images dropped to do so (0 when the caller
+        # asked to keep every component).
+        "resolved_disorder": resolution["resolved_groups"],
+        "dropped_disorder": resolution["dropped_sites"],
         # Connectivity hints: declared oxidation numbers, Shannon radii for the
         # charged elements, and which elements gemmi considers metallic.  All
         # three are used by the add-on to derive the default distance windows.
@@ -1351,6 +1372,442 @@ def _neighbor_search_index(unit_cell, base_atoms, radius):
     for n, site in enumerate(structure.sites):
         search.add_site(site, n)
     return search, sites
+
+
+# --------------------------------------------------------------------------
+# Symmetry-generated disorder
+# --------------------------------------------------------------------------
+
+# A partially occupied site is disorder rather than an under-occupied atom
+# when it is close enough to fully occupied (e.g. 0.5 + 0.5).
+_DISORDER_MIN_OCCUPANCY = 0.999
+# Bond window and maximum coordination number used only to decide whether an
+# anchored group resolves to a chemically valid conformer.  The window is the
+# same 1.25 * (r_a + r_b) used by the resolver prototype; it is deliberately
+# tighter than the display windows so a genuine bond is never mistaken for a
+# clash, while the impossible 1.31 A methyl-methyl contact of the Ca case is.
+_DISORDER_BOND_SCALE = 1.25
+_DISORDER_MAX_VALENCE = {
+    "H": 1,
+    "D": 1,
+    "B": 3,
+    "C": 4,
+    "N": 4,
+    "O": 2,
+    "F": 1,
+    "Si": 4,
+    "P": 5,
+    "S": 6,
+    "Cl": 1,
+    "Br": 1,
+    "I": 1,
+}
+_DISORDER_DEFAULT_VALENCE = 8
+# Bounds that keep the per-anchor search cheap on large CIFs.
+_DISORDER_MAX_CLUSTER_SITES = 64
+_DISORDER_SEARCH_BUDGET = 20000
+_DISORDER_MAX_SOLUTIONS = 64
+
+
+def _disorder_is_identity(operation):
+    """True for the identity operation, lattice translations included.
+
+    gemmi stores the rotation and translation in integer form scaled by
+    ``Op.DEN``; a pure lattice translation (``x+1,y,z``) is the identity in a
+    periodic cell and must not count as the symmetry element that generates a
+    disorder.
+    """
+    denominator = int(operation.DEN)
+    rotation = tuple(int(value) for row in operation.rot for value in row)
+    if rotation != (denominator, 0, 0, 0, denominator, 0, 0, 0, denominator):
+        return False
+    return all(int(value) % denominator == 0 for value in operation.tran)
+
+
+def _disorder_max_valence(element):
+    """Largest coordination number a fully occupied anchor can support."""
+    return _DISORDER_MAX_VALENCE.get(str(element).upper(), _DISORDER_DEFAULT_VALENCE)
+
+
+def _disorder_fixing_operations(ops, frac, unit_cell):
+    """Non-identity space-group operations that leave *frac* fixed.
+
+    A symmetry-generated disorder needs the anchor itself to sit on the
+    symmetry element: the mirror that swaps the two methyl orientations of
+    ``CIF/Ca.cif`` fixes the quaternary carbon, while a general-position atom
+    merely bonded to a partially occupied neighbour (a sulfonate oxygen next to
+    the disordered potassium/water region) is not fixed by any operation.
+    """
+    fixing = []
+    for operation in ops:
+        if _disorder_is_identity(operation):
+            continue
+        image = _symmetry_image(operation, frac)
+        if _cart_distance(unit_cell, image, frac) <= _CART_TOLERANCE:
+            fixing.append(operation)
+    return fixing
+
+
+def _disorder_images_closed_under(operation, fracs, unit_cell):
+    """True when *operation* permutes the image positions among themselves."""
+    for frac in fracs:
+        image = _symmetry_image(operation, frac)
+        if not any(_cart_distance(unit_cell, image, other) <= _CART_TOLERANCE for other in fracs):
+            return False
+    return True
+
+
+def _disorder_anchor_solutions(
+    sites,
+    unit_cell,
+    asu_fracs,
+    anchor,
+    anchor_edges,
+    partial_edges,
+    is_partial,
+    cluster,
+    depth,
+):
+    """Enumerate the chemically valid image combinations of one anchored cluster.
+
+    The search walks the cluster's labels parents-first (``depth`` was assigned
+    outward from the anchor) and only places an image that stays bonded to the
+    anchor or to an already chosen image (``connected``) while keeping every
+    chosen atom within its maximum coordination number (``within_valence`` and
+    the ``valid_solution`` check -- the same valence cap that rejects the
+    overlapping images of a mirror-generated *tert*-butyl).  A completed
+    combination scores one point per CIF identity position it keeps, so a call
+    with more unchanged ASU atoms outranks one that relocates them.
+
+    Returns ``{"order", "candidates", "solutions"}`` with the solutions sorted
+    best-first (score descending, then the chosen site-index tuple).
+    """
+    labels = sorted({sites[index]["label"] for index in cluster})
+    candidates = {
+        label: sorted(index for index in cluster if sites[index]["label"] == label)
+        for label in labels
+    }
+    label_depth = {label: min(depth[index] for index in candidates[label]) for label in labels}
+    order = sorted(labels, key=lambda label: (label_depth[label], label))
+
+    chosen = {}
+    chosen_sites = set()
+    solutions = []
+    budget = [_DISORDER_SEARCH_BUDGET]
+
+    def connected(index):
+        return any(
+            other == anchor or other in chosen_sites for other in partial_edges.get(index, ())
+        )
+
+    def within_valence(index):
+        count = 0
+        for other in partial_edges.get(index, ()):
+            if other == anchor or other in chosen_sites or not is_partial(other):
+                count += 1
+        return count <= _disorder_max_valence(sites[index]["element"])
+
+    def valid_solution():
+        for index in chosen_sites:
+            count = sum(
+                1
+                for other in partial_edges.get(index, ())
+                if other in chosen_sites or not is_partial(other)
+            )
+            if count > _disorder_max_valence(sites[index]["element"]):
+                return False
+        anchor_count = sum(
+            1 for other in anchor_edges if other in chosen_sites or not is_partial(other)
+        )
+        return anchor_count <= _disorder_max_valence(sites[anchor]["element"])
+
+    def walk(position):
+        if budget[0] <= 0 or len(solutions) >= _DISORDER_MAX_SOLUTIONS:
+            return
+        budget[0] -= 1
+        if position == len(order):
+            if not valid_solution():
+                return
+            score = 0
+            for label, index in chosen.items():
+                wanted = asu_fracs.get(label)
+                if wanted is None:
+                    continue
+                identity = _wrapped_fractional(wanted)
+                if _cart_distance(unit_cell, sites[index]["frac"], identity) <= _CART_TOLERANCE:
+                    score += 1
+            solutions.append((score, tuple(chosen[label] for label in order)))
+            return
+        label = order[position]
+        for index in candidates[label]:
+            if not connected(index) or not within_valence(index):
+                continue
+            chosen[label] = index
+            chosen_sites.add(index)
+            walk(position + 1)
+            chosen_sites.discard(index)
+            del chosen[label]
+
+    walk(0)
+    solutions.sort(key=lambda solution: (-solution[0], solution[1]))
+    return {
+        "order": order,
+        "candidates": candidates,
+        "solutions": solutions,
+    }
+
+
+def _resolve_symmetry_disorder(sites, unit_cell, ops, asu_fracs, keep_disorder=False):
+    """Resolve symmetry-generated disorder of anchored groups at load time.
+
+    A partially occupied substituent whose alternate position is produced by
+    the space group (not written as a second CIF label) shows up twice after
+    the P1 expansion.  ``CIF/Ca.cif`` is the driving case: the mirror plane
+    through ``C20`` turns one *tert*-butyl group into six half-occupied methyl
+    images, of which only one chemically valid combination exists per anchor.
+
+    Only *anchored* groups are resolved.  An anchor is a fully occupied atom
+    whose remaining coordination capacity (max valence minus its fully occupied
+    neighbours) equals the number of distinct partially occupied labels bonded
+    to it, where every one of those labels must have at least two images around
+    the anchor and be permuted by a symmetry operation that fixes the anchor.
+    That keeps genuine substitutional disorder (the potassium/water region of
+    ``Ca.cif``, whose atoms sit on general positions and are not alternatives of
+    one another) untouched.
+
+    For each anchor the candidate images are enumerated parents-first; a
+    candidate must stay bonded to the anchor or an already chosen image, and no
+    chosen atom may exceed its maximum coordination number.  The clash check is
+    the valence cap itself: the invalid ``C21``-``C22`` contact (1.31 A) falls
+    inside the bond window and would give both carbons five neighbours.  Among
+    the valid combinations the one keeping the most CIF images (identity
+    positions) wins, with the site-index tuple as a deterministic tie-break.
+
+    With ``keep_disorder`` every image is kept; each valid combination becomes
+    a component and the returned sites carry a ``component`` key so bonding can
+    refuse cross-component pairs.  Otherwise the losing images are dropped and
+    the kept ones are promoted to full occupancy.
+
+    Returns a dict with the new site table, the relocated asymmetric-unit
+    fractional positions (``{label: frac}``), the number of resolved anchors
+    (distinct disordered groups of the ASU) and the number of dropped P1 images.
+    """
+    partial_labels = {}
+    for index, site in enumerate(sites):
+        if float(site.get("occupancy", 1.0)) < _DISORDER_MIN_OCCUPANCY:
+            partial_labels.setdefault(site["label"], []).append(index)
+    if not partial_labels:
+        return {
+            "sites": sites,
+            "asu_fracs": {},
+            "resolved_groups": 0,
+            "dropped_sites": 0,
+        }
+
+    def is_partial(index):
+        return sites[index]["label"] in partial_labels
+
+    max_radius = max(float(site["covalent_radius"]) for site in sites)
+    index_radius = _DISORDER_BOND_SCALE * 2.0 * max_radius
+    base_atoms = _base_atoms(unit_cell, sites)
+    search, gsites = _neighbor_search_index(unit_cell, base_atoms, index_radius)
+    positions = [gemmi.Position(*unit_cell.orthogonalize(site["frac"])) for site in sites]
+
+    def edges_of(index):
+        """Neighbouring site indices inside the resolver's bond window.
+
+        The gemmi spatial index prunes the candidate set; the exact minimum
+        image distance is then measured by the search itself.  Each distinct
+        periodic image is kept, so an atom bonded twice to the same site (a
+        bidentate contact) still counts twice for its coordination number.
+        """
+        radius = float(sites[index]["covalent_radius"])
+        found = []
+        seen = set()
+        for mark in search.find_site_neighbors(gsites[index], 0.0, index_radius):
+            other = int(mark.atom_idx)
+            if other == index:
+                continue
+            key = (other, int(mark.image_idx))
+            if key in seen:
+                continue
+            seen.add(key)
+            distance = search.dist(positions[index], mark.pos)
+            if distance <= 1e-6:
+                continue
+            if distance <= _DISORDER_BOND_SCALE * (radius + float(sites[other]["covalent_radius"])):
+                found.append(other)
+        return found
+
+    partial_edges = {}
+    for indices in partial_labels.values():
+        for index in indices:
+            partial_edges[index] = edges_of(index)
+
+    candidate_anchors = set()
+    for neighbours in partial_edges.values():
+        for other in neighbours:
+            if not is_partial(other):
+                candidate_anchors.add(other)
+
+    resolutions = []
+    for anchor in sorted(candidate_anchors):
+        anchor_edges = edges_of(anchor)
+        full_bonds = sum(1 for other in anchor_edges if not is_partial(other))
+        groups = {}
+        for other in anchor_edges:
+            if is_partial(other):
+                groups.setdefault(sites[other]["label"], set()).add(other)
+        if not groups:
+            continue
+        if full_bonds + len(groups) != _disorder_max_valence(sites[anchor]["element"]):
+            continue
+        multi = {label: sorted(indices) for label, indices in groups.items() if len(indices) >= 2}
+        if not multi:
+            continue
+        fixing = _disorder_fixing_operations(ops, sites[anchor]["frac"], unit_cell)
+        if not fixing:
+            continue
+        explained = True
+        for indices in multi.values():
+            fracs = [sites[index]["frac"] for index in indices]
+            if not any(
+                _disorder_images_closed_under(operation, fracs, unit_cell) for operation in fixing
+            ):
+                explained = False
+                break
+        if not explained:
+            continue
+
+        cluster = set()
+        depth = {}
+        for indices in groups.values():
+            for index in indices:
+                cluster.add(index)
+                depth[index] = 1
+        frontier = list(cluster)
+        while frontier:
+            index = frontier.pop()
+            for other in partial_edges.get(index, ()):
+                if is_partial(other) and other not in cluster:
+                    cluster.add(other)
+                    depth[other] = depth[index] + 1
+                    frontier.append(other)
+        if len(cluster) > _DISORDER_MAX_CLUSTER_SITES:
+            continue
+
+        found = _disorder_anchor_solutions(
+            sites,
+            unit_cell,
+            asu_fracs,
+            anchor,
+            anchor_edges,
+            partial_edges,
+            is_partial,
+            cluster,
+            depth,
+        )
+        order = found["order"]
+        candidates = found["candidates"]
+        solutions = found["solutions"]
+        if not solutions:
+            continue
+        resolutions.append(
+            {
+                "anchor": anchor,
+                "cluster": cluster,
+                "order": order,
+                "candidates": candidates,
+                "best": solutions[0][1],
+                "solutions": solutions,
+            }
+        )
+
+    if not resolutions:
+        return {
+            "sites": sites,
+            "asu_fracs": {},
+            "resolved_groups": 0,
+            "dropped_sites": 0,
+        }
+
+    resolved_groups = len({sites[resolution["anchor"]]["label"] for resolution in resolutions})
+    kept = set()
+    candidates_all = set()
+    for resolution in resolutions:
+        kept.update(resolution["best"])
+        candidates_all.update(resolution["cluster"])
+    dropped = candidates_all - kept
+
+    if keep_disorder:
+        # Every image stays, so the ASU keeps its CIF coordinates verbatim; the
+        # component ids are what stops the alternatives from being bonded to
+        # each other.
+        new_sites = [dict(site) for site in sites]
+        component = 1
+        for resolution in resolutions:
+            assigned = {}
+            for _score, combination in resolution["solutions"]:
+                for index in combination:
+                    if index not in assigned:
+                        assigned[index] = component
+                component += 1
+            for index in sorted(resolution["cluster"]):
+                if index in assigned:
+                    new_sites[index]["component"] = assigned[index]
+                else:
+                    new_sites[index]["component"] = component
+                    component += 1
+        return {
+            "sites": new_sites,
+            "asu_fracs": {},
+            "resolved_groups": resolved_groups,
+            "dropped_sites": 0,
+        }
+
+    # The ASU atom must sit on a kept image (the loader matches it back to the
+    # site table), so move it to the chosen conformer unless the CIF already
+    # gave that image.
+    asu_relocated = {}
+    for resolution in resolutions:
+        order = resolution["order"]
+        best_map = dict(zip(order, resolution["best"], strict=True))
+        best_sites = set(resolution["best"])
+        for label in order:
+            wanted = asu_fracs.get(label)
+            if wanted is None:
+                continue
+            identity = _wrapped_fractional(wanted)
+            identity_index = None
+            for index in resolution["candidates"][label]:
+                if _cart_distance(unit_cell, sites[index]["frac"], identity) <= _CART_TOLERANCE:
+                    identity_index = index
+                    break
+            if identity_index is None or identity_index in best_sites:
+                continue
+            chosen = sites[best_map[label]]["frac"]
+            # Keep the atom in the same cell neighbourhood as the CIF position:
+            # the ASU fractional coordinates are not wrapped (C23 of Ca.cif has
+            # z = 1.0334), so the chosen image needs the lattice translation
+            # that leaves it nearest the original position.
+            asu_relocated[label] = [
+                float(chosen[axis]) + int(round(wanted[axis] - chosen[axis])) for axis in range(3)
+            ]
+
+    new_sites = []
+    for index, site in enumerate(sites):
+        if index in dropped:
+            continue
+        if index in kept:
+            site = dict(site)
+            site["occupancy"] = 1.0
+        new_sites.append(site)
+    return {
+        "sites": new_sites,
+        "asu_fracs": asu_relocated,
+        "resolved_groups": resolved_groups,
+        "dropped_sites": len(dropped),
+    }
 
 
 def _grow_shell_keys(

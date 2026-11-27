@@ -38,6 +38,15 @@ desktop.ini
 CIF/S1.cif
 CIF/S2.cif
 
+# Local Olex2 structure that reproduces disorder tagged with the formal
+# `_atom_site_disorder_group` columns (four assemblies A-D, group 1/2) instead
+# of label suffixes.  Not redistributable; tests skip it when absent.
+CIF/disorder.cif
+
+# Local CSD fixture for the eta8-cyclooctatetraenyl torus test (ABIDUK,
+# CCDC 145189); tests/test_chemdraw_ring8.py skips when it is absent.
+CIF/8ring.cif
+
 # Local user structure used to debug the phosphinate PO2H stroke coplanarity:
 # two P=O double bonds of one centre must be drawn in the same plane.  Not
 # redistributable; stays on the author's machine like the CSD fixtures above.

@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 62/62 pass.
+`pwsh tests/run_all.ps1` → 63/63 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -96,7 +96,11 @@ for a first run.
   and pyridine report 0, a ferrocene-shaped Cp + Fe fragment is a 6 π haptic
   ligand with no double bond, a Cp–C≡C–anthracene fragment keeps its alkyne
   triple (the Ferrocene.cif allene failure mode), and an η6-coordinated quinone
-  is still vetoed by its exocyclic C=O. The sulfur rules are pinned on synthetic
+  is still vetoed by its exocyclic C=O. An η8-COT + Sm fragment is the 10 π
+  haptic ligand (an eight-ring is enumerated), a bare seven-ring carbon with no
+  double is aromatic only when its short bonds make it the tropylium empty-p
+  centre, and a plain eight-ring carbon without the metal stays non-aromatic.
+  The sulfur rules are pinned on synthetic
   six-rings: a thiopyrylium sulfur takes one ring S=C double (three alternating
   doubles, no lone-pair share), a thiabenzene 1-oxide sulfur keeps its terminal
   S=O double and still counts as a conjugated ring atom, while thiophene (a
@@ -201,6 +205,12 @@ for a first run.
   no B=N double bond there is no alternating arrangement to draw, so both rings
   keep their delocalisation torus (one object, 96 segments) while all twelve
   B-N bonds are drawn single.
+
+- `test_chemdraw_ring8.py` pins the η8-cyclooctatetraenyl ligand (ABIDUK, CSD;
+  the CIF is local-only and the test skips when it is absent). The eight-ring
+  is enumerated (ring sizes 5-8) and the haptic path counts it as 10 π, so the
+  Cp* and the COT ring share one aromatic object with two 48-segment tori
+  (96 edges) and both rings are recorded on it.
 
 - `test_chemdraw_bn.py` pins the grown h-BN lattice. `BN.cif` (1010602) imports
   as four atoms and no torus; growing the sheet shell by shell must then give
@@ -379,7 +389,14 @@ for a first run.
   component winning (even when primed), equal occupancies keeping the unprimed
   component, fixed hydrogen occupancies abstaining, lone primed labels kept,
   double-prime third components dropped, and letter suffixes (`H8A`/`H8B`) left
-  alone.
+  alone. It also pins the formal `_atom_site_disorder_group` rule
+  (`_disorder_group_labels`): group 2 is dropped per
+  `_atom_site_disorder_assembly` even when its refined occupancy is the higher
+  one (0.517 against 0.483), an assembly numbered only 2 stays put, a tag with
+  no sibling removes nothing, and the local-only `CIF/disorder.cif` (four
+  assemblies A-D, `C1A`/`C1B` ...) reports its 100 group-2 sites omitted while
+  `keep_disorder=True` keeps both components (that check skips when the file is
+  absent).
 - `test_import_symmetry_disorder.py` pins the load-time resolver for
   space-group-generated disorder (`_resolve_symmetry_disorder`). The driving
   case `CIF/Ca.cif` (local-only) sits two groups — a *tert*-butyl and a methyl

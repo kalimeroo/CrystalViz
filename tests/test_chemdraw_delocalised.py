@@ -3,12 +3,14 @@
 A carboxylate, carbonate, nitrate, phosphate, sulfate or sulfonate has more
 terminal oxygens than its valence ladder can draw as genuine doubles.  Every
 terminal X-O bond of such a group is drawn as a ChemDraw delocalised bond: one
-solid stroke plus one dashed stroke at the multiple-bond spacing.  The dashed
-stroke carries twice as many dash segments as the first implementation, and it
-sits *inside* the O-X-O angle (toward the other delocalised oxygen of the same
-centre) with the solid stroke *outside*, like a hand-drawn nitrite or
-carboxylate.  A nitro ``N(=O)2`` or a sulfone ``S(=O)2`` spends its whole oxo
-budget and keeps its genuine doubles.
+solid stroke plus one dashed stroke at the multiple-bond spacing (in a
+metal-touched group only the coordinating oxygens are delocalised -- the CSD's
+own dashed-where-coordinated rule -- so the metal-free oxygens keep their
+genuine ``X=O`` double).  The dashed stroke carries twice as many dash
+segments as the first implementation, and it sits *inside* the O-X-O angle
+(toward the other delocalised oxygen of the same centre) with the solid stroke
+*outside*, like a hand-drawn nitrite or carboxylate.  A nitro ``N(=O)2`` or a
+sulfone ``S(=O)2`` spends its whole oxo budget and keeps its genuine doubles.
 
 Run:
   blender --background --factory-startup --python test_chemdraw_delocalised.py

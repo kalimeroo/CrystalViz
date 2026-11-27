@@ -71,9 +71,10 @@ RING_ELEMENTS = frozenset({"B", "C", "N", "O", "P", "S", "AS", "SB", "SE", "TE"}
 # their heavier analogues (phosphole/arsole/stibole, selenophene/tellurophene).
 LONE_PAIR_ELEMENTS = frozenset({"N", "P", "O", "S", "AS", "SB", "SE", "TE"})
 
-# Metals that carry an eta5/eta6/eta7 pi ligand (metallocenes, half-sandwiches,
-# arene complexes).  A coordinated cyclopentadienyl ring is the 6 pi Huckel
-# aromatic Cp- ligand, and IUPAC GR-1.7.2 requires such a coordinated
+# Metals that carry an eta5/eta6/eta7/eta8 pi ligand (metallocenes,
+# half-sandwiches, arene complexes, COT complexes).  A coordinated
+# cyclopentadienyl ring is the 6 pi Huckel aromatic Cp- ligand, and IUPAC
+# GR-1.7.2 requires such a coordinated
 # contiguous pi system to be drawn with a delocalisation curve because no
 # alternating single/double bond arrangement describes it.
 HAPTIC_METALS = frozenset(
@@ -269,10 +270,23 @@ _N_OXIDE_MAX_LENGTH_SCALE = 1.0
 _DIAZO_MAX_LENGTH_SCALE = 0.90
 _DIAZO_PARTNER_MAX_LENGTH_SCALE = 0.92
 
-# Ring sizes ChemDraw depicts as rings.  5, 6 and 7 cover the overwhelming
+# A seven-ring carbon with no multiple bond at all is the carbocation centre
+# of a tropylium ring: C7H7+ carries three Kekule doubles (six pi electrons)
+# and one empty p orbital, so the ring is aromatic exactly like benzene.  The
+# centre is recognised by geometry, not charge (the graph has none): both of
+# its ring bonds must be short enough to be the delocalised 1.39-1.42 A C-C
+# of the tropylium ion, which keeps a cycloheptatriene CH2 -- a long 1.50 A
+# C-C single, and four non-metal neighbours when its hydrogens are present --
+# from reading as the empty-p centre of a fake aromatic ring.
+_TROPYLIUM_EMPTY_P_MAX_LENGTH_SCALE = 0.97
+
+# Ring sizes ChemDraw depicts as rings.  5, 6, 7 and 8 cover the overwhelming
 # majority of organic structures; 3- and 4-rings are handled by the ring-atom
-# valence cap below instead of being drawn as aromatic.
-_RING_SIZES = (5, 6, 7)
+# valence cap below instead of being drawn as aromatic.  The 8-ring exists for
+# the eta8-cyclooctatetraenyl ligand (an eta8-COT on a lanthanide or actinide,
+# e.g. ABIDUK's (eta8-COT)(eta5-Cp*) samarium) and for any other eight-membered
+# conjugated ring.
+_RING_SIZES = (5, 6, 7, 8)
 _RING_MAX_SIZE = max(_RING_SIZES)
 _RING_STEP_BUDGET = 400_000
 _RING_MAX_COUNT = 2048
@@ -307,8 +321,8 @@ class AromaticRing(NamedTuple):
     carries a drawn multiple bond, i.e. whether that Kekule depiction exists at
     all; borazine and an h-BN sheet have none (their borons carry no B=N), so
     they keep the curve.  ``haptic_metal`` names the metal the whole ring
-    coordinates to, when the ring is a pi ligand (eta5-Cp, eta6-arene) rather
-    than a Kekule ring.
+    coordinates to, when the ring is a pi ligand (eta5-Cp, eta6-arene,
+    eta8-COT) rather than a Kekule ring.
     """
 
     nodes: frozenset
@@ -1036,7 +1050,8 @@ def delocalised_oxo_edges(elements, edges, lengths=None):
     ladder can draw as genuine ``X=O`` doubles.  Every terminal X-O bond of
     such a centre is returned so the depiction can draw it as a ChemDraw
     delocalised bond -- one solid and one dashed stroke -- instead of the
-    localized ``C=O`` + ``C-O-`` pair.
+    localized ``C=O`` + ``C-O-`` pair.  The exception is a *metal-touched*
+    group, see below.
 
     The count mirrors :func:`_oxo_double_bonds`: ``min(target valence -
     covalent degree, terminal oxygens, _OXO_MAX_DOUBLES)``.  When that budget
@@ -1045,6 +1060,17 @@ def delocalised_oxo_edges(elements, edges, lengths=None):
     A nitro ``N(=O)2`` or a sulfone ``S(=O)2`` spends its entire budget, so it
     keeps its genuine doubles; a lone carbonyl, sulfoxide or N-oxide (a single
     terminal oxygen) is never delocalised.
+
+    When some terminal oxygen of the group also coordinates a metal (a
+    neighbour outside :data:`VALENCE_LADDERS`, the CSD 2D depiction's own rule
+    of drawing its dashed stroke only where the oxygen binds a metal), only
+    those coordinating oxygens are delocalised: an ABOLIP-style bidentate
+    metal triflate would otherwise draw all three ``S-O`` bonds as 1.5 and the
+    sulfur would read as ~5.5 instead of its hexavalent ``S(=O)2``.  The
+    metal-free oxygens of such a group keep their genuine ``X=O`` doubles from
+    :func:`bond_orders` (or their single bond), so the metal-coordinated oxygens
+    read as the anionic members of the resonance set.  A metal-free group is
+    still drawn whole-group delocalised.
 
     The length gate is the general candidate gate
     (:func:`_candidate_max_length_scale`), not the tight carbonyl gate: the
@@ -1081,8 +1107,21 @@ def delocalised_oxo_edges(elements, edges, lengths=None):
         budget = min(target - covalent_degree, len(oxygens), _OXO_MAX_DOUBLES)
         if budget <= 0 or len(oxygens) <= budget:
             continue
-        for oxygen in oxygens:
-            delocalised.add(edge_key(node, oxygen))
+        metal_oxygens = [
+            oxygen
+            for oxygen in oxygens
+            if any(
+                elements.get(other) not in VALENCE_LADDERS for other in adjacency.get(oxygen, ())
+            )
+        ]
+        if metal_oxygens:
+            # A metal-touched resonance group: the coordinating oxygens carry
+            # the delocalised charge and the metal-free oxygens keep their
+            # genuine X=O double, so a bidentate metal triflate (test2, ABOLIP)
+            # draws ``S(=O)2``-style and the sulfur still reads hexavalent.
+            delocalised.update(edge_key(node, oxygen) for oxygen in metal_oxygens)
+        else:
+            delocalised.update(edge_key(node, oxygen) for oxygen in oxygens)
     return frozenset(delocalised)
 
 
@@ -1189,8 +1228,54 @@ def _link_bonds_to_relax(link_bonds, rings, deficits, relaxed):
     return result
 
 
+def _settled_chalc_ring_reserved(rings, extras, remaining, chalc_defs):
+    """Round-0 Kekule edges a conjugated six-ring leaves reserved.
+
+    A conjugated six-membered chalcogen ring (selenopyrylium, thiabenzene,
+    :func:`_six_ring_chalcogen_deficits`) whose ``C=X`` ring double the first
+    solve placed is chemically settled: no later relaxation round adds
+    knowledge that could make a different ring double more correct, and
+    re-solving a settled ring from scratch only lets the absolute coordinate
+    order re-race its Kekule (see :func:`bond_orders`).  Returns every
+    round-0 double that lies inside such a ring -- the ``C=X`` itself and its
+    ``C=C`` partners -- to be seeded like an oxo reserve.
+
+    A ring is settled even when its own chalcogen atom is the *only* one round
+    0 left unsatisfied: the valence system found every ring carbon a partner
+    (through the conjugated ``C=C`` pairs and the exocyclic double of a
+    genuine ylidene) and only the chalc rule's extra order goes
+    unspent -- that unmet deficit is exactly what keeps the ring non-aromatic
+    (the PEPQAG ylidene ring pairs its two ``C=C`` and spends the ylidene
+    double exocyclically while its SE stays three-bonded).  Freezing such a
+    ring's in-ring doubles is what keeps the later relaxation round from
+    re-saturating a ring carbon and inventing a ``C=X`` the first solve never
+    placed.  Only a ring with a *carbon* still unsatisfied stays open for the
+    relaxation: there the round-0 Kekule is genuinely incomplete, not a
+    deliberate choice.
+    """
+    chalc_nodes = frozenset(chalc_defs)
+    reserved = set()
+    for ring in rings:
+        if chalc_nodes.isdisjoint(ring):
+            continue
+        if any(remaining.get(node, 0) > 0 for node in ring if node not in chalc_nodes):
+            continue
+        for key in extras:
+            if key[0] in ring and key[1] in ring:
+                reserved.add(key)
+    return frozenset(reserved)
+
+
 def _solve_bond_orders(
-    elements, edge_keys, adjacency, base_deficits, lengths, link_bonds, relaxed_links, promoted
+    elements,
+    edge_keys,
+    adjacency,
+    base_deficits,
+    lengths,
+    link_bonds,
+    relaxed_links,
+    promoted,
+    reserved=frozenset(),
 ):
     """Run the valence repair once with the current relaxations.
 
@@ -1204,6 +1289,17 @@ def _solve_bond_orders(
     single_only |= link_bonds - relaxed_links
     extras = {}
     _oxo_double_bonds(elements, adjacency, lengths, deficits, extras, single_only)
+    for key in reserved:
+        if key in single_only:
+            continue
+        # A ring double that the first solve (every link held single) already
+        # placed is written into *extras* and reserved exactly like an oxo
+        # seed, so no later augmenting-path race can steal it (see
+        # :func:`bond_orders`).
+        extras[key] = 1
+        single_only.add(key)
+        for node in key:
+            deficits[node] = max(0, deficits.get(node, 0) - 1)
 
     candidates, by_node = _candidates(elements, edge_keys, deficits, lengths, single_only)
     _force_triples(elements, deficits, by_node, extras, adjacency, lengths)
@@ -1289,13 +1385,39 @@ def bond_orders(elements, edges, lengths=None):
         # Overrides the rung chosen above: a conjugated six-membered chalcogen
         # ring needs one (or two) extra orders that the plain valence ladder
         # does not ask for (see :func:`_six_ring_chalcogen_deficits`).
-        deficits.update(_six_ring_chalcogen_deficits(elements, edges, lengths, adjacency))
+        chalc_defs_map = _six_ring_chalcogen_deficits(elements, edges, lengths, adjacency)
+        chalc_defs = frozenset(chalc_defs_map)
+        deficits.update(chalc_defs_map)
+    else:
+        chalc_defs = frozenset()
 
     promoted = set()
     relaxed_links = set()
     extras, remaining = _solve_bond_orders(
         elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
     )
+    # The first solve, with every biaryl link still held single, has already
+    # placed the ring double of a conjugated six-membered chalcogen ring (the
+    # C=Se/C=S of :func:`_six_ring_chalcogen_deficits`) and the C=C partners
+    # of its Kekule.  A later re-solve can lose them to an augmenting-path
+    # race that only the absolute coordinate order decides: PEPQAG's Se6
+    # torus ring kept its C=Se in the cell window but lost it in the
+    # asymmetric-unit window of the same graph -- the relaxation round opened
+    # a biaryl link (for a ring elsewhere in the molecule that round 0 could
+    # not close) and the re-solved greedy/augment then re-placed the torus
+    # ring's doubles onto that link, leaving the ring non-aromatic so the
+    # Clar pass re-arranged it into a lone-pair variant and the C=Se was
+    # gone.  The ring the first placement closed is the chemically honest
+    # one, so freeze its whole round-0 in-ring Kekule as reserved edges
+    # (exactly like the oxo seeds) for the relaxation rounds: no later round
+    # adds chalc knowledge that could make a different ring double more
+    # correct, and no augmenting path may use a reserved edge.  The same
+    # freeze also covers the mirror-image failure in the other window: a
+    # settled ylidene ring (every ring carbon satisfied, only the chalc's own
+    # order unspent) can be re-saturated by a later re-solve that invents a
+    # C=Se and turns the molecule's ylidene ring into a second torus.  Only
+    # a ring a carbon left unsatisfied stays open for the relaxation.
+    reserved = _settled_chalc_ring_reserved(rings, extras, remaining, chalc_defs)
     # A metal-bound ring pnictogen (pyridine/phosphinine N/P/As/Sb) is promoted
     # before a biaryl link is relaxed: the ring double is the chemically
     # correct answer, the link double the fallback for an atom that has nothing
@@ -1312,7 +1434,15 @@ def bond_orders(elements, edges, lengths=None):
                 break
             relaxed_links |= new_links
         extras, remaining = _solve_bond_orders(
-            elements, edge_keys, adjacency, deficits, lengths, link_bonds, relaxed_links, promoted
+            elements,
+            edge_keys,
+            adjacency,
+            deficits,
+            lengths,
+            link_bonds,
+            relaxed_links,
+            promoted,
+            reserved,
         )
 
     extras = _clar_ring_placement(elements, edge_keys, adjacency, rings, extras, remaining, lengths)
@@ -1383,7 +1513,9 @@ def find_rings(elements, edges, sizes=_RING_SIZES, max_rings=_RING_MAX_COUNT):
     return rings
 
 
-def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count):
+def _ring_pi_electrons(
+    ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count, lengths=None
+):
     """``(pi_electrons, lone_pair_electrons, donors)`` for *ring*, or None.
 
     *by_node* maps every atom to the edge keys around it (the shape
@@ -1405,6 +1537,19 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
     and an h-BN sheet are aromatic networks rather than a finite fused pi
     system, so a shared nitrogen or oxygen still supplies its share of the
     sextet (the boron itself contributes nothing).
+
+    The boron allowance has one carbon sibling: a seven-ring whose only
+    empty-p atom is a carbon with no multiple bond at all is the tropylium
+    carbocation.  The ring is then the aromatic six-pi Huckel cation (three
+    Kekule doubles plus the one vacant p orbital of C7H7+), provided both of
+    that carbon's ring bonds are short enough to be the delocalised C-C of the
+    tropylium ion (``_TROPYLIUM_EMPTY_P_MAX_LENGTH_SCALE``).  The length gate
+    is the whole guard -- the graph carries no charge -- so a cycloheptatriene
+    CH2, whose long C-C single would have to be read as the empty-p centre,
+    can never pass; with its hydrogens present it is not even enumerated (four
+    non-metal neighbours).  A bond missing from *lengths* counts as a
+    full-length contact, so the allowance only fires when normalised lengths
+    were supplied.
 
     The second value counts how much of the sextet comes from such a donation,
     and the third names the atoms that donated it.  A ring drawn Kekulé is one
@@ -1474,8 +1619,26 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
             # A boron with no multiple bond has an empty p orbital: it
             # contributes no pi electron but does not break conjugation
             # (borazine, boroxine, boratabenzene).  A carbon in the same
-            # position is left with an unsatisfied valence, so it still
-            # rejects the ring.
+            # position normally carries an unsatisfied valence and rejects
+            # the ring, except for the single short-bonded seven-ring
+            # centre below (a tropylium carbocation).
+            pass
+        elif (
+            len(ring) == 7
+            and element == "C"
+            and any(key in ring_edges for key in incident)
+            and all(
+                (lengths or {}).get(key, 1.0) <= _TROPYLIUM_EMPTY_P_MAX_LENGTH_SCALE
+                for key in incident
+                if key in ring_edges
+            )
+        ):
+            # A tropylium carbocation centre: the ring reaches its six-pi
+            # sextet through the three Kekule doubles alone, and this single
+            # carbon's vacant p orbital is the positive charge rather than a
+            # break in the conjugation.  The geometric gate above keeps a CH2
+            # (long C-C, and four neighbours with its hydrogens present) from
+            # posing as this centre.
             pass
         else:
             # A carbon (or any other element) with no double bond at all has
@@ -1487,17 +1650,19 @@ def _ring_pi_electrons(ring, ring_atoms, elements, ring_edges, by_node, orders, 
 
 
 def _haptic_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, by_node, orders):
-    """6 pi electrons when *ring* is a coordinated pi ligand, else None.
+    """The pi-electron count of a coordinated pi ligand, else None.
 
     *adjacency* maps an atom to its neighbour atoms, *by_node* to its edge keys.
 
     A metallocene cyclopentadienyl ring has no valence left for a Kekule double
     bond: every carbon is already bonded to its two ring neighbours, its
     substituent and the metal, so :func:`_ring_pi_electrons` finds an empty p
-    orbital and rejects the ring.  The ligand is nevertheless the 6 pi
-    aromatic Cp- anion (eta5-Cp, and likewise eta6-arene or eta7-tropylium),
-    so a ring whose atoms all coordinate the same haptic metal counts as six pi
-    electrons.  An exocyclic multiple bond still vetoes it, exactly as for a
+    orbital and rejects the ring.  The ligand is nevertheless the aromatic
+    Huckel anion (eta5-Cp-, eta6-arene, eta7-tropylium), so a ring whose atoms
+    all coordinate the same haptic metal counts as six pi electrons; the
+    eta8-cyclooctatetraenyl dianion is the ten-pi member of the same series
+    (ABIDUK's (eta8-COT)(eta5-Cp*) samarium draws its COT ring with a torus
+    too).  An exocyclic multiple bond still vetoes it, exactly as for a
     Kekule ring, so a coordinated quinone stays non-aromatic.
     """
     if _haptic_metal(ring, elements, adjacency) is None:
@@ -1508,7 +1673,9 @@ def _haptic_pi_electrons(ring, ring_atoms, elements, ring_edges, adjacency, by_n
                 continue
             if _other(key, node) not in ring_atoms:
                 return None
-    return 6
+    # Both values pass the Huckel gate (pi-2) % 4 == 0: 6 for the eta5/6/7
+    # ligands, 10 for the eta8 dianion.
+    return 10 if len(ring) == 8 else 6
 
 
 def _fused_ring_clusters(rings):
@@ -1733,6 +1900,7 @@ def _clar_cluster_placement(
                     by_node,
                     candidate,
                     ring_count,
+                    lengths,
                 )
                 is None
             ):
@@ -1870,8 +2038,13 @@ def _clar_ring_placement(elements, edge_keys, adjacency, rings, extras, remainin
     return extras
 
 
-def _aromatic_ring_details(elements, edges, orders):
-    """Perception of every aromatic ring, with its electron bookkeeping."""
+def _aromatic_ring_details(elements, edges, orders, lengths=None):
+    """Perception of every aromatic ring, with its electron bookkeeping.
+
+    *lengths* optionally supplies the normalised bond lengths; they feed the
+    geometric gate that tells a tropylium carbocation centre from a plain
+    no-double carbon in a seven-ring (see :func:`_ring_pi_electrons`).
+    """
     elements = _normalise_elements(elements)
     orders = {edge_key(*key): order for key, order in (orders or {}).items()}
     adjacency, edge_keys = _graph(elements, edges)
@@ -1895,7 +2068,7 @@ def _aromatic_ring_details(elements, edges, orders):
             if key[0] in ring and key[1] in ring
         )
         counts = _ring_pi_electrons(
-            ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count
+            ring, ring_atoms, elements, ring_edges, by_node, orders, ring_count, lengths
         )
         haptic_metal = None
         donors = frozenset()
@@ -1932,7 +2105,7 @@ def _aromatic_ring_details(elements, edges, orders):
     return result
 
 
-def aromatic_rings(elements, edges, orders, detail=False):
+def aromatic_rings(elements, edges, orders, detail=False, lengths=None):
     """Return the aromatic rings, with their electron bookkeeping on request.
 
     ``orders`` is the mapping returned by :func:`bond_orders`; rings are judged
@@ -1940,12 +2113,17 @@ def aromatic_rings(elements, edges, orders, detail=False):
     ring (naphthalene yields two aromatic six-rings) instead of relying on bond
     length equalisation.
 
+    ``lengths`` optionally supplies the normalised bond lengths (distance over
+    the covalent-radii sum); without them the empty-p tropylium allowance of
+    :func:`_ring_pi_electrons` never fires, so every seven-ring carbon with no
+    drawn double bond is still rejected.
+
     With ``detail=False`` the result is ``[(ring_nodes, ring_edges)]``; with
     ``detail=True`` it is a list of :class:`AromaticRing` records, which also
     carry the lone-pair share of the sextet and the haptic metal of a pi
     ligand.
     """
-    rings = _aromatic_ring_details(elements, edges, orders)
+    rings = _aromatic_ring_details(elements, edges, orders, lengths)
     if detail:
         return rings
     return [(ring.nodes, ring.edges) for ring in rings]

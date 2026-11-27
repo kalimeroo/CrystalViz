@@ -160,11 +160,3 @@ def write_cif(path):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(cif_text())
     return path
-
-
-def methyl_labels():
-    return ("C8", "C9", "C10")
-
-
-def methyl_hydrogen_labels():
-    return tuple(f"H{methyl}{suffix}" for methyl in (8, 9, 10) for suffix in "ABC")

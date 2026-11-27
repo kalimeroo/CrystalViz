@@ -523,16 +523,6 @@ def _space_group_ops(structure):
     return list(space_group.operations())
 
 
-def _op_key(operation):
-    rotation = []
-    for row in operation.rot:
-        if isinstance(row, (list, tuple)):
-            rotation.extend(int(value) for value in row)
-        else:
-            rotation.append(int(row))
-    return (tuple(rotation), tuple(int(value) for value in operation.tran))
-
-
 def _expand_site(ops, unit_cell, frac):
     """Distinct symmetry images of a site, wrapped into [0, 1).
 
@@ -878,7 +868,8 @@ def _disorder_minor_labels(structure, block, unit_cell):
     that way, the block's primes are pure names and no level is removed unless
     occupancy says otherwise; :func:`load_structure` reports any real loss in
     ``omitted_disorder`` so the import message makes it visible.  The formal
-    ``_atom_site_disorder_group`` tag is not consulted.
+    ``_atom_site_disorder_group`` tag is a separate rule
+    (:func:`_disorder_group_labels`), since it needs no name heuristic.
     """
     levels = {}
     for site in structure.sites:
@@ -962,6 +953,57 @@ def _disorder_question_labels(structure):
     return frozenset(str(site.label) for site in structure.sites if str(site.label).endswith("?"))
 
 
+def _disorder_group_labels(structure, block):
+    """Labels of the alternate ``_atom_site_disorder_group`` components to omit.
+
+    Olex2/SHELX deposits tag the alternate components with the formal
+    ``_atom_site_disorder_group`` number instead of a label suffix: the four
+    disordered ligands of ``CIF/disorder.cif`` appear as ``C1A``/``C1B`` ...
+    (group 1/2).  gemmi parses the number as ``site.disorder_group`` (0 when
+    absent); the optional ``_atom_site_disorder_assembly`` scopes it, because
+    group numbers restart in every disordered assembly (that CIF has four,
+    A-D).
+
+    Group 1 is the primary component by convention and is the one the default
+    import keeps; the declared occupancy does not enter the vote, because a
+    freely refined pair can put group 2 marginally above group 1 (0.517 against
+    0.483 in one assembly of that CIF) while the deposition still calls group 1
+    the primary alternate.  A tag on its own never removes an atom: a group is
+    only dropped when the same assembly declares a second group (an assembly
+    numbered only ``2`` stays put).  ``keep_disorder`` bypasses this rule
+    entirely, like the two label-suffix rules above.
+    """
+    labels = [str(value).strip() for value in block.find_values("_atom_site_label")]
+    assemblies = [str(value).strip() for value in block.find_values("_atom_site_disorder_assembly")]
+    if len(assemblies) != len(labels):
+        assemblies = ["."] * len(labels)
+    assembly_by_label = dict(zip(labels, assemblies, strict=False))
+
+    buckets = {}
+    for site in structure.sites:
+        try:
+            group = int(getattr(site, "disorder_group", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if group <= 0:
+            continue
+        assembly = assembly_by_label.get(str(site.label), ".")
+        if assembly in ("", ".", "?"):
+            assembly = ""
+        buckets.setdefault(assembly, {}).setdefault(group, []).append(site)
+
+    dropped = set()
+    for groups in buckets.values():
+        if len(groups) < 2:
+            continue
+        winner = min(groups)
+        for group, sites in groups.items():
+            if group != winner:
+                dropped.update(str(site.label) for site in sites)
+    return frozenset(dropped)
+    return frozenset(dropped)
+
+
 def _skip_site(site, skip_labels):
     """True for a dummy site or a site with an explicit zero occupancy."""
     if site.label in skip_labels:
@@ -1007,14 +1049,15 @@ def load_structure(cif_path, block_name=None, keep_disorder=False):
     dummy_labels = _dummy_labels(block)
     if keep_disorder:
         # The caller asked for every disorder component (the import operator's
-        # "Keep All Disorder Components" toggle): neither the prime- nor the
-        # ?-labelled alternates are omitted, only the space-group resolution
-        # below keeps both combinations as separate components.
+        # "Keep All Disorder Components" toggle): neither the prime-, ?- nor
+        # disorder-group-labelled alternates are omitted, only the space-group
+        # resolution below keeps both combinations as separate components.
         disorder_labels = frozenset()
     else:
         disorder_labels = (
             _disorder_minor_labels(structure, block, unit_cell)
             | _disorder_question_labels(structure)
+            | _disorder_group_labels(structure, block)
         )
     skip_labels = dummy_labels | disorder_labels
     sites = _p1_sites(structure, unit_cell, skip_labels)

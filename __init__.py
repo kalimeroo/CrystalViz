@@ -221,7 +221,6 @@ _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
 _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
-_POLY_FACE_COLOR = (0.85, 0.55, 0.15, 1.0)
 _POLY_FACE_ALPHA = 0.25
 _POLY_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _POLY_EDGE_THICKNESS = 0.04
@@ -250,7 +249,6 @@ _MODEL_ITEMS = (
     ("WIRE_STICKS", "Wire-sticks", "Thin atoms and thin bonds"),
 )
 _CIF_CELL_VALUE_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$")
-_DOCS_URL = "https://github.com/kalimeroo/CrystalViz"
 
 
 def _gemmi_status():
@@ -3180,14 +3178,6 @@ def _polyhedron_style(scene, element, site_label=""):
     return style
 
 
-def _existing_polyhedron_style(scene, element, site_label=""):
-    site_label = str(site_label or "")
-    for style in scene.cgn_polyhedron_styles:
-        if style.element == element and str(style.site_label or "") == site_label:
-            return style
-    return None
-
-
 def _make_polyhedron_face_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
@@ -4006,7 +3996,10 @@ def _chemdraw_delocalised_edges(segments, covalent_radii):
 
     A carboxylate, carbonate, nitrate, phosphate, sulfate or sulfonate group
     has more terminal oxygens than its valence ladder can draw as genuine
-    doubles; the chemistry module returns every X-O edge of such a group.
+    doubles; the chemistry module returns every X-O edge of such a group,
+    except that in a metal-touched group (some terminal oxygen also
+    coordinates a metal) only the coordinating oxygens are delocalised and the
+    metal-free ones keep their genuine ``X=O`` double.
     """
     elements, edges, lengths, _points = _chemdraw_graph(segments, covalent_radii)
     return _chemistry().delocalised_oxo_edges(elements, edges, lengths)
@@ -4026,10 +4019,12 @@ def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
     cyclopentadienyl of a metallocene) is the other no-arrangement case: IUPAC
     GR-1.7.2 requires the curve.
     """
-    elements, edges, _lengths, points = _chemdraw_graph(segments, covalent_radii)
+    elements, edges, lengths, points = _chemdraw_graph(segments, covalent_radii)
     aromatic_edges = set()
     aromatic_rings = []
-    for ring in _chemistry().aromatic_rings(elements, edges, bond_orders, detail=True):
+    for ring in _chemistry().aromatic_rings(
+        elements, edges, bond_orders, detail=True, lengths=lengths
+    ):
         if ring.lone_pair_electrons and ring.kekule:
             continue
         coordinates = np.asarray([points[node] for node in sorted(ring.nodes)], dtype=float)

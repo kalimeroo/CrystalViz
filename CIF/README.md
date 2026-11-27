@@ -39,13 +39,22 @@ three-connected boron has an empty p orbital:
 | `Tellurochromenylium.cif` | 7243859 | C13 H15 B F4 Te | Te=C ring double, fused bicycle drawn as two tori |
 | `Tellurophene.cif` | 1558536 | C18 H16 O2 Te | Five-ring Te keeps its lone pair (Kekulé), two phenyl tori |
 
-The two sulfur fixtures are Cambridge Structural Database entries instead
-(their CIFs carry `_database_code_CSD`):
+The sulfur and eta8-COT fixtures are Cambridge Structural Database entries
+instead (their CIFs carry `_database_code_CSD` and stay local-only, gitignored
+as non-redistributable):
 
 | File | CSD refcode | CCDC | Formula | Used for |
 | --- | --- | --- | --- | --- |
 | `S1.cif` | ATBOXM | 1103749 | C9 H14 O3 S | Thiabenzene 1-oxide: S=O double, shallow-boat S ring drawn as an aromatic torus |
 | `S2.cif` | BIZTAF | 1112440 | C23 H17 Cu2 I3 S | Thiopyrylium: S=C ring double, four aromatic tori |
+| `8ring.cif` | ABIDUK | 145189 | C18 H23 Sm | (η8-COT)(η5-Cp*)Sm: 8-ring enumerated, 10π COT ligand drawn as a second torus next to the Cp* ring |
+
+`disorder.cif` is a local Olex2 export (not a CSD deposit, no refcode) that
+reproduces alternate components tagged with the formal
+`_atom_site_disorder_group` columns rather than label suffixes: four disordered
+ligands A-D, each written twice (`C1A`/`C1B` ..., occupancies summing to 1).
+It drives the load-time group rule and is gitignored as non-redistributable;
+the suite skips its check when the file is absent.
 
 `tests/test_gemmi_worker.py` pins the atom/site counts of `multiple_bonds.cif`,
 `Ferrocene.cif`, `Brookite.cif`, `Nano.cif` and `Cyanoferrocene.cif`; update

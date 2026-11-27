@@ -265,7 +265,6 @@ test_obj.matrix_world = (
 bpy.context.view_layer.update()
 
 stored_scales = read_vector_attribute(test_mesh.attributes["cgn_scale"], 8)
-stored_rotations = read_vector_attribute(test_mesh.attributes["cgn_rotation"], 8)
 
 direction = Vector((0.3, -0.8, 0.5))
 expected = old_orient(test_obj, view_direction=direction)

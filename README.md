@@ -140,8 +140,10 @@ pair to neither, so both rings keep their Kekulé strokes. A ring whose sextet
 does come from a heteroatom lone pair is drawn Kekulé as well, because it has
 only one arrangement of alternating single and double bonds (IUPAC GR-6.3, the
 pyrrole/furan case). A ring whose atoms all coordinate the same metal is a 6π
-ligand (η5-cyclopentadienyl, η6-arene) and keeps its torus even though every
-carbon is already four-coordinate. A ring whose atom carries a multiple bond to
+ligand (η5-cyclopentadienyl, η6-arene, η7-tropylium; the η8-cyclooctatetraenyl
+dianion is 10π) and keeps its torus even though every carbon is already
+four-coordinate. A bare tropylium cation (C7H7⁺, one empty p orbital) is
+aromatic from its six π electrons. A ring whose atom carries a multiple bond to
 a non-ring atom (a ketone, for example) is
 localized and shows centered multiple-bond strokes in the plane of its
 neighboring atoms instead. Single-bond radius is independent of the
@@ -149,7 +151,7 @@ neighboring atoms instead. Single-bond radius is independent of the
 between parallel strokes. Torus size, width, and color are adjustable.
 It remains an estimate, not a full chemical-structure assignment: formal
 charges and radical centres are not modelled, rings are only enumerated for 5-
-to 7-membered cycles, and unusual valence, disorder, or metal coordination can
+to 8-membered cycles, and unusual valence, disorder, or metal coordination can
 still make an assignment ambiguous. It does not use chemical databases or the
 statistical fragment priors used by comprehensive assignment software. The
 approach follows the

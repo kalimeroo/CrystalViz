@@ -280,6 +280,45 @@ def _disorder_cif(rows, with_occupancy):
     return "\n".join(lines) + "\n"
 
 
+def _disorder_group_cif(rows):
+    """Minimal P1 CIF with the formal disorder assembly/group columns.
+
+    Rows are ``(label, element, x, y, z, occupancy, assembly, group)``.
+    """
+    lines = [
+        "data_disorder_group",
+        "_cell_length_a 10.0",
+        "_cell_length_b 10.0",
+        "_cell_length_c 10.0",
+        "_cell_angle_alpha 90.0",
+        "_cell_angle_beta 90.0",
+        "_cell_angle_gamma 90.0",
+        "_symmetry_space_group_name_H-M 'P 1'",
+        "loop_",
+        "_atom_site_label",
+        "_atom_site_type_symbol",
+        "_atom_site_fract_x",
+        "_atom_site_fract_y",
+        "_atom_site_fract_z",
+        "_atom_site_occupancy",
+        "_atom_site_disorder_assembly",
+        "_atom_site_disorder_group",
+    ]
+    for label, element, x, y, z, occupancy, assembly, group in rows:
+        values = [
+            label,
+            element,
+            f"{x:.5f}",
+            f"{y:.5f}",
+            f"{z:.5f}",
+            f"{occupancy:.3f}",
+            assembly,
+            str(group),
+        ]
+        lines.append(" ".join(values))
+    return "\n".join(lines) + "\n"
+
+
 class TestDisorderPrimeLabels(unittest.TestCase):
     """Alternate disorder components are omitted at load.
 
@@ -538,10 +577,116 @@ class TestDisorderQuestionLabels(unittest.TestCase):
             ("H33?", "H", 0.13, 0.33, 0.47, 1.0),  # no plain atom within 0.5 A
         ]
         result = self._load(rows, with_occupancy=False, keep_disorder=True)
-        self.assertEqual(
-            self._labels(result), ["C31", "S2", "H29", "C32?", "S6?", "H33?"]
-        )
+        self.assertEqual(self._labels(result), ["C31", "S2", "H29", "C32?", "S6?", "H33?"])
         self.assertEqual(result["omitted_disorder"], 0)
+
+
+class TestDisorderGroupLabels(unittest.TestCase):
+    """Formal ``_atom_site_disorder_group`` alternates are omitted at load.
+
+    Olex2/SHELX deposits number the alternate components of a disordered ligand
+    (1 = primary, 2 = alternate) and scope the numbering with
+    ``_atom_site_disorder_assembly``.  ``CIF/disorder.cif`` is the driving case:
+    four assemblies A-D, each written twice as group 1/group 2 atoms.  Keeping
+    both orientations doubles every ligand and bonds each atom to both copies;
+    the default import keeps group 1 only, and the refined occupancy does not
+    save group 2 (one assembly of that CIF has it marginally higher, 0.517
+    against 0.483, and the deposition still calls group 1 the primary).
+    """
+
+    def _load(self, rows, keep_disorder=False):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "disorder.cif")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(_disorder_group_cif(rows))
+            return gw.load_structure(path, keep_disorder=keep_disorder)
+
+    @staticmethod
+    def _labels(result):
+        return [site["label"] for site in result["sites"]]
+
+    def test_group_two_is_dropped_even_when_more_occupied(self):
+        rows = [
+            ("C1A", "C", 0.20, 0.30, 0.40, 0.483, "A", 1),
+            ("C1B", "C", 0.20, 0.30, 0.44, 0.517, "A", 2),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["C1A"])
+        self.assertEqual(result["omitted_disorder"], 1)
+
+    def test_every_assembly_keeps_its_own_group_one(self):
+        # Group numbers restart in every assembly: assembly B's own group 1
+        # survives even though a group 1 of assembly A was seen before it.
+        rows = [
+            ("C1A", "C", 0.20, 0.30, 0.40, 0.54, "A", 1),
+            ("C1B", "C", 0.20, 0.30, 0.44, 0.46, "A", 2),
+            ("C11A", "C", 0.60, 0.30, 0.40, 0.48, "B", 1),
+            ("C11B", "C", 0.60, 0.30, 0.44, 0.52, "B", 2),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["C1A", "C11A"])
+        self.assertEqual(result["omitted_disorder"], 2)
+
+    def test_a_group_two_without_a_sibling_is_kept(self):
+        # A tag alone removes nothing: an assembly numbered only 2 is not an
+        # alternate of anything, so dropping it would lose a whole ligand.
+        rows = [
+            ("C1A", "C", 0.20, 0.30, 0.40, 0.54, "A", 1),
+            ("C1B", "C", 0.20, 0.30, 0.44, 0.46, "A", 2),
+            ("C21B", "C", 0.60, 0.30, 0.40, 1.0, "C", 2),
+            ("C22B", "C", 0.62, 0.30, 0.40, 1.0, "C", 2),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["C1A", "C21B", "C22B"])
+        self.assertEqual(result["omitted_disorder"], 1)
+
+    def test_missing_assembly_is_one_bucket(self):
+        rows = [
+            ("C1", "C", 0.20, 0.30, 0.40, 0.60, ".", 1),
+            ("C2", "C", 0.20, 0.30, 0.44, 0.40, ".", 2),
+        ]
+        result = self._load(rows)
+        self.assertEqual(self._labels(result), ["C1"])
+        self.assertEqual(result["omitted_disorder"], 1)
+
+    def test_keep_disorder_keeps_group_two(self):
+        rows = [
+            ("C1A", "C", 0.20, 0.30, 0.40, 0.54, "A", 1),
+            ("C1B", "C", 0.20, 0.30, 0.44, 0.46, "A", 2),
+        ]
+        result = self._load(rows, keep_disorder=True)
+        self.assertEqual(self._labels(result), ["C1A", "C1B"])
+        self.assertEqual(result["omitted_disorder"], 0)
+
+
+DISORDER_GROUP_CIF = os.path.join(EXAMPLES, "disorder.cif")
+
+
+@unittest.skipUnless(os.path.exists(DISORDER_GROUP_CIF), "local Olex2 disorder.cif absent")
+class TestDisorderGroupLocalCif(unittest.TestCase):
+    """The reported CIF: four assemblies A-D, each tagged group 1 and group 2.
+
+    The file is a local, non-redistributable Olex2 export (gitignored), so the
+    suite skips it elsewhere; the synthetic tests above pin the same rule.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.default = gw.load_structure(DISORDER_GROUP_CIF)
+        cls.kept = gw.load_structure(DISORDER_GROUP_CIF, keep_disorder=True)
+
+    def test_default_import_keeps_one_component_per_assembly(self):
+        labels = {site["label"] for site in self.default["sites"]}
+        self.assertEqual(self.default["omitted_disorder"], 100)
+        for number in ("1", "11", "21", "31"):
+            self.assertIn(f"C{number}A", labels)
+            self.assertNotIn(f"C{number}B", labels)
+        self.assertIn("Ir1", labels)
+
+    def test_keep_disorder_keeps_both_components(self):
+        labels = {site["label"] for site in self.kept["sites"]}
+        self.assertIn("C1B", labels)
+        self.assertEqual(self.kept["omitted_disorder"], 0)
 
 
 class TestSymmetryDisorder(unittest.TestCase):

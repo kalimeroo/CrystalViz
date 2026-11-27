@@ -70,7 +70,7 @@ for a first run.
 
 ## Current status
 
-`pwsh tests/run_all.ps1` → 63/63 pass.
+`pwsh tests/run_all.ps1` → 64/64 pass.
 
 - `test_chemistry.py` covers the pure-Python perception module (`chemistry.py`,
   standard library only — it also runs under plain `python tests/test_chemistry.py`,
@@ -415,6 +415,23 @@ for a first run.
   general-position-anchor rejection (the false positive that used to swallow
   the Ca.cif solvent region), and both suites share the fixture in
   `tests/_symmetry_disorder_fixture.py`.
+- `test_view_projection.py` pins the View sub-panel's `cgn.view_along`
+  operator: it points the 3D viewport down a crystallographic direction and
+  snaps it to orthographic projection (always). On `multiple_bonds.cif` the
+  view forward (-Z local) is asserted to be parallel to the cell **a**/**b**/**c**
+  axes and the in-plane roll is pinned to the conventional layout (along **a**,
+  **b** horizontal with **c** vertical; along **b**, **a** horizontal with
+  **c** vertical; along **c**, **a** horizontal with **b** vertical), the [h k
+  l] view-along projection reproduces the same directions for [1 0 0],
+  [0 1 0] and [0 0 1] and the [1 1 1] = a+b+c combination, the (h k l) plane
+  projection (the same three values read as Miller indices, via the panel's
+  View dropdown) looks along the reciprocal normal h a* + k b* + l c* (seen
+  face on), and its look sense follows the index signs — positive indices
+  view from the origin along the normal, negated (-h -k -l) indices the
+  opposite way (asserted as a vertical mirror; the horizontal axis stays
+  exact in both), each
+  projection re-centres the viewport on the structure, and zero [0 0 0]
+  direction / (0 0 0) plane are rejected without moving the view.
 
 ## Ordered suites
 

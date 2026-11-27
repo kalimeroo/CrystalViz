@@ -157,7 +157,7 @@ _MANIFEST_TEMPLATE = (
     """schema_version = "1.0.0"
 
 id = "crystalviz"
-version = "1.0.0"
+version = "1.1.0"
 name = "CrystalViz"
 tagline = "Import CIF atoms and render with Geometry Nodes"
 maintainer = "Erwann Jeanneau"

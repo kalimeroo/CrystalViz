@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (

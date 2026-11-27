@@ -350,6 +350,15 @@ _IONIC_RADII = {
 _DEFAULT_VDW_RADIUS = 1.70
 _DEFAULT_COVALENT_RADIUS = 0.75
 _CART_TOLERANCE = 1e-3  # Angstrom, position tolerance when matching atoms
+# Two same-element atoms closer than this are the same atom deposited twice.
+# Redeposited "full molecule + symmetry twins" CIFs (e.g. SHELX B-suffix
+# halves) can repeat a site at positions that differ only in the last deposited
+# fractional decimal -- up to a few 1e-4 A in a ~25 A cell -- which is an order
+# of magnitude beyond the 1e-5 A rounding the old equality check used, yet far
+# below any real interatomic or disorder-alternate separation (typically
+# >= 0.2 A even for adjacent hydrogen positions), so merging such atoms never
+# removes a genuine one.
+_DUPLICATE_POSITION_TOLERANCE = 0.01  # Angstrom
 _LABEL_ELEMENT = re.compile(r"([A-Za-z]{1,2})")
 
 
@@ -512,16 +521,6 @@ def _space_group_ops(structure):
     if space_group is None:
         raise ValueError("The CIF does not define a space group that gemmi recognises.")
     return list(space_group.operations())
-
-
-def _op_key(operation):
-    rotation = []
-    for row in operation.rot:
-        if isinstance(row, (list, tuple)):
-            rotation.extend(int(value) for value in row)
-        else:
-            rotation.append(int(row))
-    return (tuple(rotation), tuple(int(value) for value in operation.tran))
 
 
 def _expand_site(ops, unit_cell, frac):
@@ -785,11 +784,243 @@ def _site_u_cart(site, unit_cell, operation=None):
     return None
 
 
-def _p1_sites(structure, unit_cell):
+def _dummy_labels(block):
+    """Labels of the sites the CIF flags ``_atom_site_calc_flag`` = ``dum``.
+
+    gemmi does not expose ``calc_flag`` on its sites, and a dummy site has no
+    ``_atom_site_type_symbol``: the label fallback in :func:`_site_element`
+    would then turn a ring centroid like ``Cg1`` into carbon, which bonds to
+    every atom of the ring it sits on and destroys the ring (cyanoferrocene,
+    COD 2005233).
+    """
+    labels = [str(value) for value in block.find_values("_atom_site_label")]
+    flags = [str(value) for value in block.find_values("_atom_site_calc_flag")]
+    return frozenset(
+        label for label, flag in zip(labels, flags, strict=False) if flag.strip().lower() == "dum"
+    )
+
+
+# Occupancy difference below which two disorder components count as equally
+# occupied: the unprimed label keeps the site.
+_DISORDER_OCCUPANCY_EPSILON = 1e-3
+
+# Suffixes that mark an alternative disorder component in a small-molecule CIF.
+_DISORDER_PRIME_CHARACTERS = "'\""
+
+# Two labels of one base name this close (A) are the *same atomic position*
+# deposited once per component -- the signature of a prime-labelled disorder
+# deposition.  Distinct atoms of a molecule are never within half an Angstrom
+# of each other: the shortest real covalent bonds run around 1.2 A.  When no
+# base carries such a coincident pair, trailing primes are an author's naming
+# convention (a second molecule of the asymmetric unit, say), not disorder.
+_DISORDER_OVERLAP_A = 0.5
+
+
+def _disorder_overlaps(levels, unit_cell):
+    """Whether a base name carries two components at one atomic position.
+
+    A prime-labelled disorder deposition lists the same atom twice -- once per
+    alternate component -- so some base names are represented by a plain label
+    and a primed label that land on (almost) the same point (AKUQAB's thiophene
+    keeps ``C1``/``C1'`` 0.08 A apart).  An author's numbering convention never
+    does that: two distinct atoms of a molecule sit at least a covalent bond
+    (around 1.2 A) apart.  A single coincident pair marks the whole block
+    as a disorder deposition; without any, the primes are just names.
+    """
+    for by_level in levels.values():
+        if len(by_level) < 2:
+            continue
+        for level_a, sites_a in by_level.items():
+            for level_b, sites_b in by_level.items():
+                if level_b <= level_a:
+                    continue
+                for site_a in sites_a:
+                    for site_b in sites_b:
+                        distance = _cart_distance(unit_cell, site_a.fract, site_b.fract)
+                        if distance <= _DISORDER_OVERLAP_A:
+                            return True
+    return False
+
+
+def _disorder_minor_labels(structure, block, unit_cell):
+    """Labels of the alternate disorder components that load must omit.
+
+    CSD CIFs label the second and third components of a disordered site with a
+    trailing prime or double prime (``S1'``, ``S1''``) while the first component
+    keeps the plain label.  The omission is per base label: a primed label is
+    only dropped when an unprimed sibling of the same base exists, so an atom
+    that legitimately carries a prime with no counterpart (``C12'`` and no
+    ``C12``) is kept.
+
+    Occupancy wins when the CIF declares it: a base whose components differ in
+    occupancy keeps the more occupied one and drops the other, so a primed
+    component can survive while the plain one goes.  A base whose components
+    are equally occupied abstains, which keeps fixed hydrogen occupancies from
+    skewing the choice; without an occupancy column the primed (and
+    double-primed) components are dropped and the unprimed one kept.
+
+    The suffix is a labelling convention, not a CIF guarantee: an author can
+    also number a second independent molecule of the asymmetric unit with
+    primes.  :func:`_disorder_overlaps` tells the two apart from the deposited
+    geometry -- a genuine disorder deposition lists the same atomic position
+    twice (once per component), while a naming convention never puts two
+    distinct atoms within half an Angstrom.  When no base name overlaps itself
+    that way, the block's primes are pure names and no level is removed unless
+    occupancy says otherwise; :func:`load_structure` reports any real loss in
+    ``omitted_disorder`` so the import message makes it visible.  The formal
+    ``_atom_site_disorder_group`` tag is a separate rule
+    (:func:`_disorder_group_labels`), since it needs no name heuristic.
+    """
+    levels = {}
+    for site in structure.sites:
+        label = str(site.label)
+        base = label.rstrip(_DISORDER_PRIME_CHARACTERS)
+        if not base:
+            continue
+        levels.setdefault(base, {}).setdefault(len(label) - len(base), []).append(site)
+    occupancy_declared = any(
+        str(value).strip() for value in block.find_values("_atom_site_occupancy")
+    )
+
+    def mean_occupancy(level_sites):
+        values = []
+        for site in level_sites:
+            try:
+                value = float(site.occ)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                values.append(value)
+        return sum(values) / len(values) if values else None
+
+    def clear_winner(by_level):
+        """Prime level this base's declared occupancies prefer, if any."""
+        if not occupancy_declared or len(by_level) < 2:
+            return None
+        means = {level: mean_occupancy(sites) for level, sites in by_level.items()}
+        means = {level: mean for level, mean in means.items() if mean is not None}
+        if len(means) < 2:
+            return None
+        ordered = sorted(means.values(), reverse=True)
+        if ordered[0] - ordered[1] <= _DISORDER_OCCUPANCY_EPSILON:
+            return None
+        return max(means, key=means.get)
+
+    # One vote per base that clearly prefers a level: bases whose levels are
+    # tied abstain, so a structure-wide component (all primed atoms, say) wins
+    # even when a few fixed-occupancy atoms vote the other way.
+    votes = {}
+    for by_level in levels.values():
+        winner = clear_winner(by_level)
+        if winner is not None:
+            votes[winner] = votes.get(winner, 0) + 1
+    ranked = sorted(votes.items(), key=lambda item: (-item[1], item[0]))
+    preferred = ranked[0][0] if ranked else 0
+
+    naming_convention = not _disorder_overlaps(levels, unit_cell)
+
+    dropped = set()
+    for by_level in levels.values():
+        if len(by_level) < 2:
+            continue
+        winner = clear_winner(by_level)
+        if winner is None:
+            if naming_convention and not preferred:
+                # Every base is a distinct atom's worth of geometry: the
+                # primes are only names, so occupancy evidence alone (above)
+                # may remove a level.
+                continue
+            winner = preferred if preferred in by_level else 0
+        if winner not in by_level:
+            winner = min(by_level)
+        for level, level_sites in by_level.items():
+            if level != winner:
+                dropped.update(str(site.label) for site in level_sites)
+    return frozenset(dropped)
+
+
+def _disorder_question_labels(structure):
+    """Labels of the ``?``-suffixed alternate disorder components to omit.
+
+    Some CSD deposits number the second component of a disordered site on its
+    own lines and flag it with a trailing question mark (PEPQAG's ring flips
+    sit ``H2?`` 0.06 A from ``H1``, ``C32?`` 0.36 A from ``S1``).  There is no
+    shared base name for the prime pairing to see, so the ``?`` mark itself is
+    the tell, and unlike the primes it is unconditional: every site carrying a
+    trailing ``?`` is an alternate component and is ignored, with no geometry
+    gate and no occupancy vote.
+    """
+    return frozenset(str(site.label) for site in structure.sites if str(site.label).endswith("?"))
+
+
+def _disorder_group_labels(structure, block):
+    """Labels of the alternate ``_atom_site_disorder_group`` components to omit.
+
+    Olex2/SHELX deposits tag the alternate components with the formal
+    ``_atom_site_disorder_group`` number instead of a label suffix: the four
+    disordered ligands of ``CIF/disorder.cif`` appear as ``C1A``/``C1B`` ...
+    (group 1/2).  gemmi parses the number as ``site.disorder_group`` (0 when
+    absent); the optional ``_atom_site_disorder_assembly`` scopes it, because
+    group numbers restart in every disordered assembly (that CIF has four,
+    A-D).
+
+    Group 1 is the primary component by convention and is the one the default
+    import keeps; the declared occupancy does not enter the vote, because a
+    freely refined pair can put group 2 marginally above group 1 (0.517 against
+    0.483 in one assembly of that CIF) while the deposition still calls group 1
+    the primary alternate.  A tag on its own never removes an atom: a group is
+    only dropped when the same assembly declares a second group (an assembly
+    numbered only ``2`` stays put).  ``keep_disorder`` bypasses this rule
+    entirely, like the two label-suffix rules above.
+    """
+    labels = [str(value).strip() for value in block.find_values("_atom_site_label")]
+    assemblies = [str(value).strip() for value in block.find_values("_atom_site_disorder_assembly")]
+    if len(assemblies) != len(labels):
+        assemblies = ["."] * len(labels)
+    assembly_by_label = dict(zip(labels, assemblies, strict=False))
+
+    buckets = {}
+    for site in structure.sites:
+        try:
+            group = int(getattr(site, "disorder_group", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if group <= 0:
+            continue
+        assembly = assembly_by_label.get(str(site.label), ".")
+        if assembly in ("", ".", "?"):
+            assembly = ""
+        buckets.setdefault(assembly, {}).setdefault(group, []).append(site)
+
+    dropped = set()
+    for groups in buckets.values():
+        if len(groups) < 2:
+            continue
+        winner = min(groups)
+        for group, sites in groups.items():
+            if group != winner:
+                dropped.update(str(site.label) for site in sites)
+    return frozenset(dropped)
+    return frozenset(dropped)
+
+
+def _skip_site(site, skip_labels):
+    """True for a dummy site or a site with an explicit zero occupancy."""
+    if site.label in skip_labels:
+        return True
+    try:
+        return float(site.occ) <= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _p1_sites(structure, unit_cell, skip_labels=frozenset()):
     """Cell contents in P1 as a small table of sites."""
     ops = _space_group_ops(structure)
     sites = []
     for site in structure.sites:
+        if _skip_site(site, skip_labels):
+            continue
         element = _site_element(site)
         vdw_radius, covalent_radius = _radius_tables(element)
         frac = [float(v) for v in site.fract]
@@ -810,17 +1041,49 @@ def _p1_sites(structure, unit_cell):
     return sites
 
 
-def load_structure(cif_path, block_name=None):
+def load_structure(cif_path, block_name=None, keep_disorder=False):
     """Return the P1 site table and the instances that make up the ASU."""
     structure, key, block = _read_structure(cif_path, block_name)
     unit_cell = _UnitCell(structure.cell.parameters)
     ops = _space_group_ops(structure)
-    sites = _p1_sites(structure, unit_cell)
+    dummy_labels = _dummy_labels(block)
+    if keep_disorder:
+        # The caller asked for every disorder component (the import operator's
+        # "Keep All Disorder Components" toggle): neither the prime-, ?- nor
+        # disorder-group-labelled alternates are omitted, only the space-group
+        # resolution below keeps both combinations as separate components.
+        disorder_labels = frozenset()
+    else:
+        disorder_labels = (
+            _disorder_minor_labels(structure, block, unit_cell)
+            | _disorder_question_labels(structure)
+            | _disorder_group_labels(structure, block)
+        )
+    skip_labels = dummy_labels | disorder_labels
+    sites = _p1_sites(structure, unit_cell, skip_labels)
+    asu_fracs = {
+        site.label: [float(value) for value in site.fract]
+        for site in structure.sites
+        if not _skip_site(site, skip_labels)
+    }
+    # Resolve the disorder the space group itself generates (a half-occupied
+    # substituent whose alternate position is not a second CIF label).  This
+    # runs after the prime-label omission, so the two rules compose: primed
+    # alternate components are already gone, and only anchored groups whose
+    # anchor sits on the symmetry element are touched here.
+    resolution = _resolve_symmetry_disorder(
+        sites, unit_cell, ops, asu_fracs, keep_disorder=keep_disorder
+    )
+    sites = resolution["sites"]
     base_atoms = _base_atoms(unit_cell, sites)
     lookup = _base_atom_lookup(unit_cell, base_atoms)
     asu_atoms = []
     for site in structure.sites:
-        frac = [float(value) for value in site.fract]
+        if _skip_site(site, skip_labels):
+            continue
+        frac = resolution["asu_fracs"].get(site.label)
+        if frac is None:
+            frac = [float(value) for value in site.fract]
         asu_atoms.append(
             {
                 "label": site.label,
@@ -853,6 +1116,15 @@ def load_structure(cif_path, block_name=None):
         "cell_matrix": list(unit_cell._columns),
         "sites": sites,
         "instances": instances,
+        # Number of alternate disorder components omitted at load, so the
+        # import message can report them (see _disorder_minor_labels and
+        # _disorder_question_labels).
+        "omitted_disorder": len(disorder_labels),
+        # Number of symmetry-disordered groups resolved to one component, and
+        # the number of alternate P1 images dropped to do so (0 when the caller
+        # asked to keep every component).
+        "resolved_disorder": resolution["resolved_groups"],
+        "dropped_disorder": resolution["dropped_sites"],
         # Connectivity hints: declared oxidation numbers, Shannon radii for the
         # charged elements, and which elements gemmi considers metallic.  All
         # three are used by the add-on to derive the default distance windows.
@@ -906,15 +1178,48 @@ def _canonical_base_indices(base_atoms):
     expansion then contains exact duplicates). Growth treats those as a single
     atom, like the position based duplicate check of the original
     implementation did.
+
+    Two sites of the same element count as one atom whenever their Cartesian
+    positions coincide to within ``_DUPLICATE_POSITION_TOLERANCE`` (0.01 A).
+    The bucket scan looks at the 27 neighbouring cells of a ``tolerance``-sized
+    grid, so any two points within the tolerance land in the same or an
+    adjacent cell and share a representative; the strict distance check then
+    decides.  This merges both the exact copies of a disorder site and the
+    pseudo-symmetry twins of a redeposited full-molecule CIF (the same atom
+    listed twice with 5-decimal fractional coordinates can differ by up to a
+    few 1e-4 A), so ``grow_connectivity_shell`` never adds an atom sitting on
+    top of one already on screen -- which would otherwise give a ring carbon
+    an extra (duplicate) hydrogen and break its aromatic-ring eligibility.
     """
-    groups = {}
+    tolerance = _DUPLICATE_POSITION_TOLERANCE
+    tolerance_squared = tolerance * tolerance
+    grid = {}
     canonical = []
     for index, atom in enumerate(base_atoms):
-        key = (
-            atom["element"],
-            *(round(float(value), 5) for value in atom["cart"]),
-        )
-        canonical.append(groups.setdefault(key, index))
+        element = atom["element"]
+        cart = atom["cart"]
+        cell = tuple(int(math.floor(value / tolerance)) for value in cart)
+        rep_index = index
+        for da in (-1, 0, 1):
+            for db in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    bucket = (element, cell[0] + da, cell[1] + db, cell[2] + dc)
+                    for candidate_cart, candidate_index in grid.get(bucket, ()):
+                        if (
+                            sum((cart[axis] - candidate_cart[axis]) ** 2 for axis in range(3))
+                            <= tolerance_squared
+                        ):
+                            rep_index = candidate_index
+                            break
+                    if rep_index != index:
+                        break
+                if rep_index != index:
+                    break
+            if rep_index != index:
+                break
+        if rep_index == index:
+            grid.setdefault((element, *cell), []).append((cart, index))
+        canonical.append(rep_index)
     return canonical
 
 
@@ -1088,11 +1393,12 @@ def _periodic_neighbour_table_gemmi(
     byte-identical to the all-pairs scan on the example CIFs.
 
     Both seeds and candidates are restricted to canonical atoms.  A
-    non-canonical atom is a duplicate copy of another site (same element, same
-    position to 1e-5 A), so listing it as a candidate would let growth add an
-    atom sitting on top of its representative whenever the enabled window
-    admits the ~1e-6 A separation -- i.e. with ``min_distance`` set to 0,
-    where the ``dist <= 1e-12`` self filter no longer catches it.
+    non-canonical atom is a duplicate copy of another site (same element,
+    same position to ``_DUPLICATE_POSITION_TOLERANCE``), so listing it as a
+    candidate would let growth add an atom sitting on top of its
+    representative whenever the enabled window admits the sub-tolerance
+    separation -- i.e. with ``min_distance`` set to 0, where the
+    ``dist <= 1e-12`` self filter no longer catches it.
     """
     cell = unit_cell.cell  # gemmi.UnitCell
     cell_matrix = unit_cell._columns  # column-major, matches _cart_from_frac
@@ -1180,6 +1486,442 @@ def _neighbor_search_index(unit_cell, base_atoms, radius):
     for n, site in enumerate(structure.sites):
         search.add_site(site, n)
     return search, sites
+
+
+# --------------------------------------------------------------------------
+# Symmetry-generated disorder
+# --------------------------------------------------------------------------
+
+# A partially occupied site is disorder rather than an under-occupied atom
+# when it is close enough to fully occupied (e.g. 0.5 + 0.5).
+_DISORDER_MIN_OCCUPANCY = 0.999
+# Bond window and maximum coordination number used only to decide whether an
+# anchored group resolves to a chemically valid conformer.  The window is the
+# same 1.25 * (r_a + r_b) used by the resolver prototype; it is deliberately
+# tighter than the display windows so a genuine bond is never mistaken for a
+# clash, while the impossible 1.31 A methyl-methyl contact of the Ca case is.
+_DISORDER_BOND_SCALE = 1.25
+_DISORDER_MAX_VALENCE = {
+    "H": 1,
+    "D": 1,
+    "B": 3,
+    "C": 4,
+    "N": 4,
+    "O": 2,
+    "F": 1,
+    "Si": 4,
+    "P": 5,
+    "S": 6,
+    "Cl": 1,
+    "Br": 1,
+    "I": 1,
+}
+_DISORDER_DEFAULT_VALENCE = 8
+# Bounds that keep the per-anchor search cheap on large CIFs.
+_DISORDER_MAX_CLUSTER_SITES = 64
+_DISORDER_SEARCH_BUDGET = 20000
+_DISORDER_MAX_SOLUTIONS = 64
+
+
+def _disorder_is_identity(operation):
+    """True for the identity operation, lattice translations included.
+
+    gemmi stores the rotation and translation in integer form scaled by
+    ``Op.DEN``; a pure lattice translation (``x+1,y,z``) is the identity in a
+    periodic cell and must not count as the symmetry element that generates a
+    disorder.
+    """
+    denominator = int(operation.DEN)
+    rotation = tuple(int(value) for row in operation.rot for value in row)
+    if rotation != (denominator, 0, 0, 0, denominator, 0, 0, 0, denominator):
+        return False
+    return all(int(value) % denominator == 0 for value in operation.tran)
+
+
+def _disorder_max_valence(element):
+    """Largest coordination number a fully occupied anchor can support."""
+    return _DISORDER_MAX_VALENCE.get(str(element).upper(), _DISORDER_DEFAULT_VALENCE)
+
+
+def _disorder_fixing_operations(ops, frac, unit_cell):
+    """Non-identity space-group operations that leave *frac* fixed.
+
+    A symmetry-generated disorder needs the anchor itself to sit on the
+    symmetry element: the mirror that swaps the two methyl orientations of
+    ``CIF/Ca.cif`` fixes the quaternary carbon, while a general-position atom
+    merely bonded to a partially occupied neighbour (a sulfonate oxygen next to
+    the disordered potassium/water region) is not fixed by any operation.
+    """
+    fixing = []
+    for operation in ops:
+        if _disorder_is_identity(operation):
+            continue
+        image = _symmetry_image(operation, frac)
+        if _cart_distance(unit_cell, image, frac) <= _CART_TOLERANCE:
+            fixing.append(operation)
+    return fixing
+
+
+def _disorder_images_closed_under(operation, fracs, unit_cell):
+    """True when *operation* permutes the image positions among themselves."""
+    for frac in fracs:
+        image = _symmetry_image(operation, frac)
+        if not any(_cart_distance(unit_cell, image, other) <= _CART_TOLERANCE for other in fracs):
+            return False
+    return True
+
+
+def _disorder_anchor_solutions(
+    sites,
+    unit_cell,
+    asu_fracs,
+    anchor,
+    anchor_edges,
+    partial_edges,
+    is_partial,
+    cluster,
+    depth,
+):
+    """Enumerate the chemically valid image combinations of one anchored cluster.
+
+    The search walks the cluster's labels parents-first (``depth`` was assigned
+    outward from the anchor) and only places an image that stays bonded to the
+    anchor or to an already chosen image (``connected``) while keeping every
+    chosen atom within its maximum coordination number (``within_valence`` and
+    the ``valid_solution`` check -- the same valence cap that rejects the
+    overlapping images of a mirror-generated *tert*-butyl).  A completed
+    combination scores one point per CIF identity position it keeps, so a call
+    with more unchanged ASU atoms outranks one that relocates them.
+
+    Returns ``{"order", "candidates", "solutions"}`` with the solutions sorted
+    best-first (score descending, then the chosen site-index tuple).
+    """
+    labels = sorted({sites[index]["label"] for index in cluster})
+    candidates = {
+        label: sorted(index for index in cluster if sites[index]["label"] == label)
+        for label in labels
+    }
+    label_depth = {label: min(depth[index] for index in candidates[label]) for label in labels}
+    order = sorted(labels, key=lambda label: (label_depth[label], label))
+
+    chosen = {}
+    chosen_sites = set()
+    solutions = []
+    budget = [_DISORDER_SEARCH_BUDGET]
+
+    def connected(index):
+        return any(
+            other == anchor or other in chosen_sites for other in partial_edges.get(index, ())
+        )
+
+    def within_valence(index):
+        count = 0
+        for other in partial_edges.get(index, ()):
+            if other == anchor or other in chosen_sites or not is_partial(other):
+                count += 1
+        return count <= _disorder_max_valence(sites[index]["element"])
+
+    def valid_solution():
+        for index in chosen_sites:
+            count = sum(
+                1
+                for other in partial_edges.get(index, ())
+                if other in chosen_sites or not is_partial(other)
+            )
+            if count > _disorder_max_valence(sites[index]["element"]):
+                return False
+        anchor_count = sum(
+            1 for other in anchor_edges if other in chosen_sites or not is_partial(other)
+        )
+        return anchor_count <= _disorder_max_valence(sites[anchor]["element"])
+
+    def walk(position):
+        if budget[0] <= 0 or len(solutions) >= _DISORDER_MAX_SOLUTIONS:
+            return
+        budget[0] -= 1
+        if position == len(order):
+            if not valid_solution():
+                return
+            score = 0
+            for label, index in chosen.items():
+                wanted = asu_fracs.get(label)
+                if wanted is None:
+                    continue
+                identity = _wrapped_fractional(wanted)
+                if _cart_distance(unit_cell, sites[index]["frac"], identity) <= _CART_TOLERANCE:
+                    score += 1
+            solutions.append((score, tuple(chosen[label] for label in order)))
+            return
+        label = order[position]
+        for index in candidates[label]:
+            if not connected(index) or not within_valence(index):
+                continue
+            chosen[label] = index
+            chosen_sites.add(index)
+            walk(position + 1)
+            chosen_sites.discard(index)
+            del chosen[label]
+
+    walk(0)
+    solutions.sort(key=lambda solution: (-solution[0], solution[1]))
+    return {
+        "order": order,
+        "candidates": candidates,
+        "solutions": solutions,
+    }
+
+
+def _resolve_symmetry_disorder(sites, unit_cell, ops, asu_fracs, keep_disorder=False):
+    """Resolve symmetry-generated disorder of anchored groups at load time.
+
+    A partially occupied substituent whose alternate position is produced by
+    the space group (not written as a second CIF label) shows up twice after
+    the P1 expansion.  ``CIF/Ca.cif`` is the driving case: the mirror plane
+    through ``C20`` turns one *tert*-butyl group into six half-occupied methyl
+    images, of which only one chemically valid combination exists per anchor.
+
+    Only *anchored* groups are resolved.  An anchor is a fully occupied atom
+    whose remaining coordination capacity (max valence minus its fully occupied
+    neighbours) equals the number of distinct partially occupied labels bonded
+    to it, where every one of those labels must have at least two images around
+    the anchor and be permuted by a symmetry operation that fixes the anchor.
+    That keeps genuine substitutional disorder (the potassium/water region of
+    ``Ca.cif``, whose atoms sit on general positions and are not alternatives of
+    one another) untouched.
+
+    For each anchor the candidate images are enumerated parents-first; a
+    candidate must stay bonded to the anchor or an already chosen image, and no
+    chosen atom may exceed its maximum coordination number.  The clash check is
+    the valence cap itself: the invalid ``C21``-``C22`` contact (1.31 A) falls
+    inside the bond window and would give both carbons five neighbours.  Among
+    the valid combinations the one keeping the most CIF images (identity
+    positions) wins, with the site-index tuple as a deterministic tie-break.
+
+    With ``keep_disorder`` every image is kept; each valid combination becomes
+    a component and the returned sites carry a ``component`` key so bonding can
+    refuse cross-component pairs.  Otherwise the losing images are dropped and
+    the kept ones are promoted to full occupancy.
+
+    Returns a dict with the new site table, the relocated asymmetric-unit
+    fractional positions (``{label: frac}``), the number of resolved anchors
+    (distinct disordered groups of the ASU) and the number of dropped P1 images.
+    """
+    partial_labels = {}
+    for index, site in enumerate(sites):
+        if float(site.get("occupancy", 1.0)) < _DISORDER_MIN_OCCUPANCY:
+            partial_labels.setdefault(site["label"], []).append(index)
+    if not partial_labels:
+        return {
+            "sites": sites,
+            "asu_fracs": {},
+            "resolved_groups": 0,
+            "dropped_sites": 0,
+        }
+
+    def is_partial(index):
+        return sites[index]["label"] in partial_labels
+
+    max_radius = max(float(site["covalent_radius"]) for site in sites)
+    index_radius = _DISORDER_BOND_SCALE * 2.0 * max_radius
+    base_atoms = _base_atoms(unit_cell, sites)
+    search, gsites = _neighbor_search_index(unit_cell, base_atoms, index_radius)
+    positions = [gemmi.Position(*unit_cell.orthogonalize(site["frac"])) for site in sites]
+
+    def edges_of(index):
+        """Neighbouring site indices inside the resolver's bond window.
+
+        The gemmi spatial index prunes the candidate set; the exact minimum
+        image distance is then measured by the search itself.  Each distinct
+        periodic image is kept, so an atom bonded twice to the same site (a
+        bidentate contact) still counts twice for its coordination number.
+        """
+        radius = float(sites[index]["covalent_radius"])
+        found = []
+        seen = set()
+        for mark in search.find_site_neighbors(gsites[index], 0.0, index_radius):
+            other = int(mark.atom_idx)
+            if other == index:
+                continue
+            key = (other, int(mark.image_idx))
+            if key in seen:
+                continue
+            seen.add(key)
+            distance = search.dist(positions[index], mark.pos)
+            if distance <= 1e-6:
+                continue
+            if distance <= _DISORDER_BOND_SCALE * (radius + float(sites[other]["covalent_radius"])):
+                found.append(other)
+        return found
+
+    partial_edges = {}
+    for indices in partial_labels.values():
+        for index in indices:
+            partial_edges[index] = edges_of(index)
+
+    candidate_anchors = set()
+    for neighbours in partial_edges.values():
+        for other in neighbours:
+            if not is_partial(other):
+                candidate_anchors.add(other)
+
+    resolutions = []
+    for anchor in sorted(candidate_anchors):
+        anchor_edges = edges_of(anchor)
+        full_bonds = sum(1 for other in anchor_edges if not is_partial(other))
+        groups = {}
+        for other in anchor_edges:
+            if is_partial(other):
+                groups.setdefault(sites[other]["label"], set()).add(other)
+        if not groups:
+            continue
+        if full_bonds + len(groups) != _disorder_max_valence(sites[anchor]["element"]):
+            continue
+        multi = {label: sorted(indices) for label, indices in groups.items() if len(indices) >= 2}
+        if not multi:
+            continue
+        fixing = _disorder_fixing_operations(ops, sites[anchor]["frac"], unit_cell)
+        if not fixing:
+            continue
+        explained = True
+        for indices in multi.values():
+            fracs = [sites[index]["frac"] for index in indices]
+            if not any(
+                _disorder_images_closed_under(operation, fracs, unit_cell) for operation in fixing
+            ):
+                explained = False
+                break
+        if not explained:
+            continue
+
+        cluster = set()
+        depth = {}
+        for indices in groups.values():
+            for index in indices:
+                cluster.add(index)
+                depth[index] = 1
+        frontier = list(cluster)
+        while frontier:
+            index = frontier.pop()
+            for other in partial_edges.get(index, ()):
+                if is_partial(other) and other not in cluster:
+                    cluster.add(other)
+                    depth[other] = depth[index] + 1
+                    frontier.append(other)
+        if len(cluster) > _DISORDER_MAX_CLUSTER_SITES:
+            continue
+
+        found = _disorder_anchor_solutions(
+            sites,
+            unit_cell,
+            asu_fracs,
+            anchor,
+            anchor_edges,
+            partial_edges,
+            is_partial,
+            cluster,
+            depth,
+        )
+        order = found["order"]
+        candidates = found["candidates"]
+        solutions = found["solutions"]
+        if not solutions:
+            continue
+        resolutions.append(
+            {
+                "anchor": anchor,
+                "cluster": cluster,
+                "order": order,
+                "candidates": candidates,
+                "best": solutions[0][1],
+                "solutions": solutions,
+            }
+        )
+
+    if not resolutions:
+        return {
+            "sites": sites,
+            "asu_fracs": {},
+            "resolved_groups": 0,
+            "dropped_sites": 0,
+        }
+
+    resolved_groups = len({sites[resolution["anchor"]]["label"] for resolution in resolutions})
+    kept = set()
+    candidates_all = set()
+    for resolution in resolutions:
+        kept.update(resolution["best"])
+        candidates_all.update(resolution["cluster"])
+    dropped = candidates_all - kept
+
+    if keep_disorder:
+        # Every image stays, so the ASU keeps its CIF coordinates verbatim; the
+        # component ids are what stops the alternatives from being bonded to
+        # each other.
+        new_sites = [dict(site) for site in sites]
+        component = 1
+        for resolution in resolutions:
+            assigned = {}
+            for _score, combination in resolution["solutions"]:
+                for index in combination:
+                    if index not in assigned:
+                        assigned[index] = component
+                component += 1
+            for index in sorted(resolution["cluster"]):
+                if index in assigned:
+                    new_sites[index]["component"] = assigned[index]
+                else:
+                    new_sites[index]["component"] = component
+                    component += 1
+        return {
+            "sites": new_sites,
+            "asu_fracs": {},
+            "resolved_groups": resolved_groups,
+            "dropped_sites": 0,
+        }
+
+    # The ASU atom must sit on a kept image (the loader matches it back to the
+    # site table), so move it to the chosen conformer unless the CIF already
+    # gave that image.
+    asu_relocated = {}
+    for resolution in resolutions:
+        order = resolution["order"]
+        best_map = dict(zip(order, resolution["best"], strict=True))
+        best_sites = set(resolution["best"])
+        for label in order:
+            wanted = asu_fracs.get(label)
+            if wanted is None:
+                continue
+            identity = _wrapped_fractional(wanted)
+            identity_index = None
+            for index in resolution["candidates"][label]:
+                if _cart_distance(unit_cell, sites[index]["frac"], identity) <= _CART_TOLERANCE:
+                    identity_index = index
+                    break
+            if identity_index is None or identity_index in best_sites:
+                continue
+            chosen = sites[best_map[label]]["frac"]
+            # Keep the atom in the same cell neighbourhood as the CIF position:
+            # the ASU fractional coordinates are not wrapped (C23 of Ca.cif has
+            # z = 1.0334), so the chosen image needs the lattice translation
+            # that leaves it nearest the original position.
+            asu_relocated[label] = [
+                float(chosen[axis]) + int(round(wanted[axis] - chosen[axis])) for axis in range(3)
+            ]
+
+    new_sites = []
+    for index, site in enumerate(sites):
+        if index in dropped:
+            continue
+        if index in kept:
+            site = dict(site)
+            site["occupancy"] = 1.0
+        new_sites.append(site)
+    return {
+        "sites": new_sites,
+        "asu_fracs": asu_relocated,
+        "resolved_groups": resolved_groups,
+        "dropped_sites": len(dropped),
+    }
 
 
 def _grow_shell_keys(

@@ -52,8 +52,6 @@ print(
     f"  after import: {len(bond_objects(root))} bond objects, "
     f"{len(torus_objects(root))} aromatic objects"
 )
-baseline_groups = len(set(groups(root)))
-baseline_torus = len(torus_objects(root))
 
 for step in range(1, 4):
     bpy.ops.cgn.grow_further()

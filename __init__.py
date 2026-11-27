@@ -1,7 +1,7 @@
 bl_info = {
     "name": "CrystalViz",
     "author": "Erwann Jeanneau",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > CrystalViz; File > Import",
     "description": (
@@ -176,24 +176,23 @@ _WIRE_RADIUS_DEFAULT = 0.1
 _BOND_RADIUS_SCALE_DEFAULT = 1.0
 _MULTIPLE_BOND_RADIUS_SCALE_DEFAULT = 1.0
 _CHEMDRAW_BOND_SPACING_DEFAULT = 0.32
+# Dash pattern of the second stroke of a delocalised (1.5) bond, in Angstrom:
+# the stroke is a run of short collinear edges, each one its own tube.  The
+# dash and gap are half of their first implementation so a bond shows twice as
+# many dash segments (a ChemDraw 1.5 bond reads as a finer, denser hatch).
+_CHEMDRAW_DASH_LENGTH = 0.15
+_CHEMDRAW_DASH_GAP = 0.10
 _BOND_COLOR_DEFAULT = (0.16, 0.16, 0.18, 1.0)
 _AROMATIC_TORUS_SIZE_DEFAULT = 0.55
 _AROMATIC_TORUS_WIDTH_DEFAULT = 0.5
-_AROMATIC_BOND_LENGTH_SPREAD_MAX = 0.06
+# Maximum out-of-plane deviation (Angstrom per ring atom) still drawn as an
+# aromatic torus: a puckered ring is not aromatic in the depiction sense.  A
+# ring up to ~0.15 A RMS out of plane is visually flat (the thiabenzene 1-oxide
+# boat of ATBOXM sits at 0.127 A and draws its torus like the planar
+# thiopyrylium); a genuine boat reads as non-planar and keeps the localized
+# Kekule strokes.
+_AROMATIC_PLANARITY_MAX = 0.15
 _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE = {2: 0.9, 3: 0.85}
-_CHEMDRAW_MAX_VALENCE = {
-    "B": 3,
-    "C": 4,
-    "N": 4,
-    "O": 2,
-    "F": 1,
-    "SI": 4,
-    "P": 5,
-    "S": 6,
-    "CL": 1,
-    "BR": 1,
-    "I": 1,
-}
 # Chi-square quantile with 3 degrees of freedom at 50 % probability.
 _ELLIPSOID_CHI2_50 = 2.3659738843753377
 _DEFAULT_VDW_RADIUS = 1.5
@@ -222,7 +221,6 @@ _UNIT_CELL_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _UNIT_CELL_FACE_COLOR = (0.45, 0.65, 0.95, 1.0)
 _UNIT_CELL_FACE_ALPHA = 0.08
 _UNIT_CELL_EDGE_THICKNESS = 0.05
-_POLY_FACE_COLOR = (0.85, 0.55, 0.15, 1.0)
 _POLY_FACE_ALPHA = 0.25
 _POLY_EDGE_COLOR = (0.0, 0.0, 0.0, 1.0)
 _POLY_EDGE_THICKNESS = 0.04
@@ -251,7 +249,6 @@ _MODEL_ITEMS = (
     ("WIRE_STICKS", "Wire-sticks", "Thin atoms and thin bonds"),
 )
 _CIF_CELL_VALUE_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\(\d+\))?(?:[eE][+-]?\d+)?$")
-_DOCS_URL = "https://github.com/kalimeroo/CrystalViz"
 
 
 def _gemmi_status():
@@ -287,6 +284,17 @@ def _gemmi_worker():
             "The bundled gemmi library could not be loaded.\n" + _gemmi_install_hint()
         ) from exc
     return gemmi_worker
+
+
+def _chemistry():
+    """Import the pure-Python bond-order/aromaticity perception module.
+
+    Kept lazy and separate from ``gemmi_worker``: it is standard library only,
+    unit tested outside Blender, and holds no crystallography.
+    """
+    from . import chemistry
+
+    return chemistry
 
 
 class CGN_AddonPreferences(AddonPreferences):
@@ -3170,14 +3178,6 @@ def _polyhedron_style(scene, element, site_label=""):
     return style
 
 
-def _existing_polyhedron_style(scene, element, site_label=""):
-    site_label = str(site_label or "")
-    for style in scene.cgn_polyhedron_styles:
-        if style.element == element and str(style.site_label or "") == site_label:
-            return style
-    return None
-
-
 def _make_polyhedron_face_material(element, style, site_label=""):
     suffix = f"_{site_label}" if site_label else ""
     material = bpy.data.materials.get(f"CGN_Polyhedron_Face_Material_{element}{suffix}")
@@ -3943,270 +3943,121 @@ def _bond_edge_key(first, second):
     return tuple(sorted((_bond_point_key(first), _bond_point_key(second))))
 
 
-def _chemdraw_bond_orders(segments, covalent_radii):
-    """Infer conservative multiple-bond candidates with valence limits."""
-    degrees = {}
+def _chemdraw_graph(segments, covalent_radii):
+    """Collapse bond segments into the plain graph ``chemistry.py`` expects.
+
+    Returns ``(elements, edges, lengths, points)``: the element symbol and the
+    cartesian coordinates of every rounded point key, the unique bonds, and
+    each bond length normalised by the sum of the two covalent radii (1.0 means
+    "as long as the radii predict").  Edges without a radius on both ends are
+    simply left out of ``lengths``; the chemistry module then treats them as
+    full-length contacts and never promotes them.
+    """
     elements = {}
-    candidates = []
+    points = {}
+    edges = []
+    lengths = {}
     seen_edges = set()
     for first, second, element_a, element_b in segments:
         first_key = _bond_point_key(first)
         second_key = _bond_point_key(second)
-        edge_key = tuple(sorted((first_key, second_key)))
+        points[first_key] = tuple(float(value) for value in first)
+        points[second_key] = tuple(float(value) for value in second)
+        elements[first_key] = str(element_a).upper()
+        elements[second_key] = str(element_b).upper()
+        edge_key = _bond_edge_key(first, second)
         if edge_key in seen_edges:
             continue
         seen_edges.add(edge_key)
-        element_a = str(element_a).upper()
-        element_b = str(element_b).upper()
-        elements[first_key] = element_a
-        elements[second_key] = element_b
-        if element_a in _CHEMDRAW_MAX_VALENCE:
-            degrees[first_key] = degrees.get(first_key, 0) + 1
-        if element_b in _CHEMDRAW_MAX_VALENCE:
-            degrees[second_key] = degrees.get(second_key, 0) + 1
-
+        edges.append(edge_key)
         radius_a = float(covalent_radii.get(first_key, 0.0))
         radius_b = float(covalent_radii.get(second_key, 0.0))
-        if (
-            element_a not in _CHEMDRAW_MAX_VALENCE
-            or element_b not in _CHEMDRAW_MAX_VALENCE
-            or radius_a <= 0.0
-            or radius_b <= 0.0
-        ):
+        if radius_a <= 0.0 or radius_b <= 0.0:
             continue
         distance = math.sqrt(
-            sum((float(first[axis]) - float(second[axis])) ** 2 for axis in range(3))
+            sum((points[first_key][axis] - points[second_key][axis]) ** 2 for axis in range(3))
         )
-        normalized_length = distance / (radius_a + radius_b)
-        order = 3 if normalized_length <= 0.83 else 2 if normalized_length <= 0.90 else 1
-        if order > 1:
-            confidence = 0.83 - normalized_length if order == 3 else 0.90 - normalized_length
-            candidates.append((confidence, edge_key, order, element_a, element_b))
+        lengths[edge_key] = distance / (radius_a + radius_b)
+    return elements, edges, lengths, points
 
-    remaining = {
-        node: max(
-            0,
-            _CHEMDRAW_MAX_VALENCE.get(element, 0) - degrees.get(node, 0),
-        )
-        for node, element in elements.items()
-    }
-    orders = {}
-    for _confidence, edge_key, order, _element_a, _element_b in sorted(candidates, reverse=True):
-        extra_valence = min(
-            order - 1,
-            remaining.get(edge_key[0], 0),
-            remaining.get(edge_key[1], 0),
-        )
-        if extra_valence:
-            orders[edge_key] = extra_valence + 1
-            remaining[edge_key[0]] -= extra_valence
-            remaining[edge_key[1]] -= extra_valence
-    return orders
+
+def _chemdraw_bond_orders(segments, covalent_radii):
+    """Infer multiple-bond orders from valence bookkeeping.
+
+    The chemistry lives in ``chemistry.py`` (pure Python, unit tested outside
+    Blender); this adapter only turns the display segments into its graph.
+    """
+    elements, edges, lengths, _points = _chemdraw_graph(segments, covalent_radii)
+    return _chemistry().bond_orders(elements, edges, lengths)
+
+
+def _chemdraw_delocalised_edges(segments, covalent_radii):
+    """Terminal oxo bonds to draw as resonance (1.5) bonds.
+
+    A carboxylate, carbonate, nitrate, phosphate, sulfate or sulfonate group
+    has more terminal oxygens than its valence ladder can draw as genuine
+    doubles; the chemistry module returns every X-O edge of such a group,
+    except that in a metal-touched group (some terminal oxygen also
+    coordinates a metal) only the coordinating oxygens are delocalised and the
+    metal-free ones keep their genuine ``X=O`` double.
+    """
+    elements, edges, lengths, _points = _chemdraw_graph(segments, covalent_radii)
+    return _chemistry().delocalised_oxo_edges(elements, edges, lengths)
 
 
 def _classify_aromatic_rings(segments, covalent_radii, bond_orders):
-    """Find planar conjugated rings with equalized bond lengths."""
-    ring_elements = {"B", "C", "N", "O", "S"}
-    nodes = {}
-    elements = {}
-    degrees = {}
-    edges = []
-    neighbors = {}
-    all_neighbors = {}
-    seen_edges = set()
-    for first, second, element_a, element_b in segments:
-        first_key = _bond_point_key(first)
-        second_key = _bond_point_key(second)
-        edge_key = tuple(sorted((first_key, second_key)))
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        element_a = str(element_a).upper()
-        element_b = str(element_b).upper()
-        nodes[first_key] = tuple(float(value) for value in first)
-        nodes[second_key] = tuple(float(value) for value in second)
-        elements[first_key] = element_a
-        elements[second_key] = element_b
-        degrees[first_key] = degrees.get(first_key, 0) + 1
-        degrees[second_key] = degrees.get(second_key, 0) + 1
-        all_neighbors.setdefault(first_key, []).append((second_key, element_b))
-        all_neighbors.setdefault(second_key, []).append((first_key, element_a))
-        distance = math.sqrt(
-            sum((float(first[axis]) - float(second[axis])) ** 2 for axis in range(3))
-        )
-        radius_a = float(covalent_radii.get(first_key, 0.0))
-        radius_b = float(covalent_radii.get(second_key, 0.0))
-        normalized_length = distance / (radius_a + radius_b) if radius_a + radius_b > 0.0 else 0.0
-        if (
-            element_a not in ring_elements
-            or element_b not in ring_elements
-            or not 0.85 <= normalized_length <= 0.99
-        ):
-            continue
-        edge_index = len(edges)
-        edges.append((first_key, second_key, normalized_length))
-        neighbors.setdefault(first_key, []).append((second_key, edge_index))
-        neighbors.setdefault(second_key, []).append((first_key, edge_index))
+    """Find the aromatic rings of the Kekulé structure and their torus geometry.
 
+    A ring whose sextet needs a heteroatom lone pair is left out when every one
+    of its remaining atoms carries a drawn double bond (furan, pyrrole, the
+    azoles, a thiophene fused into a larger Kekulé system): IUPAC GR-6.3 prefers
+    that localized depiction over a delocalization curve.  Leaving it out of
+    ``aromatic_edges`` is what makes its double bonds render as strokes.  When
+    no such arrangement exists — borazine and an h-BN sheet have three donating
+    heteroatoms in a six-ring and no B=N at all — the curve is the only honest
+    depiction and the ring keeps its torus.  A haptically coordinated ring (the
+    cyclopentadienyl of a metallocene) is the other no-arrangement case: IUPAC
+    GR-1.7.2 requires the curve.
+    """
+    elements, edges, lengths, points = _chemdraw_graph(segments, covalent_radii)
     aromatic_edges = set()
     aromatic_rings = []
-    seen_rings = set()
-    for edge_index, (start, end, _distance) in enumerate(edges):
-        if degrees[start] > 3 or degrees[end] > 3:
+    for ring in _chemistry().aromatic_rings(
+        elements, edges, bond_orders, detail=True, lengths=lengths
+    ):
+        if ring.lone_pair_electrons and ring.kekule:
             continue
-        path = [start]
-        path_edges = []
-
-        # Bound per iteration so the closure captures this iteration's state
-        # instead of the last one's (ruff B023): find_ring is only ever called
-        # below, within the same loop body.
-        def find_ring(current, path=path, path_edges=path_edges, edge_index=edge_index, end=end):
-            if len(path_edges) >= 5 or degrees[current] > 3:
-                return
-            for neighbor, next_edge in neighbors.get(current, ()):
-                if next_edge == edge_index:
-                    continue
-                if neighbor != end and degrees[neighbor] > 3:
-                    continue
-                if neighbor == end and len(path_edges) in (3, 4):
-                    ring_edges = tuple(sorted((*path_edges, next_edge, edge_index)))
-                    if ring_edges in seen_rings:
-                        continue
-                    seen_rings.add(ring_edges)
-                    ring_distances = [edges[index][2] for index in ring_edges]
-                    ring_nodes = {node for index in ring_edges for node in edges[index][:2]}
-                    ring_edge_keys = {
-                        _bond_edge_key(edges[index][0], edges[index][1]) for index in ring_edges
-                    }
-                    if (
-                        max(ring_distances) - min(ring_distances) > _AROMATIC_BOND_LENGTH_SPREAD_MAX
-                        or not 0.90 <= sum(ring_distances) / len(ring_distances) <= 0.96
-                        or any(
-                            degrees[node] > 3 or elements[node] not in ring_elements
-                            for node in ring_nodes
-                        )
-                    ):
-                        continue
-                    pi_electrons = 0
-                    lone_pair_nodes = set()
-                    unsubstituted_nitrogens = []
-                    ring_has_exocyclic_multiple = False
-                    for node in ring_nodes:
-                        element = elements[node]
-                        for other, _other_element in all_neighbors.get(node, ()):
-                            edge_key = tuple(sorted((node, other)))
-                            if edge_key not in ring_edge_keys and bond_orders.get(edge_key, 1) > 1:
-                                ring_has_exocyclic_multiple = True
-                                break
-                        if ring_has_exocyclic_multiple:
-                            break
-                        if element == "C":
-                            pi_electrons += 1
-                        elif element == "N":
-                            has_substituent = any(
-                                other not in ring_nodes
-                                and (other_element in _CHEMDRAW_MAX_VALENCE or other_element == "H")
-                                for other, other_element in all_neighbors.get(node, ())
-                            )
-                            pi_electrons += 2 if has_substituent else 1
-                            if has_substituent:
-                                lone_pair_nodes.add(node)
-                            else:
-                                unsubstituted_nitrogens.append(node)
-                        elif element in {"O", "S"}:
-                            pi_electrons += 2
-                    if ring_has_exocyclic_multiple:
-                        continue
-                    if pi_electrons < 2 or (pi_electrons - 2) % 4 != 0:
-                        if (
-                            pi_electrons >= 1
-                            and (pi_electrons - 1) % 4 == 0
-                            and unsubstituted_nitrogens
-                        ):
-
-                            def mean_nitrogen_bond_length(node, ring_edges=ring_edges):
-                                lengths = [
-                                    math.dist(
-                                        nodes[node],
-                                        nodes[
-                                            edges[index][1]
-                                            if edges[index][0] == node
-                                            else edges[index][0]
-                                        ],
-                                    )
-                                    for index in ring_edges
-                                    if node in edges[index][:2]
-                                ]
-                                return sum(lengths) / len(lengths)
-
-                            lone_pair_node = max(
-                                unsubstituted_nitrogens,
-                                key=lambda node: (
-                                    mean_nitrogen_bond_length(node),
-                                    node,
-                                ),
-                            )
-                            pi_electrons += 1
-                            lone_pair_nodes.add(lone_pair_node)
-                        if pi_electrons < 2 or (pi_electrons - 2) % 4 != 0:
-                            continue
-                    pi_bond_nodes = {
-                        node
-                        for index in ring_edges
-                        if edges[index][2] <= 0.96
-                        for node in edges[index][:2]
-                    }
-                    if any(
-                        elements[node] in {"B", "C"} and node not in pi_bond_nodes
-                        for node in ring_nodes
-                    ):
-                        continue
-                    coordinates = np.asarray([nodes[node] for node in ring_nodes], dtype=float)
-                    centroid_array = coordinates.mean(axis=0)
-                    _left, singular_values, plane_axes = np.linalg.svd(
-                        coordinates - centroid_array, full_matrices=False
-                    )
-                    if (
-                        len(singular_values) < 3
-                        or singular_values[-1] / math.sqrt(len(ring_nodes)) > 0.12
-                    ):
-                        continue
-                    centroid = tuple(float(value) for value in centroid_array)
-                    ring_elements_in = [elements[node] for node in ring_nodes]
-                    ring_element = min(
-                        set(ring_elements_in),
-                        key=lambda element: (
-                            -ring_elements_in.count(element),
-                            element != "C",
-                            element,
-                        ),
-                    )
-                    inner_radius = float(
-                        np.linalg.norm(coordinates - centroid_array, axis=1).mean()
-                    )
-                    aromatic_rings.append(
-                        (
-                            centroid,
-                            tuple(float(value) for value in plane_axes[0]),
-                            tuple(float(value) for value in plane_axes[1]),
-                            inner_radius,
-                            ring_element,
-                        )
-                    )
-                    aromatic_edges.update(
-                        _bond_edge_key(nodes[edges[index][0]], nodes[edges[index][1]])
-                        for index in ring_edges
-                    )
-                    continue
-                if neighbor in path or len(path_edges) >= 4:
-                    continue
-                path.append(neighbor)
-                path_edges.append(next_edge)
-                find_ring(neighbor)
-                path_edges.pop()
-                path.pop()
-
-        find_ring(start)
+        coordinates = np.asarray([points[node] for node in sorted(ring.nodes)], dtype=float)
+        centroid_array = coordinates.mean(axis=0)
+        _left, singular_values, plane_axes = np.linalg.svd(
+            coordinates - centroid_array, full_matrices=False
+        )
+        if (
+            len(singular_values) < 3
+            or singular_values[-1] / math.sqrt(len(ring.nodes)) > _AROMATIC_PLANARITY_MAX
+        ):
+            continue
+        centroid = tuple(float(value) for value in centroid_array)
+        ring_symbols = [elements[node] for node in sorted(ring.nodes)]
+        ring_element = min(
+            set(ring_symbols),
+            key=lambda element: (
+                -ring_symbols.count(element),
+                element != "C",
+                element,
+            ),
+        )
+        inner_radius = float(np.linalg.norm(coordinates - centroid_array, axis=1).mean())
+        aromatic_rings.append(
+            (
+                centroid,
+                tuple(float(value) for value in plane_axes[0]),
+                tuple(float(value) for value in plane_axes[1]),
+                inner_radius,
+                ring_element,
+            )
+        )
+        aromatic_edges.update(ring.edges)
     return aromatic_edges, aromatic_rings
 
 
@@ -4243,8 +4094,24 @@ def _aromatic_torus_segments(
     return rings
 
 
-def _multiple_bond_plane_directions(segments, bond_orders):
-    """Find each multiple-bond offset direction from its neighboring atoms."""
+def _multiple_bond_plane_directions(segments, bond_orders, delocalised_edges=frozenset()):
+    """Find each multiple-bond offset direction from its neighboring atoms.
+
+    Each multiple bond is drawn as parallel strokes offset perpendicular to
+    the bond, and that perpendicular should lie in the molecular plane.  The
+    per-bond fit below is made over each edge's own neighbouring atoms, so a
+    centre that carries two or more multiple bonds (an O=S=O, O=P=O, Se/Te
+    analogue, a cumulene) would otherwise get one independent fit per bond and
+    could end up with its double bonds drawn in different planes; the
+    coplanarity pass at the end re-derives every such centre's offsets inside
+    the shared plane of its bond axes instead.  Delocalised 1.5 bonds are
+    drawn at the multiple-bond spacing too, so they get the same per-edge fit
+    and the same shared-centre resolution: without a direction the second
+    ``X-O`` of a resonance group (the second P-O of a hypophosphite ``PO2H``
+    or carboxylate C-O) would fall back to the arbitrary reference-axis
+    perpendicular inside ``_chemdraw_segments`` and tilt that bond out of the
+    O-X-O plane.
+    """
     points = {}
     neighbors = {}
     seen_edges = set()
@@ -4260,11 +4127,15 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         neighbors.setdefault(first_key, set()).add(second_key)
         neighbors.setdefault(second_key, set()).add(first_key)
 
+    multiple_edges = set(bond_orders)
+    multiple_edges.update(delocalised_edges)
     directions = {}
-    for edge_key in bond_orders:
+    for edge_key in multiple_edges:
         first_key, second_key = edge_key
-        first = points[first_key]
-        second = points[second_key]
+        first = points.get(first_key)
+        second = points.get(second_key)
+        if first is None or second is None:
+            continue
         delta = tuple(second[axis] - first[axis] for axis in range(3))
         length = math.sqrt(sum(value * value for value in delta))
         if length <= 1e-8:
@@ -4298,7 +4169,172 @@ def _multiple_bond_plane_directions(segments, bond_orders):
         perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
         if perpendicular_length > 1e-8:
             directions[edge_key] = tuple(value / perpendicular_length for value in perpendicular)
+    _resolve_shared_centre_planes(points, directions, bond_orders, delocalised_edges)
     return directions
+
+
+def _resolve_shared_centre_planes(points, directions, bond_orders, delocalised_edges=frozenset()):
+    """Force every multiple bond of one centre into a single stroke plane.
+
+    Each multiple bond's offset is fitted independently over its own
+    neighbours, so a centre that carries two or more of them (an O=S=O,
+    O=P=O, Se/Te analogue, a cumulene) can get one double bond tilted in a
+    different plane than the other.  Such a centre must read as one flat unit:
+    fit its multiple-bond axes to their shared plane (the direction of least
+    variance of the axes) and re-derive every edge's offset inside that plane,
+    so both stroke pairs of an X(=O)2 group stay coplanar.  A collinear
+    cumulene (O=C=O) spans no plane; its axes are all one line, so all its
+    edges share a single common offset vector instead, which is the flat 2D
+    depiction of a linear group.  The pass touches only centres with at least
+    two order-2+ bonds; delocalised 1.5 edges count as their own kind of
+    multiple bond, since ``_chemdraw_segments`` draws them at the
+    multiple-bond spacing and they must read flat with the group's genuine
+    doubles.  A lone multiple bond keeps its per-edge fit.
+    """
+    by_centre = {}
+    for edge_key in directions:
+        if int(bond_orders.get(edge_key, 0)) < 2 and edge_key not in delocalised_edges:
+            continue
+        by_centre.setdefault(edge_key[0], []).append(edge_key)
+        by_centre.setdefault(edge_key[1], []).append(edge_key)
+    for edge_keys in by_centre.values():
+        if len(edge_keys) < 2:
+            continue
+        axes = []
+        for edge_key in edge_keys:
+            first, second = edge_key
+            first_point = points.get(first)
+            second_point = points.get(second)
+            if first_point is None or second_point is None:
+                break
+            delta = tuple(second_point[axis] - first_point[axis] for axis in range(3))
+            size = math.sqrt(sum(value * value for value in delta))
+            if size <= 1e-8:
+                break
+            axes.append((edge_key, tuple(value / size for value in delta)))
+        if len(axes) < 2:
+            continue
+        _left, singular_values, right = np.linalg.svd(
+            np.asarray([axis for _edge, axis in axes], dtype=float),
+            full_matrices=True,
+        )
+        if singular_values[0] > 1e-12 and singular_values[1] / singular_values[0] > 1e-3:
+            normal = tuple(float(value) for value in right[2])
+            for edge_key, axis in axes:
+                perpendicular = (
+                    axis[1] * normal[2] - axis[2] * normal[1],
+                    axis[2] * normal[0] - axis[0] * normal[2],
+                    axis[0] * normal[1] - axis[1] * normal[0],
+                )
+                size = math.sqrt(sum(value * value for value in perpendicular))
+                if size > 1e-8:
+                    directions[edge_key] = tuple(value / size for value in perpendicular)
+        else:
+            common = directions[axes[0][0]]
+            for edge_key, _axis in axes:
+                directions[edge_key] = common
+
+
+def _bond_perpendicular(direction, edge_key, multiple_bond_directions):
+    """Offset direction for a multiple-bond stroke, in the molecular plane.
+
+    Falls back to an arbitrary perpendicular when the edge has no neighbour
+    vectors to fit a plane to (a terminal oxygen has none of its own).
+    """
+    perpendicular = multiple_bond_directions.get(edge_key)
+    if perpendicular is not None:
+        return perpendicular
+    reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
+    reference = tuple(1.0 if index == reference_axis else 0.0 for index in range(3))
+    perpendicular = (
+        direction[1] * reference[2] - direction[2] * reference[1],
+        direction[2] * reference[0] - direction[0] * reference[2],
+        direction[0] * reference[1] - direction[1] * reference[0],
+    )
+    perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
+    return tuple(value / perpendicular_length for value in perpendicular)
+
+
+def _delocalised_inside_directions(segments, delocalised_edges):
+    """Unit "inside" direction of each delocalised edge, toward the angle interior.
+
+    A delocalised X-O bond of a 1.5-oxo group (carboxylate, nitrite,
+    carbonate, nitrate, phosphate, ...) is drawn as a solid stroke plus a
+    dashed stroke at the multiple-bond spacing.  The two strokes of the two
+    bonds of an O-X-O pair look right only when the group is laid out the way
+    ChemDraw does it: the *dashed* stroke sits inside the O-X-O angle (toward
+    the other delocalised oxygen) and the *solid* stroke on the outside.
+
+    This helper maps each delocalised edge to the unit vector pointing from
+    its oxygen toward the centroid of the other delocalised terminal oxygens
+    of the same centre; ``_chemdraw_segments`` flips the perpendicular so the
+    offset stroke (+perpendicular) lands on that side.  A lone delocalised
+    edge (no other oxygen on its centre) gets no entry and keeps an arbitrary
+    stroke side.
+    """
+    centres = {}
+    for first, second, element_a, _element_b in segments:
+        edge_key = _bond_edge_key(first, second)
+        if edge_key not in delocalised_edges:
+            continue
+        if str(element_a).upper() == "O":
+            centre, oxygen = second, first
+        else:
+            centre, oxygen = first, second
+        centre_key = _bond_point_key(centre)
+        centres.setdefault(centre_key, []).append(
+            (edge_key, tuple(float(value) for value in oxygen))
+        )
+    inside = {}
+    for terms in centres.values():
+        if len(terms) < 2:
+            continue
+        for edge_key, oxygen in terms:
+            others = [other for other_edge, other in terms if other_edge != edge_key]
+            centroid = tuple(
+                sum(other[axis] for other in others) / len(others) for axis in range(3)
+            )
+            vector = tuple(centroid[axis] - oxygen[axis] for axis in range(3))
+            size = math.sqrt(sum(value * value for value in vector))
+            if size > 1e-12:
+                inside[edge_key] = tuple(value / size for value in vector)
+    return inside
+
+
+def _dashed_stroke(first, second, perpendicular, offset, element_a, element_b, bond_midpoint=None):
+    """Split one offset bond line into short collinear dash segments.
+
+    The dashes are ordinary order-2 segments, so the pair bucketing, the
+    multiple-bond radius and the two-colour split all apply unchanged.  Each
+    dash carries the original bond's midpoint in its trailing field (``None``
+    for a degenerate zero-length bond): the two-colour splitter then colours a
+    whole dash with the element whose half of the *bond* it belongs to, so the
+    dashes are one colour up to the middle of the bond instead of every dash
+    being split in two at its own centre.
+    """
+    start = tuple(float(first[axis]) + perpendicular[axis] * offset for axis in range(3))
+    end = tuple(float(second[axis]) + perpendicular[axis] * offset for axis in range(3))
+    delta = tuple(end[axis] - start[axis] for axis in range(3))
+    length = math.sqrt(sum(value * value for value in delta))
+    if length <= 1e-8:
+        return [(start, end, element_a, element_b, 2, bond_midpoint)]
+    direction = tuple(value / length for value in delta)
+    dashes = []
+    position = 0.0
+    while position < length:
+        stop = min(position + _CHEMDRAW_DASH_LENGTH, length)
+        dashes.append(
+            (
+                tuple(start[axis] + direction[axis] * position for axis in range(3)),
+                tuple(start[axis] + direction[axis] * stop for axis in range(3)),
+                element_a,
+                element_b,
+                2,
+                bond_midpoint,
+            )
+        )
+        position = stop + _CHEMDRAW_DASH_GAP
+    return dashes
 
 
 def _chemdraw_segments(
@@ -4307,9 +4343,13 @@ def _chemdraw_segments(
     aromatic_edges,
     multiple_bond_directions=None,
     bond_spacing=_CHEMDRAW_BOND_SPACING_DEFAULT,
+    delocalised_edges=frozenset(),
 ):
     multiple_bond_directions = multiple_bond_directions or {}
     rendered = []
+    delocalised_inside = (
+        _delocalised_inside_directions(segments, delocalised_edges) if delocalised_edges else {}
+    )
     for first, second, element_a, element_b in segments:
         delta = tuple(float(second[axis]) - float(first[axis]) for axis in range(3))
         length = math.sqrt(sum(value * value for value in delta))
@@ -4322,21 +4362,43 @@ def _chemdraw_segments(
         if edge_key in aromatic_edges:
             rendered.append((first, second, element_a, element_b, 1))
             continue
+        if edge_key in delocalised_edges:
+            # ChemDraw's delocalised bond: one solid stroke and one dashed
+            # stroke, both at the multiple-bond spacing and radius.  The
+            # dashed stroke sits inside the O-X-O angle (toward the other
+            # delocalised oxygen of the same centre) and the solid stroke
+            # on the outside, like a nitrite/carboxylate drawn by hand.
+            perpendicular = _bond_perpendicular(direction, edge_key, multiple_bond_directions)
+            inside = delocalised_inside.get(edge_key)
+            if (
+                inside is not None
+                and sum(perpendicular[axis] * inside[axis] for axis in range(3)) < 0.0
+            ):
+                perpendicular = tuple(-value for value in perpendicular)
+            half = float(bond_spacing) / 2.0
+            rendered.append(
+                (
+                    tuple(float(first[axis]) - perpendicular[axis] * half for axis in range(3)),
+                    tuple(float(second[axis]) - perpendicular[axis] * half for axis in range(3)),
+                    element_a,
+                    element_b,
+                    2,
+                )
+            )
+            bond_midpoint = tuple(
+                0.5 * (float(first[axis]) + float(second[axis])) for axis in range(3)
+            )
+            rendered.extend(
+                _dashed_stroke(
+                    first, second, perpendicular, half, element_a, element_b, bond_midpoint
+                )
+            )
+            continue
 
         if order == 1:
             rendered.append((first, second, element_a, element_b, order))
             continue
-        perpendicular = multiple_bond_directions.get(edge_key)
-        if perpendicular is None:
-            reference_axis = min(range(3), key=lambda axis: abs(direction[axis]))
-            reference = tuple(1.0 if axis == reference_axis else 0.0 for axis in range(3))
-            perpendicular = (
-                direction[1] * reference[2] - direction[2] * reference[1],
-                direction[2] * reference[0] - direction[0] * reference[2],
-                direction[0] * reference[1] - direction[1] * reference[0],
-            )
-            perpendicular_length = math.sqrt(sum(value * value for value in perpendicular))
-            perpendicular = tuple(value / perpendicular_length for value in perpendicular)
+        perpendicular = _bond_perpendicular(direction, edge_key, multiple_bond_directions)
         spacing = float(bond_spacing)
         offsets = (-spacing / 2.0, spacing / 2.0) if order == 2 else (-spacing, 0.0, spacing)
         for offset in offsets:
@@ -4350,6 +4412,37 @@ def _chemdraw_segments(
                 )
             )
     return rendered
+
+
+def _color_half_segments(first, second, element_a, element_b, bond_midpoint=None):
+    """Split *first→second* into the element-coloured halves of two-colour mode.
+
+    A full bond (no *bond_midpoint*, i.e. a genuine double stroke or an
+    ordinary single bond) is halved at its own middle.  A short dash of a
+    delocalised bond carries the original bond midpoint in its trailing
+    field: the split then lands at the middle of the *bond*, so a dash lying
+    entirely on the first element's side of the middle keeps that element's
+    colour outright and only the dash the middle crosses gets cut.  A dashed
+    bond is therefore one colour up to the middle of the bond instead of
+    every dash being two-toned; the solid stroke of the same delocalised bond
+    spans the whole bond and is halved at its own middle, which is the same
+    line.  Returns ``(element, (start, end))`` pairs in colour order.
+    """
+    delta = tuple(second[axis] - first[axis] for axis in range(3))
+    length_squared = sum(value * value for value in delta)
+    if bond_midpoint is not None and length_squared > 1e-12:
+        position = (
+            sum((bond_midpoint[axis] - first[axis]) * delta[axis] for axis in range(3))
+            / length_squared
+        )
+        if position <= 0.0:
+            return ((element_b, (first, second)),)
+        if position >= 1.0:
+            return ((element_a, (first, second)),)
+        split = tuple(first[axis] + position * delta[axis] for axis in range(3))
+        return ((element_a, (first, split)), (element_b, (split, second)))
+    midpoint = tuple(0.5 * (first[axis] + second[axis]) for axis in range(3))
+    return ((element_a, (first, midpoint)), (element_b, (midpoint, second)))
 
 
 def _connectivity_settings_signature(pair_settings):
@@ -4491,6 +4584,50 @@ def _merge_into_existing_bond_object(root, pair_name, order, element, segments):
     return True
 
 
+def _drawn_segments_for(root_id):
+    """Cart-space bond segments last drawn for *root_id*, or ``[]``.
+
+    ``_bond_objects`` records the full set of drawn cart segments on the
+    spatial cache so the grow path can classify the union of what is on screen
+    with the freshly grown bonds (see ``_bond_objects``).  The cache is cleared
+    by ``_clear_bonds``, so a missing/foreign entry simply means "no reliable
+    record": the caller then falls back to the old partial-graph behaviour.
+    """
+    cached = _BOND_SPATIAL_CACHE
+    if cached is None or cached.get("root_id") != root_id:
+        return []
+    return list(cached.get("segments", []))
+
+
+def _dedupe_segments(segments):
+    """Collapse *segments* (``(first, second, element_a, element_b)``) onto one
+    entry per rounded geometric edge, keeping the first occurrence."""
+    seen = set()
+    kept = []
+    for segment in segments:
+        key = _bond_edge_key(segment[0], segment[1])
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(segment)
+    return kept
+
+
+def _segments_by_element_pair(segments):
+    """Bucket cart-space segments by their (sorted) element pair.
+
+    The stored segments keep whichever orientation the spatial search produced,
+    so the pair key is normalised to the sorted element pair: ``C|N`` and
+    ``N|C`` segments land in the same object, exactly as the full rebuild keyed
+    them by the window's shared (element_a, element_b) entry.
+    """
+    grouped = {}
+    for first, second, element_a, element_b in segments:
+        pair = tuple(sorted((str(element_a).upper(), str(element_b).upper())))
+        grouped.setdefault(pair, []).append((first, second, element_a, element_b))
+    return grouped
+
+
 def _canonical_atom_indices(atoms):
     """Index of the representative atom for every element/position duplicate.
 
@@ -4568,6 +4705,11 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
 
     cell_width = max(max_distance, 1e-6)
     root_id = root.get("cgn_instance_id", root.name)
+    # Whatever was last drawn for this structure stays the authoritative
+    # "old membership" for the next append: grow never re-derives bonds that
+    # were built under earlier connectivity settings, so the union graph for
+    # chemdraw classification is exactly what is on screen plus the new bonds.
+    prior_segments = _drawn_segments_for(root_id)
     # Duplicate atoms (same element, same point) collapse onto their
     # representative: only it is bucketed and only it receives bonds.
     canonical = _canonical_atom_indices(atoms)
@@ -4635,6 +4777,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         atom_cart = atom["cart"]
         element = str(atom.get("element", "X")).upper()
         elements[index] = element
+        component = int(atom.get("component", 0) or 0)
         element_entries = pair_entries.get(element, {})
         element_reach = reach.get(element, 0.0)
         if element_reach <= 0.0:
@@ -4670,6 +4813,14 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                         # work, and most candidates fall outside this element's
                         # own reach (not the largest global window).
                         other = atoms[other_index]
+                        # Alternate components of a symmetry-disordered group
+                        # are alternatives, never bonded to each other.  With
+                        # "Keep All Disorder Components" the site table stores
+                        # every image, so the per-site component id (0 for
+                        # shared, fully occupied atoms) gates the pair.
+                        other_component = int(other.get("component", 0) or 0)
+                        if component and other_component and component != other_component:
+                            continue
                         other_cart = other["cart"]
                         delta_x = x - other_cart[0]
                         delta_y = y - other_cart[1]
@@ -4711,6 +4862,23 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     covalent_radii = {
         _bond_point_key(atom["cart"]): float(atom.get("covalent_radius", 0.0)) for atom in atoms
     }
+    if append_only and chemdraw and start_index > 0:
+        # The grow path adds bonds for the freshly grown atoms only.  Inferring
+        # orders and aromatic rings from that partial graph alone is wrong: a
+        # new bond whose context is missing is valence-promoted (a lone C-C
+        # becomes a spurious triple) and a ring closed by a mix of old and new
+        # bonds is never detected.  Reclassify over the union of what is on
+        # screen plus the new bonds, then redraw the whole set so existing
+        # bonds whose order changed (a Kekule shift on ring closure) are
+        # repainted too.  Membership is preserved -- the old segments are
+        # exactly the bonds on screen -- so this never tears down bonds that
+        # were built under earlier connectivity settings.
+        union = _dedupe_segments(prior_segments + all_segments)
+        by_pair = _segments_by_element_pair(union)
+        all_segments = union
+        for obj in list(root.all_objects):
+            if obj.get("cgn_role") == "bonds":
+                _remove_object(obj)
     # Centre→ligand bonds ("spokes") can be suppressed so the polyhedron faces
     # read as the coordination instead of being crossed by their own bonds.
     # The mask comes from the polyhedra that are actually displayed, so a
@@ -4720,13 +4888,20 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
     # rings are still inferred from the complete bond set.
     centre_keys = _polyhedron_centre_keys(root, atoms) if _hide_polyhedron_bonds(scene) else set()
     bond_orders = _chemdraw_bond_orders(all_segments, covalent_radii) if chemdraw else {}
+    delocalised_edges = (
+        _chemdraw_delocalised_edges(all_segments, covalent_radii)
+        if chemdraw and getattr(scene, "cgn_delocalised_bonds", True)
+        else frozenset()
+    )
     aromatic_edges, aromatic_rings = (
         _classify_aromatic_rings(all_segments, covalent_radii, bond_orders)
         if chemdraw
         else ({}, [])
     )
     multiple_bond_directions = (
-        _multiple_bond_plane_directions(all_segments, bond_orders) if chemdraw else {}
+        _multiple_bond_plane_directions(all_segments, bond_orders, delocalised_edges)
+        if chemdraw
+        else {}
     )
     two_color = getattr(scene, "cgn_bond_style", "SINGLE_COLOR") == "TWO_COLOR"
     for key, segments in sorted(by_pair.items()):
@@ -4750,6 +4925,7 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     "cgn_bond_spacing",
                     _CHEMDRAW_BOND_SPACING_DEFAULT,
                 ),
+                delocalised_edges,
             )
             if chemdraw
             else segments
@@ -4760,11 +4936,8 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
         bond_radius = _bond_radius(vdw_a, vdw_b, model)
         segments_by_order = {}
         for segment in rendered_segments:
-            first, second, first_element, second_element = segment[:4]
             order = int(segment[4]) if len(segment) > 4 else 1
-            segments_by_order.setdefault(order, []).append(
-                (first, second, first_element, second_element)
-            )
+            segments_by_order.setdefault(order, []).append(segment)
         for order, order_segments in sorted(segments_by_order.items()):
             order_scale = _CHEMDRAW_MULTIPLE_BOND_RADIUS_SCALE.get(order, 1.0)
             order_bond_radius = bond_radius * order_scale
@@ -4787,10 +4960,13 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             order_suffix = f"_Order_{order}" if order > 1 else ""
             if two_color:
                 segments_by_element = {}
-                for first, second, first_element, second_element in order_segments:
-                    midpoint = tuple(0.5 * (first[axis] + second[axis]) for axis in range(3))
-                    segments_by_element.setdefault(first_element, []).append((first, midpoint))
-                    segments_by_element.setdefault(second_element, []).append((midpoint, second))
+                for segment in order_segments:
+                    first, second, first_element, second_element = segment[:4]
+                    bond_midpoint = segment[5] if len(segment) > 5 else None
+                    for element, half_segment in _color_half_segments(
+                        first, second, first_element, second_element, bond_midpoint
+                    ):
+                        segments_by_element.setdefault(element, []).append(half_segment)
                 for element, element_segments in sorted(segments_by_element.items()):
                     if append_only and _merge_into_existing_bond_object(
                         root,
@@ -4835,13 +5011,17 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
                     None,
                     [
                         (_display_point(first), _display_point(second))
-                        for first, second, _first_element, _second_element in order_segments
+                        for first, second, _first_element, _second_element in (
+                            segment[:4] for segment in order_segments
+                        )
                     ],
                 ):
                     continue
                 vertices = []
                 edges = []
-                for first, second, _first_element, _second_element in order_segments:
+                for first, second, _first_element, _second_element in (
+                    segment[:4] for segment in order_segments
+                ):
                     start = len(vertices)
                     vertices.extend((_display_point(first), _display_point(second)))
                     edges.append((start, start + 1))
@@ -4957,6 +5137,16 @@ def _bond_objects(root, atoms, pair_settings, start_index=0, append_only=False):
             )
             _add_geometry_nodes_modifier(obj, node_group, torus_bond_radius, material)
     root["cgn_bond_settings_signature"] = settings_signature
+    if _BOND_SPATIAL_CACHE is not None and _BOND_SPATIAL_CACHE.get("root_id") == root_id:
+        # Remember the cart-space segments this call left on screen so the next
+        # append can classify the union of the old and new graphs.  On a full
+        # build (or a chemdraw redraw) ``all_segments`` is the whole drawn set;
+        # on plain appends it grows by the newly merged segments.
+        _BOND_SPATIAL_CACHE["segments"] = (
+            all_segments
+            if not append_only or chemdraw
+            else _dedupe_segments(prior_segments + all_segments)
+        )
     return bond_count
 
 
@@ -5753,6 +5943,16 @@ class CGN_OT_import_cif(Operator):
         name="CIF Block",
         description="Optional exact data-block name for multi-structure CIF files",
     )
+    keep_disorder: BoolProperty(
+        name="Keep All Disorder Components",
+        description=(
+            "Keep every disorder component instead of omitting the alternates: "
+            "the prime- and ?-labelled sites are kept alongside the plain ones, "
+            "and each symmetry-generated alternate position is kept instead of "
+            "resolving every anchored disordered group to one component"
+        ),
+        default=False,
+    )
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -5768,16 +5968,38 @@ class CGN_OT_import_cif(Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         try:
-            result = worker.load_structure(bpy.path.abspath(self.filepath), self.block_name or None)
+            result = worker.load_structure(
+                bpy.path.abspath(self.filepath),
+                self.block_name or None,
+                keep_disorder=self.keep_disorder,
+            )
             root = _import_result(context.scene, result, self.filepath)
         except Exception as exc:
             traceback.print_exc()
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        omitted = int(result.get("omitted_disorder", 0) or 0)
+        resolved = int(result.get("resolved_disorder", 0) or 0)
+        dropped = int(result.get("dropped_disorder", 0) or 0)
+        notes = []
+        if omitted:
+            noun = "site" if omitted == 1 else "sites"
+            notes.append(f"{omitted} alternate disorder {noun} omitted")
+        if resolved and dropped:
+            groups = "group" if resolved == 1 else "groups"
+            sites = "site" if dropped == 1 else "sites"
+            notes.append(
+                f"{resolved} symmetry-disordered {groups} resolved "
+                f"({dropped} alternate {sites} omitted)"
+            )
+        elif resolved:
+            groups = "group" if resolved == 1 else "groups"
+            notes.append(f"{resolved} symmetry-disordered {groups} kept")
+        note = (", " + "; ".join(notes)) if notes else ""
         self.report(
             {"INFO"},
             f"Imported {len(result.get('instances', [])) // 4} ASU atoms "
-            f"({root.get('cgn_space_group')}).",
+            f"({root.get('cgn_space_group')}{note}).",
         )
         return {"FINISHED"}
 
@@ -7490,6 +7712,7 @@ class CGN_PT_bond_style(Panel):
                 text="Bond Spacing",
                 slider=True,
             )
+            layout.prop(scene, "cgn_delocalised_bonds", text="Delocalised Bonds")
             layout.prop(scene, "cgn_aromatic_torus_size", slider=True)
             layout.prop(scene, "cgn_aromatic_torus_width", slider=True)
             layout.prop(scene, "cgn_aromatic_torus_color", text="Torus Color")
@@ -7752,6 +7975,16 @@ def register():
         default=False,
         update=_update_bond_style,
     )
+    bpy.types.Scene.cgn_delocalised_bonds = BoolProperty(
+        name="Delocalised Bonds",
+        description=(
+            "Draw resonance oxo groups (carboxylate, carbonate, nitrate, "
+            "phosphate, sulfate, sulfonate) as a 1.5 bond: one solid and one "
+            "dashed stroke"
+        ),
+        default=True,
+        update=_update_bond_style,
+    )
     bpy.types.Scene.cgn_aromatic_torus_size = FloatProperty(
         name="Torus Size",
         description="Inner torus radius relative to the ring atom radius",
@@ -7915,6 +8148,7 @@ def unregister():
     del bpy.types.Scene.cgn_aromatic_torus_width
     del bpy.types.Scene.cgn_aromatic_torus_size
     del bpy.types.Scene.cgn_chemdraw
+    del bpy.types.Scene.cgn_delocalised_bonds
     del bpy.types.Scene.cgn_bond_style
     del bpy.types.Scene.cgn_hydrogen_scale
     del bpy.types.Scene.cgn_ortep_ellipse_roughness

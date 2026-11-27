@@ -7414,6 +7414,306 @@ def _format_cell_parameter(value, cif_value="", angle=False):
     return f"{numeric:.3f}" if angle else f"{numeric:.4f}"
 
 
+def _view3d_target(context):
+    """Return the (RegionView3D, area) of the 3D viewport to orient.
+
+    Prefers the area the operator was invoked from, then falls back to the
+    first VIEW_3D area of the active screen.  ``(None, None)`` when no 3D
+    viewport exists (headless scripts still open the default Layout screen).
+    """
+    area = getattr(context, "area", None)
+    if area is not None and area.type == "VIEW_3D":
+        rv3d = getattr(area.spaces.active, "region_3d", None)
+        if rv3d is not None:
+            return rv3d, area
+    for candidate in context.screen.areas:
+        if candidate.type != "VIEW_3D":
+            continue
+        rv3d = getattr(candidate.spaces.active, "region_3d", None)
+        if rv3d is not None:
+            return rv3d, candidate
+    return None, None
+
+
+def _structure_view_center(root):
+    """Bounding-box centre of the displayed atoms in world units, or None."""
+    try:
+        atoms = _structure_atoms(root)
+    except (ValueError, TypeError):
+        return None
+    if not atoms:
+        return None
+    minimum = [None, None, None]
+    maximum = [None, None, None]
+    for atom in atoms:
+        cart = atom.get("cart")
+        if not cart:
+            continue
+        for axis in range(3):
+            value = cart[axis] * _DISPLAY_SCALE
+            if minimum[axis] is None or value < minimum[axis]:
+                minimum[axis] = value
+            if maximum[axis] is None or value > maximum[axis]:
+                maximum[axis] = value
+    if any(value is None for value in minimum):
+        return None
+    return tuple((minimum[axis] + maximum[axis]) * 0.5 for axis in range(3))
+
+
+def _axis_parallel(vec, direction, tol=1e-4):
+    """True when *vec* is (anti)parallel to the unit *direction*."""
+    if vec.length == 0.0:
+        return True
+    return abs(vec.normalized().dot(direction)) > 1.0 - tol
+
+
+def _view_reference_axes(cell_matrix, kind, direction):
+    """Reference axes for a projection.
+
+    Returns ``(primary, secondary)`` as raw cell-matrix columns, the primary
+    projected exactly horizontal in the viewport.  The a/b/c buttons use the
+    conventional ORTEP-style pair (table below); the [h k l] and (h k l)
+    plane cases reuse the button of any axis the direction is parallel to (so
+    [1 0 0], [0 1 0] and [0 0 1] reproduce the buttons exactly, and a plane
+    whose normal matches an axis does the same), and for a general direction
+    falls back to the first two of (a, b, c) that are not parallel to
+    *direction*, horizontal first:
+
+        along a : b horizontal, c vertical
+        along b : a horizontal, c vertical
+        along c : a horizontal, b vertical
+
+    Returns None when fewer than two usable axes exist.
+    """
+
+    def column(offset):
+        return Vector(tuple(cell_matrix[offset + axis] for axis in range(3)))
+
+    layouts = {
+        "A": (3, 6),  # b horizontal, c vertical
+        "B": (0, 6),  # a horizontal, c vertical
+        "C": (0, 3),  # a horizontal, b vertical
+    }
+    if kind in ("HKL", "PLANE"):
+        for offset, button in ((0, "A"), (3, "B"), (6, "C")):
+            if _axis_parallel(column(offset), direction):
+                primary, secondary = layouts[button]
+                return column(primary), column(secondary)
+        usable = [
+            column(offset) for offset in (0, 3, 6) if not _axis_parallel(column(offset), direction)
+        ]
+        if len(usable) < 2:
+            return None
+        return usable[0], usable[1]
+    primary, secondary = layouts[kind]
+    return column(primary), column(secondary)
+
+
+def _view_basis(direction, primary, secondary, fix_sense=False):
+    """Camera axes (right, up, backward) looking down *direction*.
+
+    The *primary* cell vector is projected onto the plane perpendicular to
+    *direction* and becomes the viewport's +X axis, keeping its positive end
+    pointing right.  By default the sense of the view direction is then chosen
+    so the *secondary* cell vector's positive end lands on +Y, so the drawing
+    is not mirrored (e.g. along a: b to the right, c up).  With *fix_sense*
+    the sense is kept instead, so the view looks exactly along *direction*:
+    the (h k l) plane projection then looks from the origin towards the signed
+    plane normal, positive indices one way and negated indices the other.
+    Returns None when the primary axis is parallel to the direction.
+    """
+    projected = primary - primary.dot(direction) * direction
+    if projected.length <= 1e-9:
+        return None
+    projected.normalize()
+    best = None
+    best_score = None
+    for sense in (1.0,) if fix_sense else (1.0, -1.0):
+        backward = -direction * sense  # camera +Z, opposite to the look axis
+        right = projected
+        up = backward.cross(right)
+        score = up.dot(secondary)
+        if best_score is None or score > best_score:
+            best_score = score
+            best = (right, up, backward)
+    return best
+
+
+def _align_view(rv3d, area, basis):
+    """Point the 3D view down a direction with a fixed in-plane roll.
+
+    *basis* is the (right, up, backward) camera-axis triple returned by
+    ``_view_basis``; those vectors are the columns of the view rotation, so
+    the viewport looks down its local -Z.  The view location and distance are
+    kept, only the orientation and projection mode (always orthographic)
+    change.
+    """
+    right, up, backward = basis
+    rv3d.view_rotation = Matrix((right, up, backward)).transposed().to_quaternion()
+    rv3d.view_perspective = "ORTHO"
+    if area is not None:
+        area.tag_redraw()
+
+
+def _structure_direction(cell_matrix, direction, h_idx, k_idx, l_idx):
+    """World-space (unscaled) unit vector for a projection direction.
+
+    The a/b/c buttons use the corresponding column of the stored orthogonalised
+    cell matrix; the [h k l] case combines them the same way (zone-axis
+    convention, so [1 0 0] == "along a").  Returns None for a zero vector.
+    """
+    if direction == "HKL":
+        vector = Vector(
+            (
+                h_idx * cell_matrix[0] + k_idx * cell_matrix[3] + l_idx * cell_matrix[6],
+                h_idx * cell_matrix[1] + k_idx * cell_matrix[4] + l_idx * cell_matrix[7],
+                h_idx * cell_matrix[2] + k_idx * cell_matrix[5] + l_idx * cell_matrix[8],
+            )
+        )
+    else:
+        offset = {"A": 0, "B": 3, "C": 6}[direction]
+        vector = Vector(tuple(cell_matrix[offset + axis] for axis in range(3)))
+    if vector.length <= 1e-9:
+        return None
+    return vector.normalized()
+
+
+def _plane_normal(cell_matrix, h_idx, k_idx, l_idx):
+    """World-space (unscaled) unit normal to the (h k l) plane.
+
+    The normal of the (h k l) plane is the reciprocal-lattice vector
+    ``g = h a* + k b* + l c*``, built from the stored orthogonalised
+    cell-matrix columns a, b, c (a* = b×c/V etc., V the cell volume).  The
+    projection direction is that normal, so the view looks straight at the
+    plane.  Returns None for a zero vector (h = k = l = 0) or a degenerate
+    cell.
+    """
+
+    def column(offset):
+        return Vector(tuple(cell_matrix[offset + axis] for axis in range(3)))
+
+    a = column(0)
+    b = column(3)
+    c = column(6)
+    volume = a.dot(b.cross(c))
+    if abs(volume) <= 1e-12:
+        return None
+    vector = (h_idx * b.cross(c) + k_idx * c.cross(a) + l_idx * a.cross(b)) / volume
+    if vector.length <= 1e-9:
+        return None
+    return vector.normalized()
+
+
+class CGN_OT_view_along(Operator):
+    bl_idname = "cgn.view_along"
+    bl_label = "Project Structure"
+    bl_description = (
+        "Orient the 3D viewport along a crystallographic direction or towards "
+        "a lattice plane and snap to orthographic projection"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    direction: EnumProperty(
+        name="Projection",
+        description="How to project the structure",
+        items=(
+            ("A", "Along a", "Look along the a axis"),
+            ("B", "Along b", "Look along the b axis"),
+            ("C", "Along c", "Look along the c axis"),
+            ("HKL", "View along [u v w]", "Look along the user-defined u v w direction"),
+            ("PLANE", "View towards (h k l)", "Look towards the user-defined (h k l) plane"),
+        ),
+        default="HKL",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def execute(self, context):
+        root = _active_root(context.scene)
+        if root is None:
+            self.report(
+                {"ERROR"},
+                _no_structure_message(context.scene, "projecting the structure"),
+            )
+            return {"CANCELLED"}
+        cell_matrix = _stored_cell_matrix(root)
+        if cell_matrix is None:
+            self.report({"ERROR"}, "The stored unit-cell matrix is invalid.")
+            return {"CANCELLED"}
+        scene = context.scene
+        if self.direction == "PLANE":
+            direction = _plane_normal(
+                cell_matrix,
+                scene.cgn_view_h,
+                scene.cgn_view_k,
+                scene.cgn_view_l,
+            )
+            if direction is None:
+                self.report(
+                    {"ERROR"},
+                    "That plane normal is zero (h = k = l = 0).",
+                )
+                return {"CANCELLED"}
+        else:
+            direction = _structure_direction(
+                cell_matrix,
+                self.direction,
+                scene.cgn_view_h,
+                scene.cgn_view_k,
+                scene.cgn_view_l,
+            )
+            if direction is None:
+                self.report({"ERROR"}, "That direction is zero (h = k = l = 0).")
+                return {"CANCELLED"}
+        rv3d, area = _view3d_target(context)
+        if rv3d is None:
+            self.report({"ERROR"}, "No 3D viewport found to project into.")
+            return {"CANCELLED"}
+        layout = _view_reference_axes(cell_matrix, self.direction, direction)
+        if layout is None:
+            self.report(
+                {"ERROR"},
+                "Fewer than two reference axes are usable for that direction.",
+            )
+            return {"CANCELLED"}
+        primary, secondary = layout
+        basis = _view_basis(
+            direction,
+            primary,
+            secondary,
+            fix_sense=self.direction == "PLANE",
+        )
+        if basis is None:
+            self.report(
+                {"ERROR"},
+                "A reference axis is parallel to that direction; "
+                "no conventional in-plane orientation exists.",
+            )
+            return {"CANCELLED"}
+        _align_view(rv3d, area, basis)
+        center = _structure_view_center(root)
+        if center is not None:
+            rv3d.view_location = Vector(center)
+        if area is not None:
+            area.tag_redraw()
+        if self.direction == "PLANE":
+            message = (
+                f"View aligned towards ({scene.cgn_view_h:g} "
+                f"{scene.cgn_view_k:g} {scene.cgn_view_l:g}) plane"
+            )
+        elif self.direction in ("A", "B", "C"):
+            message = f"View aligned along {self.direction.lower()}"
+        else:
+            message = (
+                f"View aligned along [{scene.cgn_view_h:g} "
+                f"{scene.cgn_view_k:g} {scene.cgn_view_l:g}]"
+            )
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 class CGN_PT_panel(Panel):
     bl_label = "CrystalViz"
     bl_idname = "CGN_PT_panel"
@@ -7575,6 +7875,43 @@ class CGN_PT_unit_cell(Panel):
         column.prop(settings, "edge_thickness", text="Edge Thickness")
 
 
+class CGN_PT_view(Panel):
+    bl_label = "View"
+    bl_idname = "CGN_PT_view"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "CrystalViz"
+    bl_parent_id = "CGN_PT_panel"
+    bl_options = {"DEFAULT_CLOSED"}
+    bl_order = 4
+
+    @classmethod
+    def poll(cls, context):
+        return _active_root(context.scene) is not None
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+        layout.label(text="Project the structure along a direction or towards a plane.")
+        row = layout.row(align=True)
+        for direction in ("A", "B", "C"):
+            op = row.operator(
+                "cgn.view_along",
+                text=f"Along {direction.lower()}",
+            )
+            op.direction = direction
+        box = layout.box()
+        box.prop(scene, "cgn_view_kind", text="View")
+        box.prop(scene, "cgn_view_h", text="h")
+        box.prop(scene, "cgn_view_k", text="k")
+        box.prop(scene, "cgn_view_l", text="l")
+        apply = box.operator(
+            "cgn.view_along",
+            text="View along [u v w]" if scene.cgn_view_kind == "HKL" else "View towards (h k l)",
+        )
+        apply.direction = scene.cgn_view_kind
+
+
 class CGN_PT_model_style(Panel):
     bl_label = "Atom Model & Style"
     bl_idname = "CGN_PT_model_style"
@@ -7583,7 +7920,7 @@ class CGN_PT_model_style(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 4
+    bl_order = 5
 
     @classmethod
     def poll(cls, context):
@@ -7673,7 +8010,7 @@ class CGN_PT_bond_style(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 5
+    bl_order = 6
 
     @classmethod
     def poll(cls, context):
@@ -7726,7 +8063,7 @@ class CGN_PT_polyhedra(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 6
+    bl_order = 7
 
     @classmethod
     def poll(cls, context):
@@ -7821,7 +8158,7 @@ class CGN_PT_quality(Panel):
     bl_category = "CrystalViz"
     bl_parent_id = "CGN_PT_panel"
     bl_options = {"DEFAULT_CLOSED"}
-    bl_order = 7
+    bl_order = 8
 
     @classmethod
     def poll(cls, context):
@@ -7887,12 +8224,14 @@ _CLASSES = (
     CGN_OT_create_polyhedra,
     CGN_OT_create_polyhedra_selected,
     CGN_OT_clear_polyhedra,
+    CGN_OT_view_along,
     CGN_MT_fill,
     CGN_MT_viewport,
     CGN_PT_panel,
     CGN_PT_build,
     CGN_PT_connectivity,
     CGN_PT_unit_cell,
+    CGN_PT_view,
     CGN_PT_model_style,
     CGN_PT_bond_style,
     CGN_PT_polyhedra,
@@ -7906,6 +8245,33 @@ def register():
     bpy.types.Scene.cgn_connectivity_pairs = CollectionProperty(type=CGN_ConnectivityPair)
     bpy.types.Scene.cgn_atom_styles = CollectionProperty(type=CGN_AtomStyle)
     bpy.types.Scene.cgn_active_structure = StringProperty(options={"HIDDEN"})
+    bpy.types.Scene.cgn_view_h = FloatProperty(
+        name="h",
+        description="Miller index h of the projection direction",
+        default=0.0,
+    )
+    bpy.types.Scene.cgn_view_k = FloatProperty(
+        name="k",
+        description="Miller index k of the projection direction",
+        default=0.0,
+    )
+    bpy.types.Scene.cgn_view_l = FloatProperty(
+        name="l",
+        description="Miller index l of the projection direction",
+        default=1.0,
+    )
+    bpy.types.Scene.cgn_view_kind = EnumProperty(
+        name="View",
+        description=(
+            "Interpret the three values below as a [u v w] direction to look "
+            "along, or the Miller indices of an (h k l) plane to look towards"
+        ),
+        items=(
+            ("HKL", "View along [u v w]", "Look along the user-defined u v w direction"),
+            ("PLANE", "View towards (h k l)", "Look towards the user-defined (h k l) plane"),
+        ),
+        default="PLANE",
+    )
     bpy.types.Scene.cgn_show_hydrogens = BoolProperty(
         name="Show Hydrogens",
         description="Show hydrogen atoms and their bonds",
@@ -8166,6 +8532,10 @@ def unregister():
     del bpy.types.Scene.cgn_show_hydrogens
     del bpy.types.Scene.cgn_hide_polyhedron_bonds
     del bpy.types.Scene.cgn_active_structure
+    del bpy.types.Scene.cgn_view_l
+    del bpy.types.Scene.cgn_view_k
+    del bpy.types.Scene.cgn_view_h
+    del bpy.types.Scene.cgn_view_kind
     del bpy.types.Scene.cgn_atom_styles
     del bpy.types.Scene.cgn_connectivity_pairs
     for cls in reversed(_CLASSES):

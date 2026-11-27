@@ -92,7 +92,7 @@ Cell parameters retain CIF standard uncertainties, for example `7.57360(10)`,
 and exact integer angles display without decimal places;
 **Build** holds Fill, Grow, Delete and a **Show Hydrogens** checkbox that hides
 or shows hydrogen atoms together with their bonds; **Connectivity**,
-**Unit Cell**, **Polyhedra**, **Atom Model & Style** and **About** are collapsed by default.
+**Unit Cell**, **View**, **Polyhedra**, **Atom Model & Style** and **About** are collapsed by default.
 The same build actions are available from the **CrystalViz** menu in the 3D Viewport
 header, and CIF import is also registered under **File > Import**.
 
@@ -205,6 +205,23 @@ a, b and c. This displays a repeated cell grid without changing or duplicating
 atoms. Smooth-shaded icosphere markers indicate the cell-outline corners and
 match the unit-cell edge thickness. The cell is drawn with adjustable face
 color, face transparency, edge color and edge thickness.
+The **View** sub-panel (under Unit Cell) projects the structure along a
+crystallographic direction: three buttons look down the **a**, **b** or **c**
+axis, and a **View** dropdown below them chooses between "view along **[u v w]**"
+(a direction as three values) and "view towards **(h k l)**" (the same three
+values taken as Miller indices of a lattice plane). The (h k l) projection
+points the view straight at the plane, along its normal **h a\* + k b\* + l c\***
+(so e.g. the (0 0 1) plane of an orthorhombic cell is seen face on); the look
+sense follows the indices — positive values view from the origin along the
+normal, negated values (-h -k -l) view back from the positive side to the
+origin. Projection
+is always orthographic: every projection re-centres the viewport on the
+structure and snaps its projection mode; use **a**, **b**, **c** for the cell axes, or [1 0 0]/[0 1 0]/
+[0 0 1] with the view-along field for the same result. Each projection also rolls
+the view so the cell is laid out the conventional way: along **a**, **b** runs
+horizontal and **c** vertical; along **b**, **a** horizontal and **c** vertical;
+along **c**, **a** horizontal and **b** vertical. An arbitrary **[h k l]**
+direction keeps the first two cell axes not parallel to it horizontal/vertical;
 Turning **Show Unit Cell** off hides the grid. Import and every fill display
 atoms only and create no bonds: the previous bond set is dropped because it
 described the old atom set. Bonds return when you grow the structure, create
